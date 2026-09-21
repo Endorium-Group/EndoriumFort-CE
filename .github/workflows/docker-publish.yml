@@ -1,0 +1,212 @@
+name: Build & Push Docker Image
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Docker image tag (e.g. latest, v0.4.0)'
+        required: false
+        default: 'latest'
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+env:
+  DOCKERHUB_REPO: nergyr/endoriumfort
+  GHCR_REPO: ghcr.io/nergyr/endoriumfort
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Detect Docker Hub credentials
+        id: dockerhub
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [[ -n "$DOCKERHUB_USERNAME" && -n "$DOCKERHUB_TOKEN" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata
+        id: meta
+        env:
+          HAS_DOCKERHUB: ${{ steps.dockerhub.outputs.enabled }}
+        run: |
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "tag" ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+            TAG_NAME="${GITHUB_REF#refs/tags/}"
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "tags<<EOF" >> "$GITHUB_OUTPUT"
+            if [[ "$HAS_DOCKERHUB" == "true" ]]; then
+              echo "${{ env.DOCKERHUB_REPO }}:${VERSION}" >> "$GITHUB_OUTPUT"
+              echo "${{ env.DOCKERHUB_REPO }}:latest" >> "$GITHUB_OUTPUT"
+            fi
+            echo "${{ env.GHCR_REPO }}:${VERSION}" >> "$GITHUB_OUTPUT"
+            echo "${{ env.GHCR_REPO }}:latest" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+          else
+            TAG="${{ github.event.inputs.tag || 'latest' }}"
+            echo "version=$TAG" >> "$GITHUB_OUTPUT"
+            echo "tags<<EOF" >> "$GITHUB_OUTPUT"
+            if [[ "$HAS_DOCKERHUB" == "true" ]]; then
+              echo "${{ env.DOCKERHUB_REPO }}:${TAG}" >> "$GITHUB_OUTPUT"
+            fi
+            echo "${{ env.GHCR_REPO }}:${TAG}" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Login to Docker Hub
+        if: ${{ steps.dockerhub.outputs.enabled == 'true' }}
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: build_push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          # Public registry gets the COMMUNITY edition (premium code absent).
+          # The Enterprise edition is delivered as a signed tarball (ee-release.yml).
+          build-args: |
+            EDITION=community
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.title=EndoriumFort Community
+            org.opencontainers.image.description=Privileged Access Management (PAM) Bastion — Community Edition
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.source=https://github.com/NergYR/EndoriumFort
+            org.opencontainers.image.vendor=NergYR
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v4.1.0
+
+      - name: Sign published container images (keyless)
+        env:
+          DIGEST: ${{ steps.build_push.outputs.digest }}
+          HAS_DOCKERHUB: ${{ steps.dockerhub.outputs.enabled }}
+        run: |
+          if [[ "$HAS_DOCKERHUB" == "true" ]]; then
+            cosign sign --yes "${{ env.DOCKERHUB_REPO }}@${DIGEST}"
+          fi
+          cosign sign --yes "${{ env.GHCR_REPO }}@${DIGEST}"
+
+      - name: Create and attach provenance attestation
+        env:
+          DIGEST: ${{ steps.build_push.outputs.digest }}
+          HAS_DOCKERHUB: ${{ steps.dockerhub.outputs.enabled }}
+        run: |
+          cat > provenance.json <<JSON
+          {
+            "buildType": "https://github.com/Attestations/GitHubActionsWorkflow@v1",
+            "builder": {
+              "id": "https://github.com/${{ github.repository }}/.github/workflows/docker-publish.yml@${{ github.ref }}"
+            },
+            "invocation": {
+              "configSource": {
+                "uri": "git+${{ github.server_url }}/${{ github.repository }}.git",
+                "digest": {"sha1": "${{ github.sha }}"},
+                "entryPoint": ".github/workflows/docker-publish.yml"
+              },
+              "parameters": {
+                "event_name": "${{ github.event_name }}",
+                "ref": "${{ github.ref }}"
+              },
+              "environment": {
+                "runner": "github-actions"
+              }
+            },
+            "materials": [
+              {
+                "uri": "git+${{ github.server_url }}/${{ github.repository }}.git",
+                "digest": {"sha1": "${{ github.sha }}"}
+              }
+            ]
+          }
+          JSON
+          if [[ "$HAS_DOCKERHUB" == "true" ]]; then
+            cosign attest --yes --type slsaprovenance --predicate provenance.json "${{ env.DOCKERHUB_REPO }}@${DIGEST}"
+          fi
+          cosign attest --yes --type slsaprovenance --predicate provenance.json "${{ env.GHCR_REPO }}@${DIGEST}"
+
+      - name: Verify container image signatures
+        env:
+          DIGEST: ${{ steps.build_push.outputs.digest }}
+          HAS_DOCKERHUB: ${{ steps.dockerhub.outputs.enabled }}
+        run: |
+          verify_signature() {
+            local image_ref="$1"
+            for i in {1..8}; do
+              if cosign verify --certificate-identity-regexp ".*" \
+                --certificate-oidc-issuer-regexp ".*" \
+                "$image_ref" >/dev/null; then
+                return 0
+              fi
+              sleep 5
+            done
+            return 1
+          }
+
+          if [[ "$HAS_DOCKERHUB" == "true" ]]; then
+            verify_signature "${{ env.DOCKERHUB_REPO }}@${DIGEST}"
+          fi
+          verify_signature "${{ env.GHCR_REPO }}@${DIGEST}"
+
+      - name: Verify container image attestations
+        env:
+          DIGEST: ${{ steps.build_push.outputs.digest }}
+          HAS_DOCKERHUB: ${{ steps.dockerhub.outputs.enabled }}
+        run: |
+          verify_attestation() {
+            local image_ref="$1"
+            for i in {1..8}; do
+              if cosign verify-attestation --certificate-identity-regexp ".*" \
+                --certificate-oidc-issuer-regexp ".*" \
+                --type slsaprovenance \
+                "$image_ref" >/dev/null; then
+                return 0
+              fi
+              # Fallback for registries exposing attestations without typed lookup immediately.
+              if cosign verify-attestation --certificate-identity-regexp ".*" \
+                --certificate-oidc-issuer-regexp ".*" \
+                "$image_ref" >/dev/null; then
+                return 0
+              fi
+              sleep 5
+            done
+            return 1
+          }
+
+          if [[ "$HAS_DOCKERHUB" == "true" ]]; then
+            verify_attestation "${{ env.DOCKERHUB_REPO }}@${DIGEST}"
+          fi
+          verify_attestation "${{ env.GHCR_REPO }}@${DIGEST}"
+
+      - name: Image digest
+        run: echo "Image pushed with digest ${{ steps.build_push.outputs.digest }}"

@@ -1,0 +1,291 @@
+#pragma once
+// ─── EndoriumFort — Data models ─────────────────────────────────────────
+// Pure data structures used across the application.
+
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <vector>
+
+struct Session {
+  int id = 0;
+  int resourceId = 0;
+  int accessGrantId = 0;
+  std::string target;
+  std::string user;
+  std::string protocol;
+  std::string status;
+  std::string missionRef;
+  std::string credentialSource = "vaulted";
+  std::string createdAt;
+  std::string terminatedAt;
+  int port = 22;
+  int maxDurationSeconds = 0;
+};
+
+struct Resource {
+  int id = 0;
+  std::string name;
+  std::string target;
+  std::string protocol;
+  int port = 22;
+  int tunnelTicketRateLimitMaxAttempts = 0;
+  std::string description;
+  std::string imageUrl;
+  std::string imageData; // base64
+  std::string tagsCsv;
+  std::string credentialSource = "vaulted";
+  std::string httpUsername;
+  std::string httpPassword;
+  std::string sshUsername;
+  std::string sshPassword;
+  bool requireAccessJustification = false;
+  bool requireDualApproval = false;
+  bool enableCommandGuard = false;
+  bool adaptiveAccessPolicy = false;
+  std::string riskLevel = "low";
+  std::string createdAt;
+  std::string updatedAt;
+};
+
+struct AccessPolicy {
+  int id = 0;
+  std::string name;
+  std::string description;
+  std::string identityPattern;
+  std::string groupName;
+  std::string role;
+  std::string resourceTagsCsv;
+  std::string riskLevel = "any";
+  bool ticketRequired = false;
+  bool requireJustification = false;
+  std::string approvalMode = "inherit";
+  std::string mfaRequirement = "any";
+  std::string timeWindow = "any";
+  int maxDurationSeconds = 3600;
+  std::string routingConstraint = "any";
+  bool enabled = true;
+  std::string createdAt;
+  std::string updatedAt;
+};
+
+struct AccessProfile {
+  int id = 0;
+  std::string name;
+  std::string description;
+  std::string resourceTagsCsv;
+  std::string resourceIdsCsv;
+  int policyId = 0;
+  std::string createdAt;
+  std::string updatedAt;
+};
+
+struct AccessGrant {
+  int id = 0;
+  int policyId = 0;
+  int profileId = 0;
+  int resourceId = 0;
+  int sessionId = 0;
+  int approvalRef = 0;
+  std::string subject;
+  std::string resourceScope;
+  std::string grantedAt;
+  std::string expiresAt;
+  std::string usedAt;
+  std::string missionRef;
+  std::string elevationScope;
+  std::string status = "issued";
+  std::string credentialSource = "vaulted";
+  std::string routingConstraint = "any";
+  std::string ticketId;
+  std::string purpose;
+  std::string justification;
+  std::string mfaRequirement = "any";
+};
+
+struct AccessRequest {
+  int id = 0;
+  int resourceId = 0;
+  std::string resourceName;
+  std::string requester;
+  std::string requesterRole;
+  std::string status = "pending";
+  std::string justification;
+  std::string ticketId;
+  std::string createdAt;
+  std::string reviewedAt;
+  std::string reviewedBy;
+};
+
+struct UserBehaviorStats {
+  std::string username;
+  int totalSessions = 0;
+  int64_t totalDurationMs = 0;
+  int64_t totalInputEvents = 0;
+  std::string updatedAt;
+};
+
+struct EphemeralCredentialLease {
+  int id = 0;
+  int resourceId = 0;
+  std::string requester;
+  std::string username;
+  std::string status = "issued";
+  std::string issuedAt;
+  std::string expiresAt;
+  std::string usedAt;
+};
+
+struct UserAccount {
+  int id = 0;
+  std::string username;
+  std::string password;
+  std::string role;
+  std::string createdAt;
+  std::string updatedAt;
+  bool bootstrapPasswordChangeRequired = false;
+  bool bootstrapMfaRequired = false;
+  // 2FA / TOTP
+  bool totpEnabled = false;
+  std::string totpSecret;  // Base32-encoded secret
+  int webauthnCredentialCount = 0;
+  std::string preferredMfaMethod = "any";
+};
+
+struct WebAuthnCredential {
+  int id = 0;
+  int userId = 0;
+  std::string credentialId;
+  std::string publicKeySpki;
+  int signCount = 0;
+  std::string label;
+  std::string transportsCsv;
+  std::string createdAt;
+  std::string lastUsedAt;
+};
+
+struct AuthSession {
+  int userId = 0;
+  std::string user;
+  std::string role;
+  std::string token;
+  std::string issuedAt;
+  std::string expiresAt;
+};
+
+struct AuditEvent {
+  int id = 0;
+  std::string type;
+  std::string actor;
+  std::string role;
+  std::string createdAt;
+  std::string payloadJson;
+  bool payloadIsJson = false;
+};
+
+struct SessionEvent {
+  int id = 0;
+  std::string type;
+  std::string createdAt;
+  std::string payloadJson;
+};
+
+struct SessionRecording {
+  int id = 0;
+  int sessionId = 0;
+  std::string filePath;
+  std::string createdAt;
+  std::string closedAt;
+  int64_t durationMs = 0;
+  size_t fileSize = 0;
+};
+
+struct SessionDnaEntry {
+  int id = 0;
+  int sessionId = 0;
+  int auditEventId = 0;
+  std::string eventType;
+  std::string createdAt;
+  std::string prevHash;
+  std::string payloadHash;
+  std::string chainHash;
+};
+
+struct HttpProxyResponse {
+  int status_code = 0;
+  std::string body;
+  std::unordered_map<std::string, std::string> headers;
+  std::vector<std::string> set_cookie_headers;
+};
+
+class SessionRecorder;
+
+#ifdef ENDORIUMFORT_SSH_ENABLED
+#ifndef _WIN32
+#include <libssh2.h>
+struct SshConnection {
+  int socket_fd = -1;
+  LIBSSH2_SESSION *session = nullptr;
+  LIBSSH2_CHANNEL *channel = nullptr;
+  std::thread reader;
+  std::atomic<bool> running{false};
+  std::mutex write_mutex;
+  int session_id = 0;
+  bool command_guard_enabled = false;
+  // Session recording
+  std::shared_ptr<SessionRecorder> recorder;
+};
+#endif
+#endif
+
+// Tunnel state for agent WebSocket tunnels
+struct TunnelState {
+  int upstream_sock = -1;
+  int resource_id = 0;
+  std::string user;
+  std::string token;
+  std::atomic<bool> active{false};
+  std::thread reader_thread;
+};
+
+struct VncConnection {
+  int upstream_sock = -1;
+  int session_id = 0;
+  int resource_id = 0;
+  std::string user;
+  std::string role;
+  std::atomic<bool> active{false};
+  std::thread reader_thread;
+};
+
+struct RelayNode {
+  std::string relayId;
+  std::string label;
+  std::string token;
+  std::string certificateId;
+  std::string sourceIp;
+  std::string version;
+  std::string capabilitiesCsv;
+  std::string status = "offline";
+  std::string enrolledAt;
+  std::string certificateBoundAt;
+  std::string lastSeenAt;
+  std::string tokenExpiresAt;
+  int managedResourceCount = 0;
+};
+
+struct ClusterPeerNode {
+  std::string nodeId;
+  std::string label;
+  std::string endpoint;
+  std::string version;
+  std::string role = "follower";
+  std::string status = "offline";
+  std::string sourceIp;
+  std::string lastSeenAt;
+  int managedRelays = 0;
+  int managedSessions = 0;
+};

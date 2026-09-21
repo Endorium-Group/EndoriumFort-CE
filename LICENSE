@@ -1,0 +1,67 @@
+EndoriumFort Community Edition — Source-Available License v1.1
+
+Copyright (c) 2026 NergYR (https://github.com/NergYR/EndoriumFort)
+
+This license governs the EndoriumFort Community Edition ("the Software"): the
+source code contained in this repository. Premium ("Enterprise") features are
+NOT part of the Software and are licensed separately under a commercial
+agreement (see LICENSE-PRO); they are not distributed under this license.
+
+1. DEFINITIONS
+   "Non-Commercial Use" means use for personal projects, education, research,
+   evaluation, testing, and internal non-production use, where the use is not
+   intended for or directed toward commercial advantage or monetary
+   compensation.
+   "Commercial Use" means any use in production, in the operation of a business,
+   or that is intended for or directed toward commercial advantage or monetary
+   compensation, including offering the Software (or access to it) to third
+   parties as a hosted or managed service.
+
+2. GRANT — NON-COMMERCIAL
+   Permission is hereby granted, free of charge, to use, run, and evaluate the
+   Software for Non-Commercial Use, subject to the conditions below.
+
+3. COMMERCIAL / PRODUCTION USE
+   Commercial Use of the Software requires a separate commercial license from
+   NergYR (an EndoriumFort Enterprise license). Contact the copyright holder to
+   obtain one. Without such a license, Commercial Use is not permitted.
+
+4. ATTRIBUTION
+   Any use of the Software, in whole or in part, must retain this license text,
+   the copyright notice, and a clearly visible attribution to the original
+   repository: https://github.com/NergYR/EndoriumFort
+
+5. MODIFICATION
+   You may modify the Software for your own permitted (Non-Commercial) use and
+   to prepare contributions back to the original repository. You may not
+   distribute modified versions of the Software except as a pull request to the
+   original repository. This restriction does not, and is not intended to,
+   restrict rights you hold under any separate open-source license that may
+   apply to individual third-party components included herein.
+
+6. REDISTRIBUTION
+   You may redistribute verbatim copies of the Software, provided that this
+   license notice and the attribution requirement (Section 4) are included in
+   all copies or substantial portions of the Software, and that no fee is
+   charged for the Software itself.
+
+7. NO SUBLICENSING / NO RESALE
+   You may not sell, rent, sublicense, relicense, or otherwise commercialize the
+   Software under different terms, and you may not remove, disable, or
+   circumvent any license-enforcement or feature-gating mechanism.
+
+8. TRADEMARKS
+   This license does not grant permission to use the trade names, trademarks, or
+   product names of the copyright holder, except for attribution as required by
+   Section 4.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+NOTE: This is a source-available license, not an OSI-approved open-source
+license. Have it reviewed by legal counsel before relying on it commercially.
