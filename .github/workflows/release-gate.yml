@@ -195,7 +195,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.25.9"
           cache-dependency-path: agent/go.sum
@@ -226,7 +226,7 @@ jobs:
           npm audit --omit=dev --audit-level=high
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: "1.25.9"
           cache-dependency-path: agent/go.sum
