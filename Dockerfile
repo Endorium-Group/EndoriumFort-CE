@@ -34,9 +34,11 @@ RUN if [ ! -f backend/src/version.h ]; then \
 # Edition: "enterprise" (EE, includes pro/ premium modules, license-gated) or
 # "community" (CE, premium physically absent). The public core repo builds CE;
 # the private repo builds EE. EE builds embed the prod license issuer public key
-# (set PROD_KEY=ON once the compiled-in key in license.h is populated).
+# (set PROD_ISSUER=ON once the compiled-in public key in license.h is populated).
+# PROD_ISSUER is a plain ON/OFF toggle, not a secret — the embedded issuer key is
+# a *public* key (renamed from PROD_KEY to avoid the BuildKit secret-in-ARG lint).
 ARG EDITION=enterprise
-ARG PROD_KEY=OFF
+ARG PROD_ISSUER=OFF
 
 # Build
 RUN if [ "$EDITION" = "community" ]; then PRO_FLAG=OFF; else PRO_FLAG=ON; fi \
@@ -44,7 +46,7 @@ RUN if [ "$EDITION" = "community" ]; then PRO_FLAG=OFF; else PRO_FLAG=ON; fi \
       -DCMAKE_BUILD_TYPE=Release \
       -DBUILD_TESTING=OFF \
       -DENDORIUMFORT_PRO=$PRO_FLAG \
-      -DENDORIUMFORT_LICENSE_PROD_KEY=$PROD_KEY \
+      -DENDORIUMFORT_LICENSE_PROD_KEY=$PROD_ISSUER \
       -DCMAKE_CXX_FLAGS="-O2" \
   && cmake --build backend/build -j"$(nproc)"
 

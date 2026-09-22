@@ -17,8 +17,12 @@ permissions:
   id-token: write
 
 env:
+  # Docker Hub stays under the personal namespace (pushed with DOCKERHUB_* secrets).
   DOCKERHUB_REPO: nergyr/endoriumfort
-  GHCR_REPO: ghcr.io/nergyr/endoriumfort
+  # GHCR must match the OWNER that runs the workflow: the automatic GITHUB_TOKEN can
+  # only publish packages under this repo's org (Endorium-Group). Pushing to another
+  # account's namespace fails with "permission_denied: installation does not exist".
+  GHCR_REPO: ghcr.io/endorium-group/endoriumfort
 
 jobs:
   # Detect the edition: the public core repo has no pro/ overlay (Community),
