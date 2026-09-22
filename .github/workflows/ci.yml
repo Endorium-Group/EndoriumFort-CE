@@ -16,7 +16,7 @@ jobs:
     outputs:
       has_agent: ${{ steps.check.outputs.has_agent }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - id: check
         # The Go agent ships only with the Enterprise edition. The public
         # Community core has no agent/ directory, so skip the agent job there.
@@ -43,7 +43,7 @@ jobs:
             libsqlite3-dev libssh2-1-dev libssl-dev
 
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Configure backend
         working-directory: backend
@@ -62,7 +62,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -94,7 +94,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Go
         uses: actions/setup-go@v6
