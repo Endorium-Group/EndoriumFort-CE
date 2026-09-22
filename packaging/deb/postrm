@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+
+# Disable the nginx site
+rm -f /etc/nginx/sites-enabled/endoriumfort.conf 2>/dev/null || true
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl reload nginx 2>/dev/null || true
+  systemctl daemon-reload 2>/dev/null || true
+fi
+
+# On purge, remove config + data (keeps them on plain remove/upgrade).
+if [ "$1" = "purge" ]; then
+  rm -rf /etc/endoriumfort /var/lib/endoriumfort /var/www/endoriumfort-certbot 2>/dev/null || true
+fi
+exit 0

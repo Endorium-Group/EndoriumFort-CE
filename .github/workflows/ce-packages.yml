@@ -1,0 +1,136 @@
+name: CE Linux Packages (public apt repo)
+
+# Builds the Community Edition server .deb and publishes a signed APT repository
+# to GitHub Pages, PLUS attaches the .deb to the GitHub Release. Runs only in the
+# public Community repo (premium pro/ overlay absent). The Enterprise edition is
+# distributed privately (ee-release.yml tarball), not here.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # attach .deb to releases
+  pages: write
+  id-token: write
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      community: ${{ steps.check.outputs.community }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        run: |
+          if [ -f backend/src/pro/pro_features.cc ]; then
+            echo "community=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "community=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-deb:
+    needs: detect
+    if: ${{ needs.detect.outputs.community == 'true' }}
+    runs-on: ubuntu-latest
+    # trixie = OpenSSL 3.5 (matches the Docker base) + dpkg-dev + toolchain.
+    container: debian:trixie-slim
+    steps:
+      - name: Install build tooling
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential cmake git ca-certificates pkg-config \
+            libsqlite3-dev libssh2-1-dev nodejs npm dpkg-dev gnupg openssl
+
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$(tr -d '[:space:]' < VERSION 2>/dev/null || echo 0.0.0)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build CE server .deb
+        run: |
+          chmod +x scripts/build-server-deb.sh
+          scripts/build-server-deb.sh "${{ steps.ver.outputs.version }}"
+
+      - name: Assemble signed APT repository
+        env:
+          APT_GPG_PRIVATE_KEY_BASE64: ${{ secrets.APT_GPG_PRIVATE_KEY_BASE64 }}
+          APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          REPO=aptrepo
+          DIST=stable; COMP=main; ARCH=amd64
+          mkdir -p "$REPO/pool/$COMP" "$REPO/dists/$DIST/$COMP/binary-$ARCH"
+          cp release/packages/linux/*.deb "$REPO/pool/$COMP/"
+          ( cd "$REPO" && dpkg-scanpackages --arch $ARCH pool/$COMP > dists/$DIST/$COMP/binary-$ARCH/Packages )
+          gzip -9c "$REPO/dists/$DIST/$COMP/binary-$ARCH/Packages" > "$REPO/dists/$DIST/$COMP/binary-$ARCH/Packages.gz"
+          cat > "$REPO/dists/$DIST/Release" <<EOF
+          Origin: EndoriumFort
+          Label: EndoriumFort Community
+          Suite: $DIST
+          Codename: $DIST
+          Architectures: $ARCH
+          Components: $COMP
+          Description: EndoriumFort Community Edition APT repository
+          EOF
+          if [ -n "${APT_GPG_PRIVATE_KEY_BASE64:-}" ]; then
+            export GNUPGHOME="$(mktemp -d)"
+            echo "$APT_GPG_PRIVATE_KEY_BASE64" | base64 -d | gpg --batch --import
+            KEYID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec:/{print $5; exit}')
+            ( cd "$REPO/dists/$DIST"
+              gpg --batch --yes --pinentry-mode loopback --passphrase "${APT_GPG_PASSPHRASE:-}" \
+                  -abs -u "$KEYID" -o Release.gpg Release
+              gpg --batch --yes --pinentry-mode loopback --passphrase "${APT_GPG_PASSPHRASE:-}" \
+                  --clearsign -u "$KEYID" -o InRelease Release )
+            gpg --armor --export "$KEYID" > "$REPO/endoriumfort-archive-keyring.asc"
+          else
+            echo "::warning::APT_GPG secrets not set — publishing UNSIGNED apt repo"
+          fi
+          cat > "$REPO/index.html" <<'EOF'
+          <!doctype html><meta charset=utf-8><title>EndoriumFort CE APT</title>
+          <h1>EndoriumFort Community — APT repository</h1>
+          <pre>
+          curl -fsSL https://NergYR.github.io/EndoriumFort-CE/endoriumfort-archive-keyring.asc \
+            | sudo gpg --dearmor -o /usr/share/keyrings/endoriumfort.gpg
+          echo "deb [signed-by=/usr/share/keyrings/endoriumfort.gpg] https://NergYR.github.io/EndoriumFort-CE stable main" \
+            | sudo tee /etc/apt/sources.list.d/endoriumfort.list
+          sudo apt-get update && sudo apt-get install endoriumfort-server
+          </pre>
+          EOF
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: endoriumfort-server-deb
+          path: release/packages/linux/*.deb
+
+      - name: Attach .deb to release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/packages/linux/*.deb
+
+      - name: Upload Pages artifact (apt repo)
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: aptrepo
+
+  publish-pages:
+    needs: [detect, build-deb]
+    if: ${{ needs.detect.outputs.community == 'true' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy apt repo to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

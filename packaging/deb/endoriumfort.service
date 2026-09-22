@@ -1,0 +1,30 @@
+[Unit]
+Description=EndoriumFort PAM Bastion (Community Edition backend)
+Documentation=https://github.com/NergYR/EndoriumFort
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=endoriumfort
+Group=endoriumfort
+WorkingDirectory=/var/lib/endoriumfort
+EnvironmentFile=-/etc/endoriumfort/endoriumfort.env
+ExecStart=/opt/endoriumfort/bin/endoriumfort_backend
+Restart=on-failure
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/endoriumfort
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

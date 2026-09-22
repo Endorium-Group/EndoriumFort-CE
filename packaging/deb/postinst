@@ -1,0 +1,55 @@
+#!/bin/sh
+set -e
+
+# System user
+if ! id endoriumfort >/dev/null 2>&1; then
+  adduser --system --group --home /var/lib/endoriumfort --shell /usr/sbin/nologin endoriumfort >/dev/null 2>&1 || \
+  useradd --system --home-dir /var/lib/endoriumfort --shell /usr/sbin/nologin endoriumfort >/dev/null 2>&1 || true
+fi
+
+# Directories
+mkdir -p /var/lib/endoriumfort /etc/endoriumfort/tls /var/www/endoriumfort-certbot
+chown -R endoriumfort:endoriumfort /var/lib/endoriumfort /etc/endoriumfort/tls 2>/dev/null || true
+
+# Default env file
+if [ ! -f /etc/endoriumfort/endoriumfort.env ]; then
+  cat > /etc/endoriumfort/endoriumfort.env <<'EOF'
+# EndoriumFort backend runtime configuration (Community Edition)
+ENDORIUMFORT_PORT=8080
+ENDORIUMFORT_TOKEN_TTL_SECONDS=3600
+# Set a real domain + AES vault key in production:
+# ENDORIUMFORT_WEBAUTHN_RP_ID=bastion.example.com
+# ENDORIUMFORT_WEBAUTHN_ORIGIN=https://bastion.example.com
+# ENDORIUMFORT_VAULT_KEY=<64 hex chars>
+EOF
+fi
+
+# Self-signed TLS cert (replace with a real one / certbot)
+if [ ! -f /etc/endoriumfort/tls/tls.crt ]; then
+  openssl req -x509 -nodes -newkey rsa:2048 \
+    -keyout /etc/endoriumfort/tls/tls.key \
+    -out /etc/endoriumfort/tls/tls.crt -days 3650 \
+    -subj "/C=FR/O=EndoriumFort/CN=localhost" >/dev/null 2>&1 || true
+  chmod 600 /etc/endoriumfort/tls/tls.key 2>/dev/null || true
+fi
+
+# Enable the nginx site
+if [ -d /etc/nginx/sites-enabled ]; then
+  ln -sf /etc/nginx/sites-available/endoriumfort.conf /etc/nginx/sites-enabled/endoriumfort.conf
+  # Avoid clashing with the stock default_server
+  rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
+  if command -v nginx >/dev/null 2>&1; then
+    nginx -t >/dev/null 2>&1 && (systemctl reload nginx 2>/dev/null || true)
+  fi
+fi
+
+# Enable + start the backend service
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl enable endoriumfort.service 2>/dev/null || true
+  systemctl restart endoriumfort.service 2>/dev/null || true
+fi
+
+echo "EndoriumFort Community Edition installed. Backend on :8080, Nginx on :80/:443."
+echo "Default admin: admin / Admin123 (forces password + MFA change on first login)."
+exit 0
