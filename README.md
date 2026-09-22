@@ -12,7 +12,7 @@
 
 # EndoriumFort
 
-**EndoriumFort** is an open-source **Privileged Access Management (PAM)** bastion system designed to secure, monitor, and audit remote access to your infrastructure. Inspired by [Wallix](https://www.wallix.com/), [Systancia Gate](https://www.systancia.com/), [Teleport](https://goteleport.com/), and [Apache Guacamole](https://guacamole.apache.org/).
+**EndoriumFort** is a source-available **Privileged Access Management (PAM)** bastion system designed to secure, monitor, and audit remote access to your infrastructure — one gateway for SSH, HTTP/HTTPS, RDP, VNC, and raw TCP, with a full audit trail.
 
 > **One gateway. Every protocol. Full audit trail.**
 
@@ -29,13 +29,20 @@ EndoriumFort is positioned as a **modern sovereign PAM platform** for self-hoste
 
 ## Highlights
 
+> **Editions** — EndoriumFort follows an [open-core model](docs/OPEN-CORE.md). This
+> repository is the **Community Edition (CE)**. Some capabilities below are
+> **Enterprise Edition (EE)** only — RDP/VNC, relays, Cluster/HA, SSO/LDAP/SCIM,
+> session recording & DNA, evidence packs, JIT access governance, Security Center,
+> and agent tunneling. In CE those premium routes are **physically absent** and
+> return `404`. See [License & Editions](#license--editions).
+
 | Feature | Description |
 |---------|-------------|
 | **Credential Vault** | Store SSH credentials securely - auto-injected on connection |
 | **Web SSH Terminal** | Full xterm.js terminal in the browser via WebSocket |
 | **SSH Snippets Studio** | Prebuilt + custom reusable SSH command snippets with one-click inject/execute |
 | **HTTP/HTTPS Proxy** | Transparent web proxy with cookie-based auth |
-| **Agent Tunnel** | Systancia-style local agent for zero-rewrite TCP tunneling |
+| **Agent Tunnel** | Local Go agent for zero-rewrite TCP tunneling _(Enterprise Edition)_ |
 | **Session Shadowing** | Real-time read-only observation of active sessions |
 | **Session Recording** | Asciinema v2 format with animated in-browser replay |
 | **2FA / TOTP** | RFC 6238 two-factor authentication with QR setup |
