@@ -23,10 +23,10 @@ if [ ! -x "$BUILD_DIR/endoriumfort_backend" ]; then
   cmake --build "$BUILD_DIR" --target endoriumfort_backend -j"$(nproc)"
 fi
 
-# 2. Build frontend
+# 2. Build frontend (Community: force the @pro stub, premium UI absent)
 if [ ! -d "$ROOT_DIR/frontend/dist" ]; then
-  echo "== Building frontend =="
-  ( cd "$ROOT_DIR/frontend" && npm ci --ignore-scripts && npm run build )
+  echo "== Building frontend (Community) =="
+  ( cd "$ROOT_DIR/frontend" && npm ci --ignore-scripts && EF_EDITION=community npm run build )
 fi
 
 # 3. Assemble package tree

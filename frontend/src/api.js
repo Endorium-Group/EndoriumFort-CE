@@ -26,15 +26,45 @@ function notifyUnauthorized() {
   } catch (_) {}
 }
 
+let lastLicenseRequiredAt = 0;
+
+// Premium routes reply 403 + `X-EndoriumFort-License-Required: 1` when the current
+// license does not entitle the feature (Crow 1.2 has no 402). Discriminate that
+// from an ordinary permission-denied 403 via the header, and surface an upsell.
+function notifyLicenseRequired(detail) {
+  const now = Date.now();
+  if (now - lastLicenseRequiredAt < 1000) return;
+  lastLicenseRequiredAt = now;
+  try {
+    window.dispatchEvent(new CustomEvent('endoriumfort:license-required', { detail }));
+  } catch (_) {}
+}
+
 async function ensureResponseOk(response, fallbackMessage) {
   if (response.status === 401) {
     notifyUnauthorized();
     throw new Error('Session expired. Please login again.');
   }
+  if (response.status === 403 && response.headers.get('X-EndoriumFort-License-Required') === '1') {
+    let detail = {};
+    try {
+      detail = await response.clone().json();
+    } catch (_) {}
+    notifyLicenseRequired(detail);
+    throw new Error(detail.feature ? `License required for ${detail.feature}` : 'License required');
+  }
   if (!response.ok) {
     const message = await response.text();
     throw new Error(message || fallbackMessage);
   }
+}
+
+export async function fetchLicenseStatus() {
+  const response = await fetch('/api/license/status', {
+    headers: withAuthHeaders()
+  });
+  await ensureResponseOk(response, 'Failed to fetch license status');
+  return response.json();
 }
 
 export function setAuthToken(token) {

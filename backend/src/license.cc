@@ -335,7 +335,11 @@ void register_license_routes(CrowApp &app, AppContext &ctx) {
         const auto st = ctx.current_license_status();
         const bool is_valid = st.state == license::LicenseState::Valid;
         crow::json::wvalue payload;
-        payload["edition"] = "enterprise";  // EE build; CE reports "community"
+#ifdef ENDORIUMFORT_PRO
+        payload["edition"] = "enterprise";  // EE build: premium modules present
+#else
+        payload["edition"] = "community";   // CE build: premium modules absent
+#endif
         payload["state"] = license::to_string(st.state);
         payload["tier"] = is_valid ? st.claims.tier : std::string("free");
         payload["kind"] = st.claims.kind;

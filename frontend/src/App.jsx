@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import QRCode from 'qrcode';
@@ -24,6 +24,7 @@ import {
   issueEphemeralCredential,
   consumeEphemeralCredential,
   previewSessionRisk,
+  fetchLicenseStatus,
   fetchResources,
   fetchSessions,
   fetchStats,
@@ -44,57 +45,28 @@ import {
   verify2FA,
   fetchAccessRequests,
   createAccessRequest,
-  createAccessPolicy,
-  createAccessProfile,
   approveAccessRequest,
   denyAccessRequest,
-  deleteAccessPolicy,
-  deleteAccessProfile,
   setContainmentMode,
-  fetchRelays,
-  fetchRelayConfig,
-  createRelayEnrollmentToken,
-  createRelayCertificate,
-  assignRelayToResource,
-  clearRelayForResource,
   fetchRelayResolution,
   beginWebAuthnRegistration,
   verifyWebAuthnRegistration,
   deleteWebAuthnCredential,
   setMfaPreference,
-  fetchAccessPolicies,
   fetchAccessProfiles,
   fetchAccessGrants,
   fetchSessionEvidencePack,
   getUserAccessProfiles,
   grantAccessProfile,
   revokeAccessProfile,
-  updateAccessPolicy,
-  updateAccessProfile,
-  fetchDirectoryProviders,
-  fetchLdapConfig,
-  fetchSsoProviders,
-  fetchSsoConfig,
-  testLdapBind,
-  fetchScimServiceProviderConfig,
-  fetchScimUsers,
-  fetchScimGroups,
-  patchScimUser,
-  fetchItsmProviders,
-  verifyItsmTicket,
-  fetchSiemChannels,
-  forwardSiemEvent,
-  fetchClusterStatus,
-  fetchClusterConfig,
-  removeClusterPeer
 } from './api.js';
 import { describeAccessOutcome, describeResourcePolicy, normalizeRiskLevel } from './accessPolicy.js';
 import AdminSectionNav from './components/admin/AdminSectionNav.jsx';
-import VncViewerModal from './components/sessions/VncViewerModal.jsx';
 import { EmptyState, InlineAlert, MetricTile, SectionCard, StatusBadge } from './components/ui/primitives.jsx';
 import { useI18n } from './i18n.jsx';
-
-const RecordingsPanel = lazy(() => import('./components/operator/RecordingsPanel.jsx'));
+// Premium UI comes from the `@pro` overlay: real components in the EE build
+// (src/pro/), no-op stubs in the CE build (src/pro-stub/). See vite.config.js.
+import { RecordingsPanel, VncViewerModal, EnterpriseIamPanel, RelayControlPanel, JitGovernancePanel } from '@pro';
 
 const normalizeRole = (role) => {
   const value = String(role || '').toLowerCase();
@@ -416,88 +388,14 @@ export default function App() {
   const [userAccessProfiles, setUserAccessProfiles] = useState([]);
   const [loadingAccessScope, setLoadingAccessScope] = useState(false);
   const [accessScopeError, setAccessScopeError] = useState('');
-  const [accessPolicies, setAccessPolicies] = useState([]);
-  const [loadingAccessPolicies, setLoadingAccessPolicies] = useState(false);
-  const [accessPolicyError, setAccessPolicyError] = useState('');
-  const [editingAccessPolicyId, setEditingAccessPolicyId] = useState(null);
-  const [accessPolicyForm, setAccessPolicyForm] = useState({
-    name: '',
-    description: '',
-    identityPattern: '',
-    groupName: '',
-    role: '',
-    resourceTagsCsv: '',
-    riskLevel: 'any',
-    ticketRequired: false,
-    requireJustification: false,
-    approvalMode: 'inherit',
-    mfaRequirement: 'any',
-    timeWindow: 'any',
-    maxDurationSeconds: '3600',
-    routingConstraint: 'any',
-    enabled: true
-  });
+  // Access profiles are shared: JIT governance (@pro) does CRUD, and the Users
+  // access-scope editor consumes the list to assign profiles to users.
   const [accessProfiles, setAccessProfiles] = useState([]);
   const [loadingAccessProfiles, setLoadingAccessProfiles] = useState(false);
   const [accessProfileError, setAccessProfileError] = useState('');
-  const [editingAccessProfileId, setEditingAccessProfileId] = useState(null);
-  const [accessProfileForm, setAccessProfileForm] = useState({
-    name: '',
-    description: '',
-    resourceTagsCsv: '',
-    resourceIdsCsv: '',
-    policyId: '0'
-  });
   const [accessGrants, setAccessGrants] = useState([]);
   const [loadingAccessGrants, setLoadingAccessGrants] = useState(false);
   const [accessGrantError, setAccessGrantError] = useState('');
-  const [enterpriseLoading, setEnterpriseLoading] = useState(false);
-  const [enterpriseError, setEnterpriseError] = useState('');
-  const [enterpriseDirectoryProviders, setEnterpriseDirectoryProviders] = useState([]);
-  const [enterpriseLdapConfig, setEnterpriseLdapConfig] = useState(null);
-  const [enterpriseLdapTestUsername, setEnterpriseLdapTestUsername] = useState('');
-  const [enterpriseLdapTestPassword, setEnterpriseLdapTestPassword] = useState('');
-  const [enterpriseLdapTesting, setEnterpriseLdapTesting] = useState(false);
-  const [enterpriseLdapTestResult, setEnterpriseLdapTestResult] = useState(null);
-  const [enterpriseSsoProviders, setEnterpriseSsoProviders] = useState([]);
-  const [enterpriseSsoProvider, setEnterpriseSsoProvider] = useState('');
-  const [enterpriseSsoConfig, setEnterpriseSsoConfig] = useState(null);
-  const [enterpriseScimConfig, setEnterpriseScimConfig] = useState(null);
-  const [enterpriseScimUsers, setEnterpriseScimUsers] = useState([]);
-  const [enterpriseScimGroups, setEnterpriseScimGroups] = useState([]);
-  const [enterpriseScimMeta, setEnterpriseScimMeta] = useState({
-    users: { totalResults: 0, startIndex: 1, itemsPerPage: 0 },
-    groups: { totalResults: 0, startIndex: 1, itemsPerPage: 0 }
-  });
-  const [enterpriseScimFilter, setEnterpriseScimFilter] = useState('');
-  const [enterpriseScimStartIndex, setEnterpriseScimStartIndex] = useState('1');
-  const [enterpriseScimCount, setEnterpriseScimCount] = useState('20');
-  const [enterpriseScimLoading, setEnterpriseScimLoading] = useState(false);
-  const [enterpriseScimError, setEnterpriseScimError] = useState('');
-  const [enterpriseScimPatchId, setEnterpriseScimPatchId] = useState('');
-  const [enterpriseScimPatchUsername, setEnterpriseScimPatchUsername] = useState('');
-  const [enterpriseScimPatchRole, setEnterpriseScimPatchRole] = useState('');
-  const [enterpriseScimPatchActive, setEnterpriseScimPatchActive] = useState('unchanged');
-  const [enterpriseScimPatchLoading, setEnterpriseScimPatchLoading] = useState(false);
-  const [enterpriseScimPatchResult, setEnterpriseScimPatchResult] = useState('');
-  const [enterpriseItsmProviders, setEnterpriseItsmProviders] = useState([]);
-  const [enterpriseItsmProvider, setEnterpriseItsmProvider] = useState('servicenow');
-  const [enterpriseItsmTicketId, setEnterpriseItsmTicketId] = useState('');
-  const [enterpriseItsmFailMode, setEnterpriseItsmFailMode] = useState('fail-closed');
-  const [enterpriseItsmUnavailable, setEnterpriseItsmUnavailable] = useState(false);
-  const [enterpriseItsmLoading, setEnterpriseItsmLoading] = useState(false);
-  const [enterpriseItsmResult, setEnterpriseItsmResult] = useState(null);
-  const [enterpriseSiemChannels, setEnterpriseSiemChannels] = useState([]);
-  const [enterpriseSiemChannel, setEnterpriseSiemChannel] = useState('json_webhook');
-  const [enterpriseSiemEventType, setEnterpriseSiemEventType] = useState('security.event.test');
-  const [enterpriseSiemDeliveryMode, setEnterpriseSiemDeliveryMode] = useState('fail-open');
-  const [enterpriseSiemSimulateFailure, setEnterpriseSiemSimulateFailure] = useState(false);
-  const [enterpriseSiemLoading, setEnterpriseSiemLoading] = useState(false);
-  const [enterpriseSiemResult, setEnterpriseSiemResult] = useState(null);
-  const [enterpriseClusterStatus, setEnterpriseClusterStatus] = useState(null);
-  const [enterpriseClusterConfig, setEnterpriseClusterConfig] = useState(null);
-  const [enterpriseClusterPeerBusy, setEnterpriseClusterPeerBusy] = useState('');
-  const [enterpriseClusterPeerMessage, setEnterpriseClusterPeerMessage] = useState('');
   const [sessionEvidencePack, setSessionEvidencePack] = useState(null);
   const [sessionEvidenceLoading, setSessionEvidenceLoading] = useState(false);
   const [sessionEvidenceError, setSessionEvidenceError] = useState('');
@@ -506,6 +404,10 @@ export default function App() {
   );
   const [adminSection, setAdminSection] = useState('resources');
   const [mainTab, setMainTab] = useState('sessions');
+  // Licensing / editions (open-core freemium gating)
+  const [licenseStatus, setLicenseStatus] = useState(null);
+  const [licenseUpsell, setLicenseUpsell] = useState(null); // {feature, requiredTier} | null
+  const [licenseBannerDismissed, setLicenseBannerDismissed] = useState(false);
   const [inlineWebResource, setInlineWebResource] = useState(null);
   const [vncViewerSession, setVncViewerSession] = useState(null);
   const [accessPromptResource, setAccessPromptResource] = useState(null);
@@ -542,31 +444,6 @@ export default function App() {
   const [accessRequests, setAccessRequests] = useState([]);
   const [loadingAccessRequests, setLoadingAccessRequests] = useState(false);
   const [accessRequestError, setAccessRequestError] = useState('');
-  const [relays, setRelays] = useState([]);
-  const [loadingRelays, setLoadingRelays] = useState(false);
-  const [relayError, setRelayError] = useState('');
-  const [relayConfig, setRelayConfig] = useState({
-    enrollmentEnabled: false,
-    certificateRequired: true,
-    certificateTtlSeconds: 2592000,
-    enrollmentTokenTtlSeconds: 600,
-    tokenTtlSeconds: 86400,
-    heartbeatStaleSeconds: 90
-  });
-  const [relayCertificate, setRelayCertificate] = useState('');
-  const [relayCertificateId, setRelayCertificateId] = useState('');
-  const [relayCertificateExpiresAt, setRelayCertificateExpiresAt] = useState('');
-  const [issuingRelayCertificate, setIssuingRelayCertificate] = useState(false);
-  const [relayCertificateCopyStatus, setRelayCertificateCopyStatus] = useState('');
-  const [relayEnrollmentToken, setRelayEnrollmentToken] = useState('');
-  const [relayEnrollmentTokenExpiresAt, setRelayEnrollmentTokenExpiresAt] = useState('');
-  const [issuingRelayEnrollmentToken, setIssuingRelayEnrollmentToken] = useState(false);
-  const [relayEnrollmentCopyStatus, setRelayEnrollmentCopyStatus] = useState('');
-  const [showRelayManualBootstrap, setShowRelayManualBootstrap] = useState(false);
-  const [relayBindings, setRelayBindings] = useState({});
-  const [sessionRelayHints, setSessionRelayHints] = useState({});
-  const [relayAssignBusyResourceId, setRelayAssignBusyResourceId] = useState(0);
-  const [relayAssignOnlineOnly, setRelayAssignOnlineOnly] = useState(true);
   // 2FA state
   const [twoFARequired, setTwoFARequired] = useState(false);
   const [availableMfaMethods, setAvailableMfaMethods] = useState([]);
@@ -675,6 +552,21 @@ export default function App() {
   const liveIncidentCriticalTimestampsRef = useRef([]);
   const liveIncidentCooldownUntilRef = useRef(0);
   const watchlistStatusRef = useRef({});
+
+  // ── Licensing / editions ────────────────────────────────────────────────
+  const licenseEdition = licenseStatus?.edition || 'community';
+  const licenseState = licenseStatus?.state || 'none';
+  const licenseValid = licenseState === 'valid';
+  const activeTier = licenseValid ? (licenseStatus?.tier || 'free') : 'free';
+  const TIER_RANK = { free: 0, pro: 1, enterprise: 2 };
+  // A premium capability is available only in the Enterprise edition (the CE build
+  // physically lacks the routes) AND when the loaded license reaches its tier.
+  const premiumUnlocked = (requiredTier) =>
+    licenseEdition === 'enterprise' &&
+    (TIER_RANK[activeTier] || 0) >= (TIER_RANK[requiredTier] || 0);
+  const openUpsell = (feature, requiredTier) =>
+    setLicenseUpsell({ feature: feature || '', requiredTier: requiredTier || 'pro' });
+  const licenseDaysRemaining = Number(licenseStatus?.daysRemaining);
 
   const canManagePlatform = hasCapability(auth.role, auth.permissions, 'manageResources');
   const canViewAudit = hasCapability(auth.role, auth.permissions, 'viewAudit');
@@ -799,12 +691,24 @@ export default function App() {
         title: t('app.replayVault'),
         shortcut: 'Alt+3',
         hint: t('app.replayRecordedSsh'),
+        requiredTier: 'pro',
+        locked: !(licenseEdition === 'enterprise' && (TIER_RANK[activeTier] || 0) >= TIER_RANK.pro),
         hidden: !canViewRecordings
       }
     ];
 
     return entries.filter((entry) => !entry.hidden);
-  }, [canViewRecordings, t]);
+  }, [activeTier, canViewRecordings, licenseEdition, t]);
+
+  // Selecting a locked premium tab opens the upsell instead of a dead panel.
+  const selectMainTab = (id) => {
+    const entry = missionBoardEntries.find((item) => item.id === id);
+    if (entry?.locked) {
+      openUpsell(entry.title, entry.requiredTier);
+      return;
+    }
+    setMainTab(id);
+  };
 
   const pendingAccessApprovals = useMemo(() => {
     return accessRequests
@@ -817,18 +721,14 @@ export default function App() {
       .slice(0, 6);
   }, [accessRequests]);
 
-  const relayInventorySummary = useMemo(() => {
-    const online = relays.filter((item) => String(item.status).toLowerCase() === 'online').length;
-    return {
-      total: relays.length,
-      online,
-      offline: Math.max(0, relays.length - online)
-    };
-  }, [relays]);
 
   const adminSections = useMemo(() => {
     const adminsWithoutMfa = stats?.users?.adminsWithoutMfa || 0;
     const pendingRequests = accessRequests.filter((item) => item.status === 'pending').length;
+    // Premium sections are locked unless the Enterprise edition + license entitle them.
+    const lockOf = (requiredTier) =>
+      !(licenseEdition === 'enterprise' &&
+        (TIER_RANK[activeTier] || 0) >= (TIER_RANK[requiredTier] || 0));
     return [
       {
         id: 'resources',
@@ -848,46 +748,57 @@ export default function App() {
         id: 'routing',
         label: t('admin.routing'),
         hint: t('admin.relaysAndApprovals'),
-        badge: pendingRequests ? t('admin.pendingCount', { count: pendingRequests }) : t('admin.onlineCount', { count: relayInventorySummary.online }),
-        badgeTone: pendingRequests ? 'active' : 'ok'
+        requiredTier: 'pro',
+        locked: lockOf('pro'),
+        badge: lockOf('pro') ? '🔒' : (pendingRequests ? t('admin.pendingCount', { count: pendingRequests }) : t('admin.healthy')),
+        badgeTone: lockOf('pro') ? 'locked' : (pendingRequests ? 'active' : 'ok')
       },
       {
         id: 'jit',
         label: 'JIT',
         hint: 'Policies, profiles and grants',
-        badge: String(accessGrants.length),
-        badgeTone: loadingAccessGrants ? 'loading' : 'ok'
+        requiredTier: 'pro',
+        locked: lockOf('pro'),
+        badge: lockOf('pro') ? '🔒' : String(accessGrants.length),
+        badgeTone: lockOf('pro') ? 'locked' : (loadingAccessGrants ? 'loading' : 'ok')
       },
       {
         id: 'enterprise',
         label: 'Enterprise IAM',
         hint: 'LDAP/AD, SSO, SCIM, ITSM, SIEM',
-        
-        badge: String(
-          enterpriseDirectoryProviders.length +
-          enterpriseSsoProviders.length +
-          enterpriseItsmProviders.length +
-          enterpriseSiemChannels.length +
-          (Number(enterpriseClusterStatus?.summary?.nodesTotal) || 0)
-        ),
-        badgeTone: enterpriseLoading ? 'loading' : 'ok'
+        requiredTier: 'enterprise',
+        locked: lockOf('enterprise'),
+        badge: lockOf('enterprise') ? '🔒' : 'SSO·LDAP·SCIM',
+        badgeTone: lockOf('enterprise') ? 'locked' : 'ok'
       },
       {
         id: 'security',
         label: t('admin.security'),
         hint: t('admin.mfaAndPosture'),
+        // Core section: own-MFA management (TOTP/passkeys) + security posture from
+        // /api/stats. The premium "Security Center" (live incidents/containment via
+        // /api/security/*) is the app-wide banner/toasts, not this admin tab.
         badge: adminsWithoutMfa ? t('admin.riskCount', { count: adminsWithoutMfa }) : t('admin.healthy'),
         badgeTone: adminsWithoutMfa ? 'loading' : 'ok'
       }
     ];
-  }, [accessGrants.length, accessRequests, enterpriseClusterStatus, enterpriseDirectoryProviders.length, enterpriseItsmProviders.length, enterpriseLoading, enterpriseSiemChannels.length, enterpriseSsoProviders.length, loadingAccessGrants, loadingResources, loadingUsers, relayInventorySummary.online, resources.length, stats?.users?.adminsWithoutMfa, t, users.length]);
+  }, [accessGrants.length, accessRequests, activeTier, licenseEdition, loadingAccessGrants, loadingResources, loadingUsers, resources.length, stats?.users?.adminsWithoutMfa, t, users.length]);
+
+  // Selecting a locked premium section opens the upsell instead of a broken panel.
+  const selectAdminSection = (id) => {
+    const section = adminSections.find((s) => s.id === id);
+    if (section?.locked) {
+      openUpsell(section.label, section.requiredTier);
+      return;
+    }
+    setAdminSection(id);
+  };
 
   const activeAdminSection = useMemo(
     () => adminSections.find((section) => section.id === adminSection) || null,
     [adminSection, adminSections]
   );
 
-  const isRelayOnline = (relay) => String(relay?.status || '').toLowerCase() === 'online';
 
   const navigate = (path) => {
     if (window.location.pathname !== path) {
@@ -927,6 +838,32 @@ export default function App() {
     window.addEventListener('endoriumfort:unauthorized', onUnauthorized);
     return () => window.removeEventListener('endoriumfort:unauthorized', onUnauthorized);
   }, [t]);
+
+  // License status: load once authenticated; refresh the banner/gating state.
+  useEffect(() => {
+    if (!auth.token) {
+      setLicenseStatus(null);
+      return;
+    }
+    let active = true;
+    fetchLicenseStatus()
+      .then((status) => { if (active) setLicenseStatus(status); })
+      .catch(() => { if (active) setLicenseStatus(null); });
+    return () => { active = false; };
+  }, [auth.token]);
+
+  // Premium routes reply 403 + license-required header → open the upsell modal.
+  useEffect(() => {
+    const onLicenseRequired = (event) => {
+      const detail = event?.detail || {};
+      setLicenseUpsell({
+        feature: detail.feature || '',
+        requiredTier: detail.requiredTier || 'pro'
+      });
+    };
+    window.addEventListener('endoriumfort:license-required', onLicenseRequired);
+    return () => window.removeEventListener('endoriumfort:license-required', onLicenseRequired);
+  }, []);
 
   // Dark mode effect
   useEffect(() => {
@@ -1105,33 +1042,8 @@ export default function App() {
     };
   }, [auth.token, canManagePlatform]);
 
-  useEffect(() => {
-    if (!auth.token || !canManagePlatform) {
-      setAccessPolicies([]);
-      setLoadingAccessPolicies(false);
-      return;
-    }
-    let active = true;
-    setLoadingAccessPolicies(true);
-    fetchAccessPolicies()
-      .then((data) => {
-        if (!active) return;
-        setAccessPolicies(Array.isArray(data.items) ? data.items : []);
-        setAccessPolicyError('');
-      })
-      .catch((error) => {
-        if (!active) return;
-        setAccessPolicyError(error.message || 'Unable to load access policies');
-      })
-      .finally(() => {
-        if (!active) return;
-        setLoadingAccessPolicies(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [auth.token, canManagePlatform]);
 
+  // Shared access-profile list loader (used by JIT @pro CRUD + Users editor).
   useEffect(() => {
     if (!auth.token || !canManagePlatform) {
       setAccessProfiles([]);
@@ -1186,47 +1098,6 @@ export default function App() {
     };
   }, [auth.token]);
 
-  useEffect(() => {
-    if (!auth.token || !canManagePlatform) {
-      setRelays([]);
-      setRelayError('');
-      setLoadingRelays(false);
-      return;
-    }
-    let active = true;
-    const load = async () => {
-      setLoadingRelays(true);
-      try {
-        const [fleetData, configData] = await Promise.all([
-          fetchRelays(),
-          fetchRelayConfig()
-        ]);
-        if (!active) return;
-        const items = Array.isArray(fleetData?.items) ? fleetData.items : [];
-        setRelays(items);
-        setRelayConfig({
-          enrollmentEnabled: !!configData?.enrollmentEnabled,
-          certificateRequired: configData?.certificateRequired !== false,
-          certificateTtlSeconds: Number(configData?.certificateTtlSeconds) || 2592000,
-          enrollmentTokenTtlSeconds: Number(configData?.enrollmentTokenTtlSeconds) || 600,
-          tokenTtlSeconds: Number(configData?.tokenTtlSeconds) || 86400,
-          heartbeatStaleSeconds: Number(configData?.heartbeatStaleSeconds) || 90
-        });
-        setRelayError('');
-      } catch (error) {
-        if (!active) return;
-        setRelayError(error.message || 'Unable to load relay fabric');
-      } finally {
-        if (active) setLoadingRelays(false);
-      }
-    };
-    load();
-    const interval = window.setInterval(load, 15000);
-    return () => {
-      active = false;
-      window.clearInterval(interval);
-    };
-  }, [auth.token, canManagePlatform]);
 
   // Fetch dashboard stats periodically
   useEffect(() => {
@@ -1717,18 +1588,6 @@ export default function App() {
     setUserForm((prev) => ({ ...prev, [name]: type === 'checkbox' ? checked : value }));
   };
 
-  const onAccessPolicyFieldChange = (event) => {
-    const { name, value, type, checked } = event.target;
-    setAccessPolicyForm((prev) => ({
-      ...prev,
-      [name]: type === 'checkbox' ? checked : value
-    }));
-  };
-
-  const onAccessProfileFieldChange = (event) => {
-    const { name, value } = event.target;
-    setAccessProfileForm((prev) => ({ ...prev, [name]: value }));
-  };
 
   const onLogin = async (event) => {
     event.preventDefault();
@@ -1893,8 +1752,6 @@ export default function App() {
       const requests = [fetchSessions(), fetchResources(), fetchStats()];
       if (canManagePlatform) {
         requests.push(fetchUsers());
-        requests.push(fetchRelays());
-        requests.push(fetchRelayConfig());
       }
       if (canViewAudit) {
         requests.push(fetchAudit());
@@ -1907,8 +1764,6 @@ export default function App() {
         resourceData,
         statsData,
         maybeUsers,
-        maybeRelays,
-        maybeRelayConfig,
         maybeAudit,
         maybeContainment,
         maybeIncident
@@ -1919,15 +1774,6 @@ export default function App() {
       setStats(statsData || null);
       if (canManagePlatform) {
         setUsers(Array.isArray(maybeUsers?.items) ? maybeUsers.items : []);
-        setRelays(Array.isArray(maybeRelays?.items) ? maybeRelays.items : []);
-        setRelayConfig({
-          enrollmentEnabled: !!maybeRelayConfig?.enrollmentEnabled,
-          certificateRequired: maybeRelayConfig?.certificateRequired !== false,
-          certificateTtlSeconds: Number(maybeRelayConfig?.certificateTtlSeconds) || 2592000,
-          enrollmentTokenTtlSeconds: Number(maybeRelayConfig?.enrollmentTokenTtlSeconds) || 600,
-          tokenTtlSeconds: Number(maybeRelayConfig?.tokenTtlSeconds) || 86400,
-          heartbeatStaleSeconds: Number(maybeRelayConfig?.heartbeatStaleSeconds) || 90
-        });
       }
       if (canViewAudit) {
         const auditData = canManagePlatform ? maybeAudit : maybeUsers;
@@ -1955,11 +1801,7 @@ export default function App() {
       } catch (_) {}
       if (canManagePlatform) {
         try {
-          const [policyData, profileData] = await Promise.all([
-            fetchAccessPolicies(),
-            fetchAccessProfiles()
-          ]);
-          setAccessPolicies(Array.isArray(policyData?.items) ? policyData.items : []);
+          const profileData = await fetchAccessProfiles();
           setAccessProfiles(Array.isArray(profileData?.items) ? profileData.items : []);
         } catch (_) {}
       }
@@ -1974,341 +1816,6 @@ export default function App() {
     }
   };
 
-  const loadEnterpriseFoundations = async () => {
-    setEnterpriseLoading(true);
-    setEnterpriseError('');
-    setEnterpriseClusterPeerMessage('');
-    try {
-      const [
-        directoryData,
-        ldapConfigData,
-        providersData,
-        configData,
-        scimConfigData,
-        itsmData,
-        siemData,
-        clusterStatusData,
-        clusterConfigData
-      ] = await Promise.all([
-        fetchDirectoryProviders(),
-        fetchLdapConfig(),
-        fetchSsoProviders(),
-        fetchSsoConfig(),
-        fetchScimServiceProviderConfig(),
-        fetchItsmProviders(),
-        fetchSiemChannels(),
-        fetchClusterStatus(),
-        fetchClusterConfig()
-      ]);
-
-      const nextDirectoryProviders = Array.isArray(directoryData?.items) ? directoryData.items : [];
-      const nextSsoProviders = Array.isArray(providersData?.items) ? providersData.items : [];
-      const nextItsmProviders = Array.isArray(itsmData?.items) ? itsmData.items : [];
-      const nextSiemChannels = Array.isArray(siemData?.items) ? siemData.items : [];
-
-      setEnterpriseDirectoryProviders(nextDirectoryProviders);
-      setEnterpriseLdapConfig(ldapConfigData?.config || null);
-      setEnterpriseSsoProviders(nextSsoProviders);
-      setEnterpriseSsoConfig(configData || null);
-      setEnterpriseScimConfig(scimConfigData || null);
-      setEnterpriseItsmProviders(nextItsmProviders);
-      setEnterpriseSiemChannels(nextSiemChannels);
-      setEnterpriseClusterStatus(clusterStatusData || null);
-      setEnterpriseClusterConfig(clusterConfigData || null);
-
-      const defaultSsoProvider = String(configData?.defaultProvider || nextSsoProviders[0]?.id || '');
-      setEnterpriseSsoProvider((prev) =>
-        prev && nextSsoProviders.some((item) => String(item.id) === prev)
-          ? prev
-          : defaultSsoProvider
-      );
-
-      const defaultItsmProvider = String(nextItsmProviders[0]?.id || 'servicenow');
-      setEnterpriseItsmProvider((prev) =>
-        nextItsmProviders.some((item) => String(item.id) === prev)
-          ? prev
-          : defaultItsmProvider
-      );
-
-      const defaultSiemChannel = String(nextSiemChannels[0]?.id || 'json_webhook');
-      setEnterpriseSiemChannel((prev) =>
-        nextSiemChannels.some((item) => String(item.id) === prev)
-          ? prev
-          : defaultSiemChannel
-      );
-
-      const deliveryMode = String(siemData?.defaultDeliveryMode || '').toLowerCase();
-      if (deliveryMode === 'fail-open' || deliveryMode === 'fail-closed') {
-        setEnterpriseSiemDeliveryMode(deliveryMode);
-      }
-      setEnterpriseError('');
-    } catch (error) {
-      setEnterpriseError(error.message || (locale === 'fr'
-        ? 'Impossible de charger les fondations Enterprise IAM.'
-        : 'Unable to load enterprise IAM foundations.'));
-    } finally {
-      setEnterpriseLoading(false);
-    }
-  };
-
-  const loadEnterpriseScimDirectory = async (override = {}) => {
-    const startIndex = clampInteger(override.startIndex ?? enterpriseScimStartIndex, 1, 1, 1000000);
-    const count = clampInteger(override.count ?? enterpriseScimCount, 20, 0, 200);
-    const filter = String(override.filter ?? enterpriseScimFilter).trim();
-    const params = { startIndex, count };
-    if (filter) {
-      params.filter = filter;
-    }
-
-    setEnterpriseScimLoading(true);
-    setEnterpriseScimError('');
-    try {
-      const [usersData, groupsData] = await Promise.all([
-        fetchScimUsers(params),
-        fetchScimGroups(params)
-      ]);
-      setEnterpriseScimUsers(Array.isArray(usersData?.Resources) ? usersData.Resources : []);
-      setEnterpriseScimGroups(Array.isArray(groupsData?.Resources) ? groupsData.Resources : []);
-      setEnterpriseScimMeta({
-        users: {
-          totalResults: Number(usersData?.totalResults) || 0,
-          startIndex: Number(usersData?.startIndex) || startIndex,
-          itemsPerPage: Number(usersData?.itemsPerPage) || 0
-        },
-        groups: {
-          totalResults: Number(groupsData?.totalResults) || 0,
-          startIndex: Number(groupsData?.startIndex) || startIndex,
-          itemsPerPage: Number(groupsData?.itemsPerPage) || 0
-        }
-      });
-      setEnterpriseScimStartIndex(String(startIndex));
-      setEnterpriseScimCount(String(count));
-    } catch (error) {
-      setEnterpriseScimError(error.message || (locale === 'fr'
-        ? 'Impossible d’interroger le répertoire SCIM.'
-        : 'Unable to query SCIM directory.'));
-    } finally {
-      setEnterpriseScimLoading(false);
-    }
-  };
-
-  const refreshEnterpriseWorkspace = async () => {
-    await loadEnterpriseFoundations();
-    await loadEnterpriseScimDirectory();
-  };
-
-  const onStartEnterpriseSso = () => {
-    const selectedProvider = String(enterpriseSsoProvider || enterpriseSsoConfig?.defaultProvider || '');
-    startOidcSso({
-      provider: selectedProvider || undefined,
-      postLoginRedirect: '/'
-    });
-  };
-
-  const onSubmitEnterpriseLdapTest = async (event) => {
-    event.preventDefault();
-    const username = String(enterpriseLdapTestUsername || '').trim();
-    const password = String(enterpriseLdapTestPassword || '');
-    if (!username || !password) {
-      setEnterpriseLdapTestResult({
-        error: true,
-        message: locale === 'fr'
-          ? 'Renseignez un utilisateur et un mot de passe LDAP.'
-          : 'Provide LDAP username and password.'
-      });
-      return;
-    }
-
-    setEnterpriseLdapTesting(true);
-    try {
-      const payload = await testLdapBind({ username, password });
-      setEnterpriseLdapTestResult(payload || null);
-    } catch (error) {
-      setEnterpriseLdapTestResult({
-        error: true,
-        message: error.message || (locale === 'fr'
-          ? 'Le test de bind LDAP a échoué.'
-          : 'LDAP bind test failed.')
-      });
-    } finally {
-      setEnterpriseLdapTesting(false);
-    }
-  };
-
-  const onSubmitEnterpriseScimFilter = async (event) => {
-    event.preventDefault();
-    await loadEnterpriseScimDirectory();
-  };
-
-  const onSubmitEnterpriseScimPatch = async (event) => {
-    event.preventDefault();
-    const target = String(enterpriseScimPatchId || '').trim();
-    if (!target) {
-      setEnterpriseScimPatchResult(locale === 'fr'
-        ? 'Renseignez un identifiant SCIM (ID ou userName).'
-        : 'Provide a SCIM target (id or userName).');
-      return;
-    }
-
-    const operations = [];
-    const nextUserName = String(enterpriseScimPatchUsername || '').trim();
-    const nextRole = String(enterpriseScimPatchRole || '').trim();
-    if (nextUserName) {
-      operations.push({ op: 'replace', path: 'userName', value: nextUserName });
-    }
-    if (nextRole) {
-      operations.push({ op: 'replace', path: 'role', value: nextRole });
-    }
-    if (enterpriseScimPatchActive === 'active') {
-      operations.push({ op: 'replace', path: 'active', value: true });
-    }
-    if (enterpriseScimPatchActive === 'inactive') {
-      operations.push({ op: 'replace', path: 'active', value: false });
-    }
-
-    if (!operations.length) {
-      setEnterpriseScimPatchResult(locale === 'fr'
-        ? 'Aucune opération PATCH à appliquer.'
-        : 'No PATCH operation to apply.');
-      return;
-    }
-
-    setEnterpriseScimPatchLoading(true);
-    try {
-      const response = await patchScimUser(target, operations);
-      if (response && response.userName) {
-        setEnterpriseScimPatchResult(locale === 'fr'
-          ? `Utilisateur SCIM mis à jour: ${response.userName}`
-          : `SCIM user updated: ${response.userName}`);
-      } else {
-        setEnterpriseScimPatchResult(locale === 'fr'
-          ? 'Patch SCIM appliqué avec succès.'
-          : 'SCIM patch applied successfully.');
-      }
-      await loadEnterpriseScimDirectory();
-    } catch (error) {
-      setEnterpriseScimPatchResult(error.message || (locale === 'fr'
-        ? 'Le patch SCIM a échoué.'
-        : 'SCIM patch failed.'));
-    } finally {
-      setEnterpriseScimPatchLoading(false);
-    }
-  };
-
-  const onSubmitEnterpriseItsmVerification = async (event) => {
-    event.preventDefault();
-    const ticketId = String(enterpriseItsmTicketId || '').trim();
-    if (!ticketId) {
-      setEnterpriseItsmResult({
-        error: true,
-        message: locale === 'fr' ? 'Renseignez un ticket ITSM.' : 'Provide an ITSM ticket id.'
-      });
-      return;
-    }
-    setEnterpriseItsmLoading(true);
-    try {
-      const payload = await verifyItsmTicket({
-        provider: enterpriseItsmProvider,
-        ticketId,
-        failMode: enterpriseItsmFailMode,
-        simulateUnavailable: !!enterpriseItsmUnavailable
-      });
-      setEnterpriseItsmResult(payload || null);
-    } catch (error) {
-      setEnterpriseItsmResult({
-        error: true,
-        message: error.message || (locale === 'fr' ? 'Vérification ITSM impossible.' : 'Unable to verify ITSM ticket.')
-      });
-    } finally {
-      setEnterpriseItsmLoading(false);
-    }
-  };
-
-  const onSubmitEnterpriseSiemDispatch = async (event) => {
-    event.preventDefault();
-    const eventType = String(enterpriseSiemEventType || '').trim();
-    if (!eventType) {
-      setEnterpriseSiemResult({
-        error: true,
-        message: locale === 'fr' ? 'Renseignez un type d’événement SIEM.' : 'Provide a SIEM event type.'
-      });
-      return;
-    }
-    setEnterpriseSiemLoading(true);
-    try {
-      const payload = await forwardSiemEvent({
-        channel: enterpriseSiemChannel,
-        eventType,
-        deliveryMode: enterpriseSiemDeliveryMode,
-        simulateFailure: !!enterpriseSiemSimulateFailure
-      });
-      setEnterpriseSiemResult(payload || null);
-    } catch (error) {
-      setEnterpriseSiemResult({
-        error: true,
-        message: error.message || (locale === 'fr' ? 'Forward SIEM impossible.' : 'Unable to forward SIEM event.')
-      });
-    } finally {
-      setEnterpriseSiemLoading(false);
-    }
-  };
-
-  const onRemoveEnterpriseClusterPeer = async (nodeId) => {
-    const normalized = String(nodeId || '').trim();
-    if (!normalized) return;
-    setEnterpriseClusterPeerBusy(normalized);
-    setEnterpriseClusterPeerMessage('');
-    try {
-      await removeClusterPeer(normalized);
-      setEnterpriseClusterPeerMessage(locale === 'fr'
-        ? `Noeud retire: ${normalized}`
-        : `Peer removed: ${normalized}`);
-      await loadEnterpriseFoundations();
-    } catch (error) {
-      setEnterpriseClusterPeerMessage(error.message || (locale === 'fr'
-        ? 'Suppression du noeud impossible.'
-        : 'Unable to remove cluster peer.'));
-    } finally {
-      setEnterpriseClusterPeerBusy('');
-    }
-  };
-
-  useEffect(() => {
-    if (!auth.token || !canManagePlatform) {
-      setEnterpriseLoading(false);
-      setEnterpriseError('');
-      setEnterpriseDirectoryProviders([]);
-      setEnterpriseLdapConfig(null);
-      setEnterpriseLdapTestUsername('');
-      setEnterpriseLdapTestPassword('');
-      setEnterpriseLdapTestResult(null);
-      setEnterpriseSsoProviders([]);
-      setEnterpriseSsoProvider('');
-      setEnterpriseSsoConfig(null);
-      setEnterpriseScimConfig(null);
-      setEnterpriseScimUsers([]);
-      setEnterpriseScimGroups([]);
-      setEnterpriseScimMeta({
-        users: { totalResults: 0, startIndex: 1, itemsPerPage: 0 },
-        groups: { totalResults: 0, startIndex: 1, itemsPerPage: 0 }
-      });
-      setEnterpriseScimError('');
-      setEnterpriseScimPatchResult('');
-      setEnterpriseItsmProviders([]);
-      setEnterpriseItsmResult(null);
-      setEnterpriseSiemChannels([]);
-      setEnterpriseSiemResult(null);
-      setEnterpriseClusterStatus(null);
-      setEnterpriseClusterConfig(null);
-      setEnterpriseClusterPeerBusy('');
-      setEnterpriseClusterPeerMessage('');
-      return;
-    }
-    if (adminSection !== 'enterprise') {
-      return;
-    }
-    refreshEnterpriseWorkspace().catch(() => {});
-  }, [adminSection, auth.token, canManagePlatform]);
 
   const onTerminate = async (sessionId) => {
     try {
@@ -3287,153 +2794,6 @@ export default function App() {
     }
   };
 
-  const resetAccessPolicyForm = () => {
-    setEditingAccessPolicyId(null);
-    setAccessPolicyForm({
-      name: '',
-      description: '',
-      identityPattern: '',
-      groupName: '',
-      role: '',
-      resourceTagsCsv: '',
-      riskLevel: 'any',
-      ticketRequired: false,
-      requireJustification: false,
-      approvalMode: 'inherit',
-      mfaRequirement: 'any',
-      timeWindow: 'any',
-      maxDurationSeconds: '3600',
-      routingConstraint: 'any',
-      enabled: true
-    });
-  };
-
-  const onSubmitAccessPolicy = async (event) => {
-    event.preventDefault();
-    const payload = {
-      name: accessPolicyForm.name.trim(),
-      description: accessPolicyForm.description.trim(),
-      identityPattern: accessPolicyForm.identityPattern.trim(),
-      groupName: accessPolicyForm.groupName.trim(),
-      role: accessPolicyForm.role.trim(),
-      resourceTagsCsv: accessPolicyForm.resourceTagsCsv.trim(),
-      riskLevel: accessPolicyForm.riskLevel || 'any',
-      ticketRequired: !!accessPolicyForm.ticketRequired,
-      requireJustification: !!accessPolicyForm.requireJustification,
-      approvalMode: accessPolicyForm.approvalMode || 'inherit',
-      mfaRequirement: accessPolicyForm.mfaRequirement || 'any',
-      timeWindow: accessPolicyForm.timeWindow.trim() || 'any',
-      maxDurationSeconds: Number.parseInt(accessPolicyForm.maxDurationSeconds, 10) || 3600,
-      routingConstraint: accessPolicyForm.routingConstraint || 'any',
-      enabled: !!accessPolicyForm.enabled
-    };
-    try {
-      const saved = editingAccessPolicyId
-        ? await updateAccessPolicy(editingAccessPolicyId, payload)
-        : await createAccessPolicy(payload);
-      setAccessPolicies((prev) => {
-        if (editingAccessPolicyId) {
-          return prev.map((item) => (item.id === editingAccessPolicyId ? saved : item));
-        }
-        return [...prev, saved];
-      });
-      setAccessPolicyError('');
-      resetAccessPolicyForm();
-    } catch (error) {
-      setAccessPolicyError(error.message || 'Unable to save access policy');
-    }
-  };
-
-  const onEditAccessPolicy = (policy) => {
-    setEditingAccessPolicyId(policy.id);
-    setAccessPolicyForm({
-      name: policy.name || '',
-      description: policy.description || '',
-      identityPattern: policy.identityPattern || '',
-      groupName: policy.groupName || '',
-      role: policy.role || '',
-      resourceTagsCsv: policy.resourceTagsCsv || '',
-      riskLevel: policy.riskLevel || 'any',
-      ticketRequired: !!policy.ticketRequired,
-      requireJustification: !!policy.requireJustification,
-      approvalMode: policy.approvalMode || 'inherit',
-      mfaRequirement: policy.mfaRequirement || 'any',
-      timeWindow: policy.timeWindow || 'any',
-      maxDurationSeconds: String(policy.maxDurationSeconds || 3600),
-      routingConstraint: policy.routingConstraint || 'any',
-      enabled: !!policy.enabled
-    });
-  };
-
-  const onDeleteAccessPolicy = async (policyId) => {
-    try {
-      await deleteAccessPolicy(policyId);
-      setAccessPolicies((prev) => prev.filter((item) => item.id !== policyId));
-      setAccessPolicyError('');
-      if (editingAccessPolicyId === policyId) resetAccessPolicyForm();
-    } catch (error) {
-      setAccessPolicyError(error.message || 'Unable to delete access policy');
-    }
-  };
-
-  const resetAccessProfileForm = () => {
-    setEditingAccessProfileId(null);
-    setAccessProfileForm({
-      name: '',
-      description: '',
-      resourceTagsCsv: '',
-      resourceIdsCsv: '',
-      policyId: '0'
-    });
-  };
-
-  const onSubmitAccessProfile = async (event) => {
-    event.preventDefault();
-    const payload = {
-      name: accessProfileForm.name.trim(),
-      description: accessProfileForm.description.trim(),
-      resourceTagsCsv: accessProfileForm.resourceTagsCsv.trim(),
-      resourceIdsCsv: accessProfileForm.resourceIdsCsv.trim(),
-      policyId: Number.parseInt(accessProfileForm.policyId, 10) || 0
-    };
-    try {
-      const saved = editingAccessProfileId
-        ? await updateAccessProfile(editingAccessProfileId, payload)
-        : await createAccessProfile(payload);
-      setAccessProfiles((prev) => {
-        if (editingAccessProfileId) {
-          return prev.map((item) => (item.id === editingAccessProfileId ? saved : item));
-        }
-        return [...prev, saved];
-      });
-      setAccessProfileError('');
-      resetAccessProfileForm();
-    } catch (error) {
-      setAccessProfileError(error.message || 'Unable to save access profile');
-    }
-  };
-
-  const onEditAccessProfile = (profile) => {
-    setEditingAccessProfileId(profile.id);
-    setAccessProfileForm({
-      name: profile.name || '',
-      description: profile.description || '',
-      resourceTagsCsv: profile.resourceTagsCsv || '',
-      resourceIdsCsv: profile.resourceIdsCsv || '',
-      policyId: String(profile.policyId || 0)
-    });
-  };
-
-  const onDeleteAccessProfile = async (profileId) => {
-    try {
-      await deleteAccessProfile(profileId);
-      setAccessProfiles((prev) => prev.filter((item) => item.id !== profileId));
-      setAccessProfileError('');
-      if (editingAccessProfileId === profileId) resetAccessProfileForm();
-    } catch (error) {
-      setAccessProfileError(error.message || 'Unable to delete access profile');
-    }
-  };
 
   const onOpenSessionEvidence = async (sessionId) => {
     setSessionEvidenceLoading(true);
@@ -3558,99 +2918,6 @@ export default function App() {
     }
   };
 
-  const refreshRelayBindings = async () => {
-    const resourceList = Array.isArray(resources) ? resources : [];
-    const next = {};
-    await Promise.all(
-      resourceList.map(async (resource) => {
-        try {
-          const data = await fetchRelayResolution(resource.id);
-          next[resource.id] = data?.relay?.relayId || '';
-        } catch (_) {}
-      })
-    );
-    setRelayBindings(next);
-  };
-
-  const onAssignRelay = async (resourceId, relayId) => {
-    const normalizedResourceId = Number(resourceId) || 0;
-    if (!normalizedResourceId || relayAssignBusyResourceId) return;
-    setRelayAssignBusyResourceId(normalizedResourceId);
-    try {
-      const selectedRelayId = String(relayId || '').trim();
-      if (selectedRelayId) {
-        await assignRelayToResource(normalizedResourceId, selectedRelayId);
-      } else {
-        await clearRelayForResource(normalizedResourceId);
-      }
-      setRelayBindings((prev) => ({
-        ...prev,
-        [normalizedResourceId]: selectedRelayId
-      }));
-      setRelayError('');
-    } catch (error) {
-      setRelayError(error.message || t('feedback.unableUpdateRelayAssignment'));
-    } finally {
-      setRelayAssignBusyResourceId(0);
-    }
-  };
-
-  const onIssueRelayEnrollmentToken = async () => {
-    if (issuingRelayEnrollmentToken) return;
-    setIssuingRelayEnrollmentToken(true);
-    setRelayEnrollmentCopyStatus('');
-    try {
-      const data = await createRelayEnrollmentToken({
-        ttlSeconds: relayConfig.enrollmentTokenTtlSeconds
-      });
-      setRelayEnrollmentToken(String(data?.enrollmentToken || ''));
-      setRelayEnrollmentTokenExpiresAt(String(data?.expiresAt || ''));
-      setRelayError('');
-    } catch (error) {
-      setRelayError(error.message || t('feedback.unableIssueRelayToken'));
-    } finally {
-      setIssuingRelayEnrollmentToken(false);
-    }
-  };
-
-  const onIssueRelayCertificate = async () => {
-    if (issuingRelayCertificate) return;
-    setIssuingRelayCertificate(true);
-    setRelayCertificateCopyStatus('');
-    try {
-      const data = await createRelayCertificate({
-        ttlSeconds: relayConfig.certificateTtlSeconds
-      });
-      setRelayCertificate(String(data?.certificate || ''));
-      setRelayCertificateId(String(data?.certificateId || ''));
-      setRelayCertificateExpiresAt(String(data?.expiresAt || ''));
-      setRelayError('');
-    } catch (error) {
-      setRelayError(error.message || t('feedback.unableIssueRelayCertificate'));
-    } finally {
-      setIssuingRelayCertificate(false);
-    }
-  };
-
-  const onCopyRelayCertificate = async () => {
-    if (!relayCertificate) return;
-    try {
-      await navigator.clipboard.writeText(relayCertificate);
-      setRelayCertificateCopyStatus(t('feedback.certificateCopied'));
-    } catch (_) {
-      setRelayCertificateCopyStatus(t('feedback.copyFailed'));
-    }
-  };
-
-  const onCopyRelayEnrollmentToken = async () => {
-    if (!relayEnrollmentToken) return;
-    try {
-      await navigator.clipboard.writeText(relayEnrollmentToken);
-      setRelayEnrollmentCopyStatus(t('feedback.tokenCopied'));
-    } catch (_) {
-      setRelayEnrollmentCopyStatus(t('feedback.copyFailed'));
-    }
-  };
 
   // ── 2FA handlers ──
 
@@ -3879,15 +3146,6 @@ export default function App() {
     };
   }, [totpSetupData]);
 
-  useEffect(() => {
-    if (!auth.token || !canManagePlatform || !resources.length) {
-      setRelayBindings({});
-      return;
-    }
-    refreshRelayBindings().catch(() => {
-      setRelayError(t('feedback.unableResolveRelayBindings'));
-    });
-  }, [auth.token, canManagePlatform, resources]);
 
   useEffect(() => {
     if (!auth.token) return;
@@ -4665,7 +3923,7 @@ export default function App() {
           )}
 
           <section className="admin-shell-head reveal" style={{ marginBottom: '1rem' }}>
-            <AdminSectionNav sections={adminSections} current={adminSection} onChange={setAdminSection} />
+            <AdminSectionNav sections={adminSections} current={adminSection} onChange={selectAdminSection} />
             {activeAdminSection ? (
               <div className="admin-section-status">
                 <div className="admin-section-status-copy">
@@ -5101,184 +4359,12 @@ export default function App() {
           )}
 
           {adminSection === 'routing' && (
-          <div className="panel reveal relay-panel">
-            <div className="panel-header">
-              <div>
-                <h3>Relay Fabric</h3>
-              </div>
-              {loadingRelays && <span className="pill loading">{t('common.syncing')}</span>}
-            </div>
-
-            <div className="relay-kpi-grid">
-              <article className="relay-kpi-card">
-                <span>Total relays</span>
-                <strong>{relayInventorySummary.total}</strong>
-              </article>
-              <article className="relay-kpi-card ok">
-                <span>Online</span>
-                <strong>{relayInventorySummary.online}</strong>
-              </article>
-              <article className="relay-kpi-card warning">
-                <span>Offline</span>
-                <strong>{relayInventorySummary.offline}</strong>
-              </article>
-              <article className="relay-kpi-card">
-                <span>Enrollment</span>
-                <strong>{relayConfig.enrollmentEnabled ? 'Enabled' : 'Disabled'}</strong>
-              </article>
-            </div>
-
-            <div className="relay-enroll-panel">
-              <div>
-                <h4>Relay Bootstrap</h4>
-              </div>
-              <div className="relay-enroll-token-box">
-                <p><strong>Install helper ({resolveAgentInstallGuide().platform})</strong></p>
-                <code className="relay-enroll-command">{resolveAgentInstallGuide().command}</code>
-              </div>
-              <div className="resource-actions">
-                <button
-                  type="button"
-                  className="ghost"
-                  onClick={() => setShowRelayManualBootstrap((prev) => !prev)}
-                >
-                  {showRelayManualBootstrap ? 'Hide advanced bootstrap' : 'Show advanced bootstrap'}
-                </button>
-              </div>
-
-              {showRelayManualBootstrap && (
-                <>
-                  <div><h4>Manual</h4></div>
-                  <div className="resource-actions">
-                    <button
-                      type="button"
-                      className="secondary"
-                      onClick={onIssueRelayCertificate}
-                      disabled={issuingRelayCertificate}
-                    >
-                      {issuingRelayCertificate ? 'Generating certificate...' : 'Generate relay certificate'}
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost"
-                      onClick={onCopyRelayCertificate}
-                      disabled={!relayCertificate}
-                    >
-                      Copy certificate
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary"
-                      onClick={onIssueRelayEnrollmentToken}
-                      disabled={issuingRelayEnrollmentToken || !relayConfig.enrollmentEnabled}
-                    >
-                      {issuingRelayEnrollmentToken ? 'Generating token...' : 'Generate enrollment token'}
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost"
-                      onClick={onCopyRelayEnrollmentToken}
-                      disabled={!relayEnrollmentToken}
-                    >
-                      Copy token
-                    </button>
-                  </div>
-                  {relayCertificate && (
-                    <div className="relay-enroll-token-box">
-                      <p><strong>Certificate ID</strong>: <code>{relayCertificateId || 'n/a'}</code></p>
-                      <p><strong>Certificate</strong>: <code>{relayCertificate}</code></p>
-                      <p className="muted">Expires at: {relayCertificateExpiresAt || 'n/a'}</p>
-                      {relayCertificateCopyStatus && <p className="muted">{relayCertificateCopyStatus}</p>}
-                    </div>
-                  )}
-                  {!relayConfig.enrollmentEnabled && (
-                    <p className="muted">Enrollment secret missing on backend.</p>
-                  )}
-                  {relayEnrollmentToken && (
-                    <div className="relay-enroll-token-box">
-                      <p><strong>Token</strong>: <code>{relayEnrollmentToken}</code></p>
-                      <p className="muted">Expires at: {relayEnrollmentTokenExpiresAt || 'n/a'}</p>
-                      <code className="relay-enroll-command">
-                        {`curl -X POST https://localhost:8080/api/relays/enroll -H "Content-Type: application/json" -H "X-EndoriumFort-Relay-Enrollment-Token: ${relayEnrollmentToken}" -H "X-EndoriumFort-Relay-Certificate: <relay-certificate>" -d '{"relayId":"relay-edge-01","label":"Edge Relay 01","version":"1.0.0","capabilities":["ssh","rdp","vnc"]}'`}
-                      </code>
-                      {relayEnrollmentCopyStatus && <p className="muted">{relayEnrollmentCopyStatus}</p>}
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-
-            {relayError && <p className="error">{relayError}</p>}
-
-            <div className="resource-list relay-fleet-list">
-              {relays.length ? (
-                relays.map((relay) => (
-                  <article className="resource-row relay-row" key={relay.relayId}>
-                    <div>
-                      <h4>{relay.label || relay.relayId}</h4>
-                      <p className="muted">ID: {relay.relayId}</p>
-                      <p className="muted">{relay.sourceIp || 'n/a'} • {relay.version || 'unknown version'}</p>
-                      <p className="muted">Managed resources: {Number(relay.managedResourceCount) || 0}</p>
-                    </div>
-                    <span className={`pill ${String(relay.status).toLowerCase() === 'online' ? 'ok' : 'offline'}`}>
-                      {String(relay.status || 'offline').toLowerCase()}
-                    </span>
-                  </article>
-                ))
-              ) : (
-                <p className="muted">No relay enrolled yet.</p>
-              )}
-            </div>
-
-            <div className="panel-header" style={{ marginTop: '0.9rem' }}>
-              <div>
-                <h3>Resource Routing Assignments</h3>
-              </div>
-              <label className="relay-filter-toggle">
-                <input
-                  type="checkbox"
-                  checked={relayAssignOnlineOnly}
-                  onChange={(event) => setRelayAssignOnlineOnly(event.target.checked)}
-                />
-                Online relays only
-              </label>
-            </div>
-            <div className="resource-list relay-assignment-list">
-              {resources.length ? (
-                resources.map((resource) => {
-                  const selected = relayBindings[resource.id] || '';
-                  const busy = relayAssignBusyResourceId === resource.id;
-                  const relayOptions = relayAssignOnlineOnly
-                    ? relays.filter((relay) => isRelayOnline(relay) || relay.relayId === selected)
-                    : relays;
-                  return (
-                    <article className="resource-row relay-assign-row" key={`assign-${resource.id}`}>
-                      <div>
-                        <h4>{resource.name}</h4>
-                        <p className="muted">{resource.protocol} {resource.target}:{resource.port}</p>
-                      </div>
-                      <div className="resource-actions">
-                        <select
-                          value={selected}
-                          disabled={busy || loadingRelays}
-                          onChange={(event) => onAssignRelay(resource.id, event.target.value)}
-                        >
-                          <option value="">direct (no relay)</option>
-                          {relayOptions.map((relay) => (
-                            <option key={`relay-opt-${resource.id}-${relay.relayId}`} value={relay.relayId}>
-                              {relay.label || relay.relayId} ({String(relay.status || 'offline').toLowerCase()})
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </article>
-                  );
-                })
-              ) : (
-                <p className="muted">{t('admin.createResourcesBeforeAssigning')}</p>
-              )}
-            </div>
-          </div>
+            <RelayControlPanel
+              auth={auth}
+              canManagePlatform={canManagePlatform}
+              resources={resources}
+              resolveAgentInstallGuide={resolveAgentInstallGuide}
+            />
           )}
 
           {adminSection === 'routing' && (
@@ -5585,819 +4671,21 @@ export default function App() {
           )}
 
           {adminSection === 'jit' && (
-          <div className="panel reveal">
-            <div className="panel-header">
-              <div>
-                <h3>{editingAccessPolicyId ? 'Edit access policy' : 'New access policy'}</h3>
-              </div>
-              {loadingAccessPolicies && <span className="pill loading">{t('common.loading')}</span>}
-            </div>
-            <form className="resource-form" onSubmit={onSubmitAccessPolicy}>
-              <label>
-                Name
-                <input name="name" value={accessPolicyForm.name} onChange={onAccessPolicyFieldChange} />
-              </label>
-              <label>
-                Identity
-                <input name="identityPattern" value={accessPolicyForm.identityPattern} onChange={onAccessPolicyFieldChange} placeholder="user or *" />
-              </label>
-              <label>
-                Role
-                <input name="role" value={accessPolicyForm.role} onChange={onAccessPolicyFieldChange} placeholder="operator/admin" />
-              </label>
-              <label>
-                Group
-                <input name="groupName" value={accessPolicyForm.groupName} onChange={onAccessPolicyFieldChange} placeholder="optional local group alias" />
-              </label>
-              <label className="full">
-                Resource tags
-                <input name="resourceTagsCsv" value={accessPolicyForm.resourceTagsCsv} onChange={onAccessPolicyFieldChange} placeholder="prod, db, linux" />
-              </label>
-              <label className="full">
-                Description
-                <input name="description" value={accessPolicyForm.description} onChange={onAccessPolicyFieldChange} />
-              </label>
-              <label>
-                Risk
-                <select name="riskLevel" value={accessPolicyForm.riskLevel} onChange={onAccessPolicyFieldChange}>
-                  <option value="any">any</option>
-                  <option value="low">low</option>
-                  <option value="medium">medium</option>
-                  <option value="high">high</option>
-                  <option value="critical">critical</option>
-                </select>
-              </label>
-              <label>
-                Approval mode
-                <select name="approvalMode" value={accessPolicyForm.approvalMode} onChange={onAccessPolicyFieldChange}>
-                  <option value="inherit">inherit</option>
-                  <option value="none">none</option>
-                  <option value="required">required</option>
-                </select>
-              </label>
-              <label>
-                MFA
-                <select name="mfaRequirement" value={accessPolicyForm.mfaRequirement} onChange={onAccessPolicyFieldChange}>
-                  <option value="any">any</option>
-                  <option value="required">required</option>
-                  <option value="totp">totp</option>
-                  <option value="webauthn">webauthn</option>
-                </select>
-              </label>
-              <label>
-                Routing
-                <select name="routingConstraint" value={accessPolicyForm.routingConstraint} onChange={onAccessPolicyFieldChange}>
-                  <option value="any">any</option>
-                  <option value="direct">direct</option>
-                  <option value="relay">relay</option>
-                </select>
-              </label>
-              <label>
-                Time window (UTC)
-                <input name="timeWindow" value={accessPolicyForm.timeWindow} onChange={onAccessPolicyFieldChange} placeholder="any or 08:00-18:00" />
-              </label>
-              <label>
-                Max duration (s)
-                <input name="maxDurationSeconds" type="number" min="300" step="60" value={accessPolicyForm.maxDurationSeconds} onChange={onAccessPolicyFieldChange} />
-              </label>
-              <label className="checkbox-row">
-                <input name="ticketRequired" type="checkbox" checked={!!accessPolicyForm.ticketRequired} onChange={onAccessPolicyFieldChange} />
-                <span>Ticket required</span>
-              </label>
-              <label className="checkbox-row">
-                <input name="requireJustification" type="checkbox" checked={!!accessPolicyForm.requireJustification} onChange={onAccessPolicyFieldChange} />
-                <span>Justification required</span>
-              </label>
-              <label className="checkbox-row">
-                <input name="enabled" type="checkbox" checked={!!accessPolicyForm.enabled} onChange={onAccessPolicyFieldChange} />
-                <span>Enabled</span>
-              </label>
-              <div className="resource-actions">
-                <button type="submit">{editingAccessPolicyId ? 'Update' : 'Create'} policy</button>
-                {editingAccessPolicyId && (
-                  <button type="button" className="ghost" onClick={resetAccessPolicyForm}>
-                    {t('common.cancel')}
-                  </button>
-                )}
-              </div>
-            </form>
-            {accessPolicyError && <p className="error">{accessPolicyError}</p>}
-            <div className="resource-list">
-              {accessPolicies.length ? accessPolicies.map((policy) => (
-                <article className="resource-row" key={`policy-${policy.id}`}>
-                  <div>
-                    <h4>{policy.name}</h4>
-                    <p className="muted">
-                      {policy.resourceTagsCsv || 'all resources'} • {policy.approvalMode} • {policy.mfaRequirement} • TTL {policy.maxDurationSeconds}s
-                    </p>
-                  </div>
-                  <div className="resource-actions">
-                    <button type="button" className="secondary" onClick={() => onEditAccessPolicy(policy)}>Edit</button>
-                    <button type="button" className="ghost" onClick={() => onDeleteAccessPolicy(policy.id)}>Delete</button>
-                  </div>
-                </article>
-              )) : <p className="muted">No access policies yet.</p>}
-            </div>
-          </div>
+            <JitGovernancePanel
+              auth={auth}
+              canManagePlatform={canManagePlatform}
+              accessGrants={accessGrants}
+              loadingAccessGrants={loadingAccessGrants}
+              accessGrantError={accessGrantError}
+              accessProfiles={accessProfiles}
+              setAccessProfiles={setAccessProfiles}
+              loadingAccessProfiles={loadingAccessProfiles}
+              accessProfileError={accessProfileError}
+              setAccessProfileError={setAccessProfileError}
+            />
           )}
 
-          {adminSection === 'jit' && (
-          <div className="panel reveal">
-            <div className="panel-header">
-              <div>
-                <h3>{editingAccessProfileId ? 'Edit access profile' : 'New access profile'}</h3>
-              </div>
-              {loadingAccessProfiles && <span className="pill loading">{t('common.loading')}</span>}
-            </div>
-            <form className="resource-form" onSubmit={onSubmitAccessProfile}>
-              <label>
-                Name
-                <input name="name" value={accessProfileForm.name} onChange={onAccessProfileFieldChange} />
-              </label>
-              <label>
-                Policy
-                <select name="policyId" value={accessProfileForm.policyId} onChange={onAccessProfileFieldChange}>
-                  <option value="0">none</option>
-                  {accessPolicies.map((policy) => (
-                    <option key={`profile-policy-${policy.id}`} value={policy.id}>{policy.name}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="full">
-                Resource IDs
-                <input name="resourceIdsCsv" value={accessProfileForm.resourceIdsCsv} onChange={onAccessProfileFieldChange} placeholder="1,2,3" />
-              </label>
-              <label className="full">
-                Resource tags
-                <input name="resourceTagsCsv" value={accessProfileForm.resourceTagsCsv} onChange={onAccessProfileFieldChange} placeholder="prod,windows" />
-              </label>
-              <label className="full">
-                Description
-                <input name="description" value={accessProfileForm.description} onChange={onAccessProfileFieldChange} />
-              </label>
-              <div className="resource-actions">
-                <button type="submit">{editingAccessProfileId ? 'Update' : 'Create'} profile</button>
-                {editingAccessProfileId && (
-                  <button type="button" className="ghost" onClick={resetAccessProfileForm}>
-                    {t('common.cancel')}
-                  </button>
-                )}
-              </div>
-            </form>
-            {accessProfileError && <p className="error">{accessProfileError}</p>}
-            <div className="resource-list">
-              {accessProfiles.length ? accessProfiles.map((profile) => (
-                <article className="resource-row" key={`profile-row-${profile.id}`}>
-                  <div>
-                    <h4>{profile.name}</h4>
-                    <p className="muted">
-                      Policy #{profile.policyId || 0} • {profile.resourceTagsCsv || profile.resourceIdsCsv || 'all assigned resources'}
-                    </p>
-                  </div>
-                  <div className="resource-actions">
-                    <button type="button" className="secondary" onClick={() => onEditAccessProfile(profile)}>Edit</button>
-                    <button type="button" className="ghost" onClick={() => onDeleteAccessProfile(profile.id)}>Delete</button>
-                  </div>
-                </article>
-              )) : <p className="muted">No access profiles yet.</p>}
-            </div>
-          </div>
-          )}
-
-          {adminSection === 'jit' && (
-          <div className="panel reveal">
-            <div className="panel-header">
-              <div>
-                <h3>Access Grants</h3>
-                <p>Issued JIT grants and their current TTL/status.</p>
-              </div>
-              {loadingAccessGrants && <span className="pill loading">{t('common.loading')}</span>}
-            </div>
-            {accessGrantError && <p className="error">{accessGrantError}</p>}
-            <div className="resource-list">
-              {accessGrants.length ? accessGrants.map((grant) => (
-                <article className="resource-row" key={`grant-${grant.id}`}>
-                  <div>
-                    <h4>Grant #{grant.id}</h4>
-                    <p className="muted">
-                      {grant.subject} • resource #{grant.resourceId} • {grant.status}
-                    </p>
-                    <p className="muted">
-                      Expires {grant.expiresAt} • {grant.credentialSource} • {grant.routingConstraint}
-                    </p>
-                  </div>
-                </article>
-              )) : <p className="muted">No JIT grant issued yet.</p>}
-            </div>
-          </div>
-          )}
-
-          {adminSection === 'enterprise' && (
-          <div className="panel reveal relay-panel">
-            <div className="panel-header">
-              <div>
-                <h3>Enterprise IAM</h3>
-                <p>
-                  {locale === 'fr'
-                    ? 'Fédération d’identité, provisioning SCIM et validations d’intégrations.'
-                    : 'Identity federation, SCIM provisioning and integration validation workspace.'}
-                </p>
-              </div>
-              {enterpriseLoading && <span className="pill loading">{t('common.syncing')}</span>}
-            </div>
-            {enterpriseError && <p className="error">{enterpriseError}</p>}
-
-            <div className="relay-kpi-grid">
-              <article className="relay-kpi-card">
-                <span>Directory providers</span>
-                <strong>{enterpriseDirectoryProviders.length}</strong>
-              </article>
-              <article className={`relay-kpi-card ${enterpriseLdapConfig?.enabled ? 'ok' : ''}`}>
-                <span>LDAP/AD</span>
-                <strong>{enterpriseLdapConfig?.enabled ? 'enabled' : 'disabled'}</strong>
-              </article>
-              <article className="relay-kpi-card">
-                <span>SSO providers</span>
-                <strong>{enterpriseSsoProviders.length}</strong>
-              </article>
-              <article className="relay-kpi-card ok">
-                <span>SCIM PATCH</span>
-                <strong>{enterpriseScimConfig?.patch?.supported ? 'enabled' : 'disabled'}</strong>
-              </article>
-              <article className="relay-kpi-card">
-                <span>ITSM providers</span>
-                <strong>{enterpriseItsmProviders.length}</strong>
-              </article>
-              <article className="relay-kpi-card">
-                <span>SIEM channels</span>
-                <strong>{enterpriseSiemChannels.length}</strong>
-              </article>
-              <article className={`relay-kpi-card ${enterpriseClusterStatus?.enabled ? 'ok' : 'warning'}`}>
-                <span>Cluster mode</span>
-                <strong>{enterpriseClusterStatus?.enabled ? 'enabled' : 'disabled'}</strong>
-              </article>
-              <article className="relay-kpi-card">
-                <span>Cluster nodes</span>
-                <strong>{Number(enterpriseClusterStatus?.summary?.nodesTotal) || 1}</strong>
-              </article>
-            </div>
-
-            <form className="resource-form" onSubmit={(event) => {
-              event.preventDefault();
-              onStartEnterpriseSso();
-            }}>
-              <label>
-                SSO provider
-                <select
-                  value={enterpriseSsoProvider}
-                  onChange={(event) => setEnterpriseSsoProvider(event.target.value)}
-                >
-                  {enterpriseSsoProviders.length ? enterpriseSsoProviders.map((provider) => (
-                    <option key={`sso-provider-${provider.id}`} value={provider.id}>
-                      {provider.name || provider.id} ({provider.protocol || 'oidc'})
-                    </option>
-                  )) : (
-                    <option value="">n/a</option>
-                  )}
-                </select>
-              </label>
-              <div className="resource-actions">
-                <button type="submit" className="secondary" disabled={!enterpriseSsoProviders.length}>
-                  {locale === 'fr' ? 'Tester la connexion OIDC' : 'Test OIDC sign-in'}
-                </button>
-                <button
-                  type="button"
-                  className="ghost"
-                  onClick={() => {
-                    refreshEnterpriseWorkspace().catch(() => {});
-                  }}
-                  disabled={enterpriseLoading || enterpriseScimLoading}
-                >
-                  {locale === 'fr' ? 'Rafraichir les fondations IAM' : 'Refresh IAM foundations'}
-                </button>
-              </div>
-            </form>
-
-            <div className="relay-enroll-token-box">
-              <p>
-                <strong>Default provider</strong>: {enterpriseSsoConfig?.defaultProvider || 'n/a'}
-              </p>
-              <p>
-                <strong>LDAP host</strong>: {enterpriseLdapConfig?.host || 'n/a'}
-              </p>
-              <p>
-                <strong>LDAP base DN</strong>: {enterpriseLdapConfig?.baseDn || 'n/a'}
-              </p>
-              <p>
-                <strong>LDAP auth mode</strong>: {enterpriseLdapConfig?.authMode || 'n/a'}
-              </p>
-              <p>
-                <strong>LDAP default role</strong>: {enterpriseLdapConfig?.defaultRole || 'operator'}
-              </p>
-              <p>
-                <strong>LDAP role mapping</strong>: {enterpriseLdapConfig?.roleMappingEnabled
-                  ? `${locale === 'fr' ? 'active' : 'enabled'} (${enterpriseLdapConfig?.roleMapEntries || 0} ${locale === 'fr' ? 'regles' : 'rules'})`
-                  : (locale === 'fr' ? 'desactive' : 'disabled')}
-              </p>
-              <p>
-                <strong>Single tenant</strong>: {enterpriseSsoConfig?.singleTenant ? 'yes' : 'no'}
-              </p>
-              <p>
-                <strong>OIDC start</strong>: {enterpriseSsoConfig?.oidcStartPath || '/api/auth/sso/oidc/start'}
-              </p>
-              <p>
-                <strong>OIDC callback</strong>: {enterpriseSsoConfig?.oidcCallbackPath || '/api/auth/sso/oidc/callback'}
-              </p>
-              <p className="muted">
-                {locale === 'fr'
-                  ? 'Endpoints OIDC en HTTPS pris en charge avec validation de certificat système.'
-                  : 'OIDC endpoints support HTTPS with system trust-store certificate validation.'}
-              </p>
-            </div>
-
-            <div className="panel-header" style={{ marginTop: '0.2rem' }}>
-              <div>
-                <h3>Cluster / HA Control Plane</h3>
-                <p>
-                  {locale === 'fr'
-                    ? 'Etat local, heartbeat inter-noeuds et inventaire des pairs.'
-                    : 'Local node posture, inter-node heartbeat health, and peer inventory.'}
-                </p>
-              </div>
-            </div>
-
-            <div className="relay-enroll-token-box">
-              <p>
-                <strong>Node ID</strong>: {enterpriseClusterConfig?.nodeId || enterpriseClusterStatus?.localNode?.nodeId || 'node-local'}
-              </p>
-              <p>
-                <strong>Node label</strong>: {enterpriseClusterConfig?.nodeLabel || enterpriseClusterStatus?.localNode?.label || 'Primary Node'}
-              </p>
-              <p>
-                <strong>Role</strong>: {enterpriseClusterConfig?.role || enterpriseClusterStatus?.localNode?.role || 'standalone'}
-              </p>
-              <p>
-                <strong>Advertise address</strong>: {enterpriseClusterConfig?.advertiseAddr || enterpriseClusterStatus?.localNode?.endpoint || 'n/a'}
-              </p>
-              <p>
-                <strong>Peer auth</strong>: {enterpriseClusterConfig?.peerAuthRequired ? 'required' : 'disabled'}
-              </p>
-              <p>
-                <strong>Heartbeat stale threshold</strong>: {enterpriseClusterConfig?.heartbeatStaleSeconds || enterpriseClusterStatus?.heartbeatStaleSeconds || 45}s
-              </p>
-              <p>
-                <strong>Summary</strong>: {(Number(enterpriseClusterStatus?.summary?.nodesOnline) || 1)} online / {(Number(enterpriseClusterStatus?.summary?.nodesOffline) || 0)} offline
-              </p>
-            </div>
-
-            {enterpriseClusterPeerMessage && <p className="muted">{enterpriseClusterPeerMessage}</p>}
-
-            <div className="resource-list relay-fleet-list">
-              {Array.isArray(enterpriseClusterStatus?.peers) && enterpriseClusterStatus.peers.length ? enterpriseClusterStatus.peers.map((peer) => {
-                const peerStatus = String(peer?.status || '').toLowerCase() === 'online' ? 'online' : 'offline';
-                return (
-                  <article className="resource-row relay-row" key={`cluster-peer-${peer.nodeId}`}>
-                    <div>
-                      <h4>{peer.label || peer.nodeId}</h4>
-                      <p className="muted">
-                        {peer.nodeId} • {peer.role || 'follower'} • {peer.endpoint || peer.sourceIp || 'n/a'}
-                      </p>
-                      <p className="muted">
-                        version {peer.version || 'n/a'} • relays {Number(peer.managedRelays) || 0} • sessions {Number(peer.managedSessions) || 0}
-                      </p>
-                    </div>
-                    <div className="resource-actions">
-                      <span className={`pill ${peerStatus === 'online' ? 'ok' : 'offline'}`}>{peerStatus}</span>
-                      <button
-                        type="button"
-                        className="ghost"
-                        onClick={() => onRemoveEnterpriseClusterPeer(peer.nodeId)}
-                        disabled={enterpriseClusterPeerBusy === peer.nodeId}
-                      >
-                        {enterpriseClusterPeerBusy === peer.nodeId
-                          ? (locale === 'fr' ? 'Suppression...' : 'Removing...')
-                          : (locale === 'fr' ? 'Retirer' : 'Remove')}
-                      </button>
-                    </div>
-                  </article>
-                );
-              }) : (
-                <p className="muted">
-                  {locale === 'fr' ? 'Aucun pair cluster recu pour le moment.' : 'No cluster peer heartbeat received yet.'}
-                </p>
-              )}
-            </div>
-          </div>
-          )}
-
-          {adminSection === 'enterprise' && (
-          <div className="panel reveal">
-            <div className="panel-header">
-              <div>
-                <h3>Directory Integrations</h3>
-                <p>
-                  {locale === 'fr'
-                    ? 'Inventaire des annuaires et test de bind LDAP/Active Directory.'
-                    : 'Directory inventory and LDAP/Active Directory bind-test workspace.'}
-                </p>
-              </div>
-            </div>
-
-            <div className="resource-list">
-              {enterpriseDirectoryProviders.length ? enterpriseDirectoryProviders.map((provider) => (
-                <article className="resource-row" key={`directory-provider-${provider.id}`}>
-                  <div>
-                    <h4>{provider.name || provider.id}</h4>
-                    <p className="muted">
-                      id: {provider.id || 'n/a'} • jitProvisioning: {provider.jitProvisioning ? 'yes' : 'no'}
-                    </p>
-                  </div>
-                  <span className={`pill ${provider.enabled ? 'ok' : 'offline'}`}>
-                    {provider.enabled ? 'enabled' : 'disabled'}
-                  </span>
-                </article>
-              )) : (
-                <p className="muted">
-                  {locale === 'fr' ? 'Aucun provider annuaire déclaré.' : 'No directory provider available.'}
-                </p>
-              )}
-            </div>
-
-            <div className="panel-header" style={{ marginTop: '0.8rem' }}>
-              <div>
-                <h3>LDAP bind test</h3>
-              </div>
-              {enterpriseLdapTesting && <span className="pill loading">{t('common.loading')}</span>}
-            </div>
-            <form className="resource-form" onSubmit={onSubmitEnterpriseLdapTest}>
-              <label>
-                username
-                <input
-                  value={enterpriseLdapTestUsername}
-                  onChange={(event) => setEnterpriseLdapTestUsername(event.target.value)}
-                  placeholder={enterpriseLdapConfig?.userTemplate || 'uid={username},ou=People,dc=example,dc=org'}
-                />
-              </label>
-              <label>
-                password
-                <input
-                  type="password"
-                  value={enterpriseLdapTestPassword}
-                  onChange={(event) => setEnterpriseLdapTestPassword(event.target.value)}
-                  autoComplete="current-password"
-                  placeholder="••••••••"
-                />
-              </label>
-              <div className="resource-actions">
-                <button
-                  type="submit"
-                  className="secondary"
-                  disabled={enterpriseLdapTesting || !enterpriseLdapConfig?.enabled}
-                >
-                  {enterpriseLdapTesting
-                    ? (locale === 'fr' ? 'Test en cours...' : 'Testing...')
-                    : (locale === 'fr' ? 'Tester le bind LDAP' : 'Run LDAP bind test')}
-                </button>
-                <button
-                  type="button"
-                  className="ghost"
-                  onClick={() => {
-                    setEnterpriseLdapTestUsername('');
-                    setEnterpriseLdapTestPassword('');
-                    setEnterpriseLdapTestResult(null);
-                  }}
-                >
-                  {locale === 'fr' ? 'Effacer' : 'Clear'}
-                </button>
-              </div>
-            </form>
-            {enterpriseLdapTestResult && (
-              <div className="relay-enroll-token-box">
-                <p>
-                  <strong>LDAP bind result</strong>
-                </p>
-                <code className="relay-enroll-command">{JSON.stringify(enterpriseLdapTestResult, null, 2)}</code>
-              </div>
-            )}
-          </div>
-          )}
-
-          {adminSection === 'enterprise' && (
-          <div className="panel reveal">
-            <div className="panel-header">
-              <div>
-                <h3>SCIM Directory Explorer</h3>
-                <p>
-                  {locale === 'fr'
-                    ? 'Interrogez Users/Groups avec startIndex, count et filter (eq/co/sw).'
-                    : 'Query Users/Groups with startIndex, count and filter (eq/co/sw).'}
-                </p>
-              </div>
-              {enterpriseScimLoading && <span className="pill loading">{t('common.loading')}</span>}
-            </div>
-
-            <form className="resource-form" onSubmit={onSubmitEnterpriseScimFilter}>
-              <label className="full">
-                SCIM filter
-                <input
-                  value={enterpriseScimFilter}
-                  onChange={(event) => setEnterpriseScimFilter(event.target.value)}
-                  placeholder={'userName co "admin"'}
-                />
-              </label>
-              <label>
-                startIndex
-                <input
-                  type="number"
-                  min="1"
-                  value={enterpriseScimStartIndex}
-                  onChange={(event) => setEnterpriseScimStartIndex(event.target.value)}
-                />
-              </label>
-              <label>
-                count
-                <input
-                  type="number"
-                  min="0"
-                  max="200"
-                  value={enterpriseScimCount}
-                  onChange={(event) => setEnterpriseScimCount(event.target.value)}
-                />
-              </label>
-              <div className="resource-actions">
-                <button type="submit" className="secondary">
-                  {locale === 'fr' ? 'Rechercher SCIM' : 'Query SCIM'}
-                </button>
-              </div>
-            </form>
-
-            {enterpriseScimError && <p className="error">{enterpriseScimError}</p>}
-
-            <div className="relay-kpi-grid">
-              <article className="relay-kpi-card">
-                <span>Users total</span>
-                <strong>{enterpriseScimMeta.users.totalResults}</strong>
-              </article>
-              <article className="relay-kpi-card">
-                <span>Users page</span>
-                <strong>{enterpriseScimMeta.users.itemsPerPage}</strong>
-              </article>
-              <article className="relay-kpi-card">
-                <span>Groups total</span>
-                <strong>{enterpriseScimMeta.groups.totalResults}</strong>
-              </article>
-              <article className="relay-kpi-card">
-                <span>Groups page</span>
-                <strong>{enterpriseScimMeta.groups.itemsPerPage}</strong>
-              </article>
-            </div>
-
-            <div className="panel-header" style={{ marginTop: '0.9rem' }}>
-              <div>
-                <h3>SCIM Users</h3>
-              </div>
-            </div>
-            <div className="resource-list">
-              {enterpriseScimUsers.length ? enterpriseScimUsers.map((user) => {
-                const scimRole = Array.isArray(user?.roles) && user.roles.length
-                  ? String(user.roles[0]?.value || user.roles[0]?.display || '')
-                  : '';
-                return (
-                  <article className="resource-row" key={`scim-user-${user.id || user.userName}`}>
-                    <div>
-                      <h4>{user.userName || user.id}</h4>
-                      <p className="muted">id: {user.id || 'n/a'} • role: {scimRole || 'n/a'}</p>
-                    </div>
-                    <span className={`pill ${user.active ? 'ok' : 'offline'}`}>{user.active ? 'active' : 'inactive'}</span>
-                  </article>
-                );
-              }) : (
-                <p className="muted">
-                  {locale === 'fr' ? 'Aucun utilisateur SCIM trouvé pour ce filtre.' : 'No SCIM user matched this filter.'}
-                </p>
-              )}
-            </div>
-
-            <div className="panel-header" style={{ marginTop: '0.9rem' }}>
-              <div>
-                <h3>SCIM Groups</h3>
-              </div>
-            </div>
-            <div className="resource-list">
-              {enterpriseScimGroups.length ? enterpriseScimGroups.map((group) => (
-                <article className="resource-row" key={`scim-group-${group.id || group.displayName}`}>
-                  <div>
-                    <h4>{group.displayName || group.id}</h4>
-                    <p className="muted">
-                      id: {group.id || 'n/a'} • members: {Array.isArray(group.members) ? group.members.length : 0}
-                    </p>
-                  </div>
-                </article>
-              )) : (
-                <p className="muted">
-                  {locale === 'fr' ? 'Aucun groupe SCIM trouvé pour ce filtre.' : 'No SCIM group matched this filter.'}
-                </p>
-              )}
-            </div>
-
-            <div className="panel-header" style={{ marginTop: '0.9rem' }}>
-              <div>
-                <h3>SCIM PATCH Workspace</h3>
-              </div>
-              {enterpriseScimPatchLoading && <span className="pill loading">{t('common.loading')}</span>}
-            </div>
-            <form className="resource-form" onSubmit={onSubmitEnterpriseScimPatch}>
-              <label>
-                user id / userName
-                <input
-                  value={enterpriseScimPatchId}
-                  onChange={(event) => setEnterpriseScimPatchId(event.target.value)}
-                  placeholder="admin"
-                />
-              </label>
-              <label>
-                new userName
-                <input
-                  value={enterpriseScimPatchUsername}
-                  onChange={(event) => setEnterpriseScimPatchUsername(event.target.value)}
-                  placeholder={locale === 'fr' ? 'optionnel' : 'optional'}
-                />
-              </label>
-              <label>
-                role
-                <select
-                  value={enterpriseScimPatchRole}
-                  onChange={(event) => setEnterpriseScimPatchRole(event.target.value)}
-                >
-                  <option value="">{locale === 'fr' ? 'inchangé' : 'unchanged'}</option>
-                  <option value="operator">operator</option>
-                  <option value="admin">admin</option>
-                  <option value="auditor">auditor</option>
-                </select>
-              </label>
-              <label>
-                active
-                <select
-                  value={enterpriseScimPatchActive}
-                  onChange={(event) => setEnterpriseScimPatchActive(event.target.value)}
-                >
-                  <option value="unchanged">{locale === 'fr' ? 'inchangé' : 'unchanged'}</option>
-                  <option value="active">true</option>
-                  <option value="inactive">false</option>
-                </select>
-              </label>
-              <div className="resource-actions">
-                <button type="submit" className="secondary" disabled={enterpriseScimPatchLoading}>
-                  {enterpriseScimPatchLoading
-                    ? (locale === 'fr' ? 'Patch en cours...' : 'Patching...')
-                    : 'Apply SCIM patch'}
-                </button>
-              </div>
-            </form>
-            {enterpriseScimPatchResult && <p className="muted">{enterpriseScimPatchResult}</p>}
-          </div>
-          )}
-
-          {adminSection === 'enterprise' && (
-          <div className="panel reveal">
-            <div className="panel-header">
-              <div>
-                <h3>Integration Drills</h3>
-                <p>
-                  {locale === 'fr'
-                    ? 'Validez les chemins ITSM fail-open/fail-closed et le forwarding SIEM.'
-                    : 'Validate ITSM fail-open/fail-closed and SIEM forwarding behavior.'}
-                </p>
-              </div>
-            </div>
-
-            <div className="panel-header" style={{ marginTop: '0.4rem' }}>
-              <div>
-                <h3>ITSM ticket verification</h3>
-              </div>
-              {enterpriseItsmLoading && <span className="pill loading">{t('common.loading')}</span>}
-            </div>
-            <form className="resource-form" onSubmit={onSubmitEnterpriseItsmVerification}>
-              <label>
-                provider
-                <select
-                  value={enterpriseItsmProvider}
-                  onChange={(event) => setEnterpriseItsmProvider(event.target.value)}
-                >
-                  {enterpriseItsmProviders.length ? enterpriseItsmProviders.map((provider) => (
-                    <option key={`itsm-provider-${provider.id}`} value={provider.id}>
-                      {provider.name || provider.id}
-                    </option>
-                  )) : (
-                    <option value="servicenow">servicenow</option>
-                  )}
-                </select>
-              </label>
-              <label>
-                ticketId
-                <input
-                  value={enterpriseItsmTicketId}
-                  onChange={(event) => setEnterpriseItsmTicketId(event.target.value)}
-                  placeholder="INC-2026-0042"
-                />
-              </label>
-              <label>
-                failMode
-                <select
-                  value={enterpriseItsmFailMode}
-                  onChange={(event) => setEnterpriseItsmFailMode(event.target.value)}
-                >
-                  <option value="fail-closed">fail-closed</option>
-                  <option value="fail-open">fail-open</option>
-                </select>
-              </label>
-              <label className="checkbox-row">
-                <input
-                  type="checkbox"
-                  checked={enterpriseItsmUnavailable}
-                  onChange={(event) => setEnterpriseItsmUnavailable(event.target.checked)}
-                />
-                <span>simulateUnavailable</span>
-              </label>
-              <div className="resource-actions">
-                <button type="submit" className="secondary" disabled={enterpriseItsmLoading}>
-                  {enterpriseItsmLoading
-                    ? (locale === 'fr' ? 'Vérification...' : 'Verifying...')
-                    : (locale === 'fr' ? 'Vérifier le ticket' : 'Verify ticket')}
-                </button>
-              </div>
-            </form>
-            {enterpriseItsmResult && (
-              <div className="relay-enroll-token-box">
-                <p><strong>ITSM result</strong></p>
-                <code className="relay-enroll-command">{JSON.stringify(enterpriseItsmResult, null, 2)}</code>
-              </div>
-            )}
-
-            <div className="panel-header" style={{ marginTop: '0.7rem' }}>
-              <div>
-                <h3>SIEM event forwarding</h3>
-              </div>
-              {enterpriseSiemLoading && <span className="pill loading">{t('common.loading')}</span>}
-            </div>
-            <form className="resource-form" onSubmit={onSubmitEnterpriseSiemDispatch}>
-              <label>
-                channel
-                <select
-                  value={enterpriseSiemChannel}
-                  onChange={(event) => setEnterpriseSiemChannel(event.target.value)}
-                >
-                  {enterpriseSiemChannels.length ? enterpriseSiemChannels.map((channel) => (
-                    <option key={`siem-channel-${channel.id}`} value={channel.id}>
-                      {channel.name || channel.id}
-                    </option>
-                  )) : (
-                    <option value="json_webhook">json_webhook</option>
-                  )}
-                </select>
-              </label>
-              <label>
-                eventType
-                <input
-                  value={enterpriseSiemEventType}
-                  onChange={(event) => setEnterpriseSiemEventType(event.target.value)}
-                  placeholder="security.incident.escalated"
-                />
-              </label>
-              <label>
-                deliveryMode
-                <select
-                  value={enterpriseSiemDeliveryMode}
-                  onChange={(event) => setEnterpriseSiemDeliveryMode(event.target.value)}
-                >
-                  <option value="fail-open">fail-open</option>
-                  <option value="fail-closed">fail-closed</option>
-                </select>
-              </label>
-              <label className="checkbox-row">
-                <input
-                  type="checkbox"
-                  checked={enterpriseSiemSimulateFailure}
-                  onChange={(event) => setEnterpriseSiemSimulateFailure(event.target.checked)}
-                />
-                <span>simulateFailure</span>
-              </label>
-              <div className="resource-actions">
-                <button type="submit" className="secondary" disabled={enterpriseSiemLoading}>
-                  {enterpriseSiemLoading
-                    ? (locale === 'fr' ? 'Envoi...' : 'Forwarding...')
-                    : (locale === 'fr' ? 'Transmettre l’événement' : 'Forward event')}
-                </button>
-              </div>
-            </form>
-            {enterpriseSiemResult && (
-              <div className="relay-enroll-token-box">
-                <p><strong>SIEM result</strong></p>
-                <code className="relay-enroll-command">{JSON.stringify(enterpriseSiemResult, null, 2)}</code>
-              </div>
-            )}
-          </div>
-          )}
+          {adminSection === 'enterprise' && <EnterpriseIamPanel auth={auth} />}
 
           {adminSection === 'security' && stats && (
             <SectionCard
@@ -6814,9 +5102,9 @@ export default function App() {
               key={entry.id}
               type="button"
               className={mainTab === entry.id ? 'mission-card active' : 'mission-card'}
-              onClick={() => setMainTab(entry.id)}
+              onClick={() => selectMainTab(entry.id)}
             >
-              <span className="mission-stage">{entry.stage}</span>
+              <span className="mission-stage">{entry.locked ? '🔒 ' : ''}{entry.stage}</span>
               <strong>{entry.title}</strong>
               <p>{entry.hint}</p>
               <span className="mission-shortcut">{entry.shortcut}</span>
@@ -7991,20 +6279,94 @@ export default function App() {
     </div>
   );
 
+  // ── License banner (Enterprise edition only) ──────────────────────────────
+  const renderLicenseBanner = () => {
+    if (!auth.token || licenseEdition !== 'enterprise') return null;
+    const fr = locale === 'fr';
+    if (licenseState === 'expired' || licenseState === 'revoked') {
+      const msg = licenseState === 'revoked'
+        ? (fr ? 'Licence révoquée — les fonctionnalités premium sont désactivées.' : 'License revoked — premium features are disabled.')
+        : (fr ? 'Licence expirée — les fonctionnalités premium sont désactivées.' : 'License expired — premium features are disabled.');
+      return (
+        <div className="license-banner license-banner-error" role="alert">
+          <span>⛔ {msg}</span>
+          {canManagePlatform && (
+            <button type="button" className="ghost" onClick={() => navigate('/admin')}>
+              {fr ? 'Gérer la licence' : 'Manage license'}
+            </button>
+          )}
+        </div>
+      );
+    }
+    if (licenseValid && Number.isFinite(licenseDaysRemaining) && licenseDaysRemaining >= 0 && licenseDaysRemaining <= 7 && !licenseBannerDismissed) {
+      const msg = fr
+        ? `Votre licence expire dans ${licenseDaysRemaining} jour${licenseDaysRemaining > 1 ? 's' : ''}.`
+        : `Your license expires in ${licenseDaysRemaining} day${licenseDaysRemaining !== 1 ? 's' : ''}.`;
+      return (
+        <div className="license-banner license-banner-warn" role="status">
+          <span>⚠️ {msg}</span>
+          <button type="button" className="ghost" onClick={() => setLicenseBannerDismissed(true)}>
+            {fr ? 'Ignorer' : 'Dismiss'}
+          </button>
+        </div>
+      );
+    }
+    return null;
+  };
+
+  // ── Premium upsell modal (403 license-required or locked tab/section) ──────
+  const renderLicenseUpsell = () => {
+    if (!licenseUpsell) return null;
+    const fr = locale === 'fr';
+    const feature = licenseUpsell.feature || (fr ? 'cette fonctionnalité' : 'this feature');
+    const tier = licenseUpsell.requiredTier || 'pro';
+    const isCommunity = licenseEdition !== 'enterprise';
+    const title = fr ? 'Fonctionnalité premium' : 'Premium feature';
+    const body = isCommunity
+      ? (fr
+          ? `« ${feature} » fait partie de l'édition Enterprise. Passez à EndoriumFort Enterprise pour la débloquer.`
+          : `"${feature}" is part of the Enterprise edition. Upgrade to EndoriumFort Enterprise to unlock it.`)
+      : (fr
+          ? `« ${feature} » nécessite une licence ${tier} valide. Chargez une licence ou contactez le service commercial.`
+          : `"${feature}" requires a valid ${tier} license. Load a license or contact sales.`);
+    return (
+      <div className="modal-overlay" onClick={() => setLicenseUpsell(null)}>
+        <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+          <h3>🔒 {title}</h3>
+          <p>{body}</p>
+          <div className="modal-actions" style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
+            {!isCommunity && canManagePlatform && (
+              <button type="button" onClick={() => { setLicenseUpsell(null); navigate('/admin'); }}>
+                {fr ? 'Gérer la licence' : 'Manage license'}
+              </button>
+            )}
+            <button type="button" className="ghost" onClick={() => setLicenseUpsell(null)}>
+              {fr ? 'Fermer' : 'Close'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   if (route === '/login') {
     return renderLogin();
   }
   if (route === '/admin') {
     return (
       <>
+        {renderLicenseBanner()}
         {renderAdmin()}
+        {renderLicenseUpsell()}
         {renderBootstrapOverlay()}
       </>
     );
   }
   return (
     <>
+      {renderLicenseBanner()}
       {renderMain()}
+      {renderLicenseUpsell()}
       {renderBootstrapOverlay()}
     </>
   );

@@ -3591,3 +3591,30 @@ button:disabled {
   border-color: rgba(52, 211, 153, 0.34);
   color: #a7f3d0;
 }
+
+/* ── Licensing / editions (freemium gating) ─────────────────────────────── */
+.license-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.6rem 1.1rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+.license-banner-error {
+  background: #7f1d1d;
+  color: #fecaca;
+}
+.license-banner-warn {
+  background: #78350f;
+  color: #fde68a;
+}
+.license-banner .ghost {
+  flex: 0 0 auto;
+}
+.pill.locked {
+  background: rgba(148, 163, 184, 0.16);
+  border-color: rgba(148, 163, 184, 0.34);
+  color: #cbd5e1;
+}
