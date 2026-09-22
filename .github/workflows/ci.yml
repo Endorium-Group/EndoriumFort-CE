@@ -10,17 +10,40 @@ permissions:
   contents: read
 
 jobs:
+  detect:
+    name: Detect edition
+    runs-on: ubuntu-latest
+    outputs:
+      has_agent: ${{ steps.check.outputs.has_agent }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: check
+        # The Go agent ships only with the Enterprise edition. The public
+        # Community core has no agent/ directory, so skip the agent job there.
+        run: |
+          if [ -d agent ]; then
+            echo "has_agent=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_agent=false" >> "$GITHUB_OUTPUT"
+          fi
+
   backend-build:
     name: Backend Build
     runs-on: ubuntu-latest
+    # trixie = OpenSSL 3.5 (matches the Docker base and the .deb build). The
+    # license tests generate ML-DSA-65 keypairs, which need OpenSSL >= 3.5;
+    # ubuntu-latest still ships OpenSSL 3.0, so run this job in a trixie container.
+    container: debian:trixie-slim
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
       - name: Install backend dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake g++ libsqlite3-dev libssh2-1-dev pkg-config
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential cmake git ca-certificates pkg-config \
+            libsqlite3-dev libssh2-1-dev libssl-dev
+
+      - name: Checkout
+        uses: actions/checkout@v6
 
       - name: Configure backend
         working-directory: backend
@@ -66,6 +89,8 @@ jobs:
 
   agent-build-test:
     name: Agent Build & Test
+    needs: detect
+    if: ${{ needs.detect.outputs.has_agent == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

@@ -18,22 +18,34 @@ permissions:
   security-events: write
 
 jobs:
+  detect:
+    name: Detect languages
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: set
+        # The Go agent ships only with the Enterprise edition. Include the go
+        # language in the analysis matrix only when agent/ is present, so the
+        # public Community core (no agent) does not fail on an empty go build.
+        run: |
+          CPP='{"name":"c-cpp","language":"c-cpp","key":"cpp"}'
+          JS='{"name":"javascript-typescript","language":"javascript-typescript","key":"javascript"}'
+          GO='{"name":"go","language":"go","key":"go"}'
+          if [ -d agent ]; then
+            echo "matrix={\"include\":[$CPP,$JS,$GO]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "matrix={\"include\":[$CPP,$JS]}" >> "$GITHUB_OUTPUT"
+          fi
+
   analyze:
     name: Analyze (${{ matrix.name }})
+    needs: detect
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: c-cpp
-            language: c-cpp
-            key: cpp
-          - name: javascript-typescript
-            language: javascript-typescript
-            key: javascript
-          - name: go
-            language: go
-            key: go
+      matrix: ${{ fromJSON(needs.detect.outputs.matrix) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
