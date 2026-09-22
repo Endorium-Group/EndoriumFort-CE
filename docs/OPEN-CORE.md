@@ -8,7 +8,7 @@ are built and distributed, and how licenses are issued.
 
 | | Community (CE) | Enterprise (EE) |
 |---|---|---|
-| Repo | **public** `endoriumfort-core` | **private** `endoriumfort` (this repo) |
+| Repo | **public** `Endorium-Group/EndoriumFort-CE` | **private** `NergYR/EndoriumFort` (this repo) |
 | Premium code | **absent** (physically) | present in `backend/src/pro/` |
 | Build switch | `-DENDORIUMFORT_PRO=OFF` (default) | `-DENDORIUMFORT_PRO=ON` |
 | Docker build arg | `--build-arg EDITION=community` | `--build-arg EDITION=enterprise` |
@@ -61,7 +61,7 @@ scripts/publish-core.sh ../endoriumfort-core     # strips pro/, private CI, keys
 cd ../endoriumfort-core
 cmake -S backend -B backend/build && cmake --build backend/build   # verify CE builds
 git init && git add -A && git commit -m "EndoriumFort Community Edition"
-git remote add origin git@github.com:NergYR/endoriumfort-core.git
+git remote add origin git@github.com:Endorium-Group/EndoriumFort-CE.git
 git push -u origin master
 ```
 

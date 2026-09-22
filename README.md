@@ -1,13 +1,13 @@
 <p align="center">
-  <img src="https://img.shields.io/github/v/release/NergYR/EndoriumFort?style=flat-square" alt="Latest release">
+  <img src="https://img.shields.io/github/v/release/Endorium-Group/EndoriumFort-CE?style=flat-square" alt="Latest release">
   <img src="https://img.shields.io/badge/license-Source--Available-orange?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/backend-C%2B%2B%2017-00599C?style=flat-square&logo=cplusplus" alt="C++">
   <img src="https://img.shields.io/badge/frontend-React%2018-61DAFB?style=flat-square&logo=react" alt="React">
   <img src="https://img.shields.io/badge/agent-Go%201.25.9-00ADD8?style=flat-square&logo=go" alt="Go">
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey?style=flat-square" alt="Platform">
-  <a href="https://github.com/NergYR/EndoriumFort/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/NergYR/EndoriumFort/ci.yml?branch=master&label=CI&style=flat-square" alt="CI"></a>
-  <a href="https://github.com/NergYR/EndoriumFort/actions/workflows/release-gate.yml"><img src="https://img.shields.io/github/actions/workflow/status/NergYR/EndoriumFort/release-gate.yml?branch=master&label=Release%20Gate&style=flat-square" alt="Release Gate"></a>
-  <a href="https://github.com/NergYR/EndoriumFort/actions/workflows/codeql.yml"><img src="https://img.shields.io/github/actions/workflow/status/NergYR/EndoriumFort/codeql.yml?branch=master&label=CodeQL&style=flat-square" alt="CodeQL"></a>
+  <a href="https://github.com/Endorium-Group/EndoriumFort-CE/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Endorium-Group/EndoriumFort-CE/ci.yml?branch=master&label=CI&style=flat-square" alt="CI"></a>
+  <a href="https://github.com/Endorium-Group/EndoriumFort-CE/actions/workflows/release-gate.yml"><img src="https://img.shields.io/github/actions/workflow/status/Endorium-Group/EndoriumFort-CE/release-gate.yml?branch=master&label=Release%20Gate&style=flat-square" alt="Release Gate"></a>
+  <a href="https://github.com/Endorium-Group/EndoriumFort-CE/actions/workflows/codeql.yml"><img src="https://img.shields.io/github/actions/workflow/status/Endorium-Group/EndoriumFort-CE/codeql.yml?branch=master&label=CodeQL&style=flat-square" alt="CodeQL"></a>
 </p>
 
 # EndoriumFort
@@ -145,7 +145,7 @@ brew install cmake sqlite libssh2 node go
 ### Build Everything
 
 ```bash
-git clone https://github.com/NergYR/EndoriumFort.git
+git clone https://github.com/Endorium-Group/EndoriumFort-CE.git
 cd EndoriumFort
 chmod +x build-all.sh
 ./build-all.sh
@@ -804,7 +804,7 @@ Generate APT signing secrets (one command):
 
 ```bash
 chmod +x scripts/generate-apt-gpg-secrets.sh
-GITHUB_REPO="NergYR/EndoriumFort" \
+GITHUB_REPO="Endorium-Group/EndoriumFort-CE" \
 KEY_NAME="EndoriumFort APT Signing" \
 KEY_EMAIL="security@endoriumfort.local" \
 APT_GPG_PASSPHRASE="change-me" \
@@ -816,8 +816,8 @@ If `gh` CLI is configured and `GITHUB_REPO` is provided, the script can push sec
 Install from APT repository:
 
 ```bash
-REPO_OWNER="NergYR"
-REPO_NAME="EndoriumFort"
+REPO_OWNER="endorium-group"
+REPO_NAME="EndoriumFort-CE"
 
 sudo install -d -m 0755 /etc/apt/keyrings
 curl -fsSL "https://${REPO_OWNER}.github.io/${REPO_NAME}/apt/public.key" | \
@@ -1094,7 +1094,7 @@ Then open `http://localhost` in your browser.
 
 ```bash
 # Clone the repository
-git clone https://github.com/NergYR/EndoriumFort.git
+git clone https://github.com/Endorium-Group/EndoriumFort-CE.git
 cd EndoriumFort
 
 # Start with docker compose
@@ -1304,7 +1304,7 @@ EndoriumFort follows an **open-core** model:
   product under a commercial agreement. See the open-core architecture in
   [docs/OPEN-CORE.md](docs/OPEN-CORE.md).
 
-> Attribution: any use must cite [github.com/NergYR/EndoriumFort](https://github.com/NergYR/EndoriumFort).
+> Attribution: any use must cite [github.com/Endorium-Group/EndoriumFort-CE](https://github.com/Endorium-Group/EndoriumFort-CE).
 > This is a source-available license, not OSI open-source — review with counsel before commercial reliance.
 
 ---

@@ -1,6 +1,6 @@
 [Unit]
 Description=EndoriumFort PAM Bastion (Community Edition backend)
-Documentation=https://github.com/NergYR/EndoriumFort
+Documentation=https://github.com/Endorium-Group/EndoriumFort-CE
 After=network-online.target
 Wants=network-online.target
 

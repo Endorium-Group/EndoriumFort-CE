@@ -125,8 +125,8 @@ jobs:
             org.opencontainers.image.title=EndoriumFort Community
             org.opencontainers.image.description=Privileged Access Management (PAM) Bastion — Community Edition
             org.opencontainers.image.version=${{ steps.meta.outputs.version }}
-            org.opencontainers.image.source=https://github.com/NergYR/EndoriumFort
-            org.opencontainers.image.vendor=NergYR
+            org.opencontainers.image.source=https://github.com/Endorium-Group/EndoriumFort-CE
+            org.opencontainers.image.vendor=Endorium-Group
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@v4.1.0

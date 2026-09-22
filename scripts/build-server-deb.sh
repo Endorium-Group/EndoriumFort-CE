@@ -47,10 +47,10 @@ cat > "$WORK/DEBIAN/control" <<EOF
 Package: endoriumfort-server
 Version: ${VERSION}
 Architecture: ${ARCH}
-Maintainer: NergYR <https://github.com/NergYR/EndoriumFort>
+Maintainer: Endorium-Group <https://github.com/Endorium-Group/EndoriumFort-CE>
 Section: admin
 Priority: optional
-Homepage: https://github.com/NergYR/EndoriumFort
+Homepage: https://github.com/Endorium-Group/EndoriumFort-CE
 Installed-Size: ${INSTALLED_KB}
 Depends: libsqlite3-0, libssh2-1, libssl3, nginx, ca-certificates, openssl
 Description: EndoriumFort PAM Bastion - Community Edition server

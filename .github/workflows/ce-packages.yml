@@ -98,9 +98,9 @@ jobs:
           <!doctype html><meta charset=utf-8><title>EndoriumFort CE APT</title>
           <h1>EndoriumFort Community — APT repository</h1>
           <pre>
-          curl -fsSL https://NergYR.github.io/EndoriumFort-CE/endoriumfort-archive-keyring.asc \
+          curl -fsSL https://endorium-group.github.io/EndoriumFort-CE/endoriumfort-archive-keyring.asc \
             | sudo gpg --dearmor -o /usr/share/keyrings/endoriumfort.gpg
-          echo "deb [signed-by=/usr/share/keyrings/endoriumfort.gpg] https://NergYR.github.io/EndoriumFort-CE stable main" \
+          echo "deb [signed-by=/usr/share/keyrings/endoriumfort.gpg] https://endorium-group.github.io/EndoriumFort-CE stable main" \
             | sudo tee /etc/apt/sources.list.d/endoriumfort.list
           sudo apt-get update && sudo apt-get install endoriumfort-server
           </pre>
