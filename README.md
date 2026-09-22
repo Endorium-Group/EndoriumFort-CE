@@ -757,11 +757,33 @@ ARCH=arm64 \
 bash agent/packaging/macos/build-pkg.sh
 ```
 
+For Intel, use `ARCH=amd64` with `endoriumfort-agent-darwin-amd64`.
+Both packages contain a native Go agent and a Swift launcher compiled for the selected
+architecture, targeting macOS 12 or later. The packaging script checks the executable
+architectures and rejects mismatched payloads. If `ARCH` is omitted, it detects the
+architecture from the agent binary. CI also checks both executables inside each `.pkg`.
+
+The packaging helper now builds both macOS packages from prebuilt binaries:
+
+```bash
+bash agent/packaging/build-installers.sh
+# Build only one architecture:
+ARCH=arm64 bash agent/packaging/build-installers.sh
+```
+
+It looks for the named macOS binaries in `release/` (or `RELEASE_DIR`) first,
+then in `agent/` for local build outputs. Set `BINARY` to package a specific
+executable; `ARCH` can be omitted to detect its architecture. `OUT_DIR` is passed
+through to the platform packaging script. Linux continues to use the Linux
+packaging script; on Windows, use the PowerShell script below.
+
 Windows local build (requires WiX CLI):
 
 ```powershell
 dotnet tool install --global wix
 .\agent\packaging\windows\build-msi.ps1 -Version 1.1.0 -BinaryPath .\release\endoriumfort-agent-windows-amd64.exe
+# Windows on ARM:
+.\agent\packaging\windows\build-msi.ps1 -Version 1.1.0 -Arch arm64 -BinaryPath .\release\endoriumfort-agent-windows-arm64.exe
 ```
 
 Automated release packaging is handled by GitHub Actions workflow:
@@ -1221,8 +1243,12 @@ The build scripts automatically cross-compile the agent:
 
 | Host | Agent binaries produced |
 |------|------------------------|
-| Linux amd64 | `endoriumfort-agent` (linux) + `.exe` (windows) + macOS arm64 |
-| macOS arm64 | `endoriumfort-agent` (macOS) + `.exe` (windows) + linux amd64 |
+| Linux amd64 | `endoriumfort-agent` (Linux) + `.exe` (Windows) + macOS amd64 / arm64 |
+| macOS Intel / Apple Silicon | `endoriumfort-agent` (native macOS) + `.exe` (Windows) + Linux amd64 + macOS amd64 / arm64 |
+
+With cross-compilation enabled, both named macOS binaries are generated in `agent/`:
+`endoriumfort-agent-darwin-amd64` and `endoriumfort-agent-darwin-arm64`.
+Under WSL, set `ENDORIUMFORT_AGENT_CROSS_COMPILE=1` to enable cross-compilation.
 
 ---
 

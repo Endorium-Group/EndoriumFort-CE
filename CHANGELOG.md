@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+### macOS Intel and Apple Silicon
+- Fixed macOS installer launchers to target the package architecture instead of the build host, with macOS 12 as the minimum deployment target.
+- Added architecture checks for the agent and launcher, including verification of both packaged executables in CI.
+- Updated local cross-compilation to produce both Intel and Apple Silicon agent binaries.
+- Updated the packaging helper to build both macOS installers, with support for local binary outputs and single-architecture selection.
+
 ## v1.1.1-dev - 2026-04-19
 ### Build Stability (WSL / Low-Memory Environments)
 - Updated `build-all.sh` with WSL-safe defaults to reduce crash/OOM risk during full builds.

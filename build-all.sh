@@ -181,12 +181,16 @@ if [[ "$NPM_PATH" == /mnt/* ]]; then
   echo "Try: sudo apt update && sudo apt install nodejs npm" >&2
   exit 1
 fi
-if [[ ! -d node_modules ]]; then
+if [[ ! -x node_modules/.bin/vite ]]; then
   npm install
 fi
 npm run build
 
-# ─── Agent ───────────────────────────────────────────────────────────────
+# ─── Agent (Enterprise only — absent from the Community core repo) ─────────
+if [[ ! -d "$ROOT_DIR/agent" ]]; then
+  AGENT_VER="n/a"
+  info "No agent/ directory (Community edition) — skipping agent build"
+else
 info "Checking agent sources"
 AGENT_HASH=$(src_hash "$ROOT_DIR/agent" -name '*.go' -o -name 'go.mod' -o -name 'go.sum')
 AGENT_VER=$(maybe_bump "$ROOT_DIR/agent/VERSION" "$ROOT_DIR/agent/.src_hash" "$AGENT_HASH")
@@ -231,15 +235,17 @@ else
     GOOS=windows GOARCH=amd64 go build -ldflags "$LDFLAGS" -o endoriumfort-agent.exe .
     echo "  Agent binary (Windows amd64): $ROOT_DIR/agent/endoriumfort-agent.exe"
 
-    # Cross-compile: macOS (skip if already native)
-    if [[ "$HOST_OS" != "darwin" ]]; then
-      GOOS=darwin GOARCH=arm64 go build -ldflags "$LDFLAGS" -o endoriumfort-agent-darwin-arm64 .
-      echo "  Agent binary (macOS arm64): $ROOT_DIR/agent/endoriumfort-agent-darwin-arm64"
-    fi
+    # macOS releases for both Intel and Apple Silicon, regardless of the host.
+    for DARWIN_ARCH in amd64 arm64; do
+      CGO_ENABLED=0 GOOS=darwin GOARCH="$DARWIN_ARCH" go build -ldflags "$LDFLAGS" -o "endoriumfort-agent-darwin-$DARWIN_ARCH" .
+      echo "  Agent binary (macOS $DARWIN_ARCH): $ROOT_DIR/agent/endoriumfort-agent-darwin-$DARWIN_ARCH"
+    done
   else
     echo "  Agent cross-compilation disabled (set ENDORIUMFORT_AGENT_CROSS_COMPILE=1 to enable)"
   fi
 fi
+
+fi  # end agent block
 
 # ─── Global version & Git ────────────────────────────────────────────────
 GLOBAL_VER_FILE="$ROOT_DIR/VERSION"

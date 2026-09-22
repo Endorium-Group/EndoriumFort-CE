@@ -84,7 +84,7 @@ ensure_frontend_deps() {
     exit 1
   fi
 
-  if [[ ! -d "$FRONTEND_DIR/node_modules" ]]; then
+  if [[ ! -x "$FRONTEND_DIR/node_modules/.bin/vite" ]]; then
     info "Installing frontend dependencies"
     (cd "$FRONTEND_DIR" && npm install)
   fi

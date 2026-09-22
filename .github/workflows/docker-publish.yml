@@ -23,6 +23,10 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    # Publish the public COMMUNITY image only from the public core repo (where the
+    # premium pro/ overlay is absent). In the private repo this job is skipped —
+    # the Enterprise edition is delivered privately via ee-release.yml (tarball).
+    if: ${{ hashFiles('backend/src/pro/pro_features.cc') == '' }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6

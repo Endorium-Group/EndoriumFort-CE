@@ -90,7 +90,15 @@ endif()
 
 # Open-core edition switch. ON = Enterprise (compile pro/ premium modules).
 # OFF = Community (premium code physically absent; a no-op stub is linked).
-option(ENDORIUMFORT_PRO "Build the Enterprise edition (include pro/ modules)" ON)
+# Default is auto-detected from the presence of the pro/ overlay, so the public
+# Community repo (no pro/) builds CE and the private repo builds EE without any
+# flag. Override explicitly with -DENDORIUMFORT_PRO=ON/OFF when needed.
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/pro/pro_features.cc")
+  set(_ef_pro_default ON)
+else()
+  set(_ef_pro_default OFF)
+endif()
+option(ENDORIUMFORT_PRO "Build the Enterprise edition (include pro/ modules)" ${_ef_pro_default})
 if (ENDORIUMFORT_PRO)
   target_sources(endoriumfort_backend PRIVATE
     src/pro/pro_features.cc
