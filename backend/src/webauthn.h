@@ -130,9 +130,28 @@ inline bool is_valid_origin(const std::string &origin) {
          origin.rfind("http://127.0.0.1", 0) == 0;
 }
 
+// Dev/proxy helper: a reverse proxy (e.g. Vite on :5173 → backend :8080) forwards
+// the browser's Origin header verbatim but rewrites Host to the proxy target. For
+// local development we therefore trust a *loopback* Origin so WebAuthn works out of
+// the box without extra config; production must set the explicit override.
+inline std::string dev_loopback_origin(const crow::request &request) {
+  std::string origin = request.get_header_value("Origin");
+  while (!origin.empty() && std::isspace(static_cast<unsigned char>(origin.front())))
+    origin.erase(origin.begin());
+  while (!origin.empty() && std::isspace(static_cast<unsigned char>(origin.back())))
+    origin.pop_back();
+  if (origin.rfind("http://localhost", 0) == 0 ||
+      origin.rfind("http://127.0.0.1", 0) == 0) {
+    return origin;
+  }
+  return {};
+}
+
 inline std::string expected_origin(const crow::request &request,
                                    const std::string &override_origin = {}) {
   if (!override_origin.empty()) return override_origin;
+  const std::string dev = dev_loopback_origin(request);
+  if (!dev.empty()) return dev;
   const std::string host = request_host(request);
   if (host.empty()) return {};
   return request_scheme(request) + "://" + host;
@@ -141,6 +160,13 @@ inline std::string expected_origin(const crow::request &request,
 inline std::string expected_rp_id(const crow::request &request,
                                   const std::string &override_rp_id = {}) {
   if (!override_rp_id.empty()) return override_rp_id;
+  const std::string dev = dev_loopback_origin(request);
+  if (!dev.empty()) {
+    std::string host = dev.substr(std::string("http://").size());  // strip scheme
+    const size_t colon = host.find(':');
+    if (colon != std::string::npos) host = host.substr(0, colon);  // strip port
+    return host;  // "localhost" or "127.0.0.1"
+  }
   return trim_port(request_host(request));
 }
 
@@ -188,7 +214,12 @@ inline std::optional<ParsedAuthenticatorData> parse_authenticator_data(
 
   const auto expected_hash =
       crypto::sha256(reinterpret_cast<const uint8_t *>(rp_id.data()), rp_id.size());
-  if (!std::equal(expected_hash.begin(), expected_hash.end(), decoded->begin())) {
+  // Compare as unsigned bytes: `decoded` is a std::string (signed char), so a
+  // plain std::equal against uint8_t mismatches on any hash byte >= 0x80.
+  if (!std::equal(expected_hash.begin(), expected_hash.end(), decoded->begin(),
+                  [](uint8_t a, char b) {
+                    return a == static_cast<uint8_t>(b);
+                  })) {
     return std::nullopt;
   }
 

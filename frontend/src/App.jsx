@@ -25,6 +25,8 @@ import {
   consumeEphemeralCredential,
   previewSessionRisk,
   fetchLicenseStatus,
+  applyLicense,
+  reloadLicense,
   fetchResources,
   fetchSessions,
   fetchStats,
@@ -396,6 +398,9 @@ export default function App() {
   const [accessGrants, setAccessGrants] = useState([]);
   const [loadingAccessGrants, setLoadingAccessGrants] = useState(false);
   const [accessGrantError, setAccessGrantError] = useState('');
+  // Per-session routing hints (direct/relay) shown on session cards. Core display
+  // fed by fetchRelayResolution; kept in the shell (the relay ADMIN panel is @pro).
+  const [sessionRelayHints, setSessionRelayHints] = useState({});
   const [sessionEvidencePack, setSessionEvidencePack] = useState(null);
   const [sessionEvidenceLoading, setSessionEvidenceLoading] = useState(false);
   const [sessionEvidenceError, setSessionEvidenceError] = useState('');
@@ -408,6 +413,9 @@ export default function App() {
   const [licenseStatus, setLicenseStatus] = useState(null);
   const [licenseUpsell, setLicenseUpsell] = useState(null); // {feature, requiredTier} | null
   const [licenseBannerDismissed, setLicenseBannerDismissed] = useState(false);
+  const [licenseUploadText, setLicenseUploadText] = useState('');
+  const [licenseBusy, setLicenseBusy] = useState(false);
+  const [licenseActionMsg, setLicenseActionMsg] = useState(null); // {error, message} | null
   const [inlineWebResource, setInlineWebResource] = useState(null);
   const [vncViewerSession, setVncViewerSession] = useState(null);
   const [accessPromptResource, setAccessPromptResource] = useState(null);
@@ -567,6 +575,10 @@ export default function App() {
   const openUpsell = (feature, requiredTier) =>
     setLicenseUpsell({ feature: feature || '', requiredTier: requiredTier || 'pro' });
   const licenseDaysRemaining = Number(licenseStatus?.daysRemaining);
+  // Only poll premium endpoints when the license actually grants them. Otherwise
+  // background pollers 403 on landing → spurious upsell popups + console noise.
+  const securityCenterLicensed = premiumUnlocked('enterprise');
+  const jitLicensed = premiumUnlocked('pro');
 
   const canManagePlatform = hasCapability(auth.role, auth.permissions, 'manageResources');
   const canViewAudit = hasCapability(auth.role, auth.permissions, 'viewAudit');
@@ -780,9 +792,21 @@ export default function App() {
         // /api/security/*) is the app-wide banner/toasts, not this admin tab.
         badge: adminsWithoutMfa ? t('admin.riskCount', { count: adminsWithoutMfa }) : t('admin.healthy'),
         badgeTone: adminsWithoutMfa ? 'loading' : 'ok'
+      },
+      {
+        // Core section: view/upload the offline license (governs premium in EE).
+        id: 'license',
+        label: locale === 'fr' ? 'Licence' : 'License',
+        hint: locale === 'fr' ? 'Statut, expiration, upload' : 'Status, expiry, upload',
+        badge: (licenseStatus?.tier && licenseStatus?.state === 'valid')
+          ? String(licenseStatus.tier)
+          : (licenseStatus?.state || 'none'),
+        badgeTone: licenseStatus?.state === 'valid'
+          ? 'ok'
+          : (licenseStatus?.state === 'expired' || licenseStatus?.state === 'revoked' ? 'locked' : 'loading')
       }
     ];
-  }, [accessGrants.length, accessRequests, activeTier, licenseEdition, loadingAccessGrants, loadingResources, loadingUsers, resources.length, stats?.users?.adminsWithoutMfa, t, users.length]);
+  }, [accessGrants.length, accessRequests, activeTier, licenseEdition, licenseStatus, loadingAccessGrants, loadingResources, loadingUsers, locale, resources.length, stats?.users?.adminsWithoutMfa, t, users.length]);
 
   // Selecting a locked premium section opens the upsell instead of a broken panel.
   const selectAdminSection = (id) => {
@@ -989,7 +1013,7 @@ export default function App() {
   }, [auth.token]);
 
   useEffect(() => {
-    if (!auth.token) {
+    if (!auth.token || !jitLicensed) {
       setAccessRequests([]);
       setLoadingAccessRequests(false);
       return;
@@ -1013,7 +1037,7 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [auth.token]);
+  }, [auth.token, jitLicensed]);
 
   useEffect(() => {
     if (!auth.token || !canManagePlatform) {
@@ -1045,7 +1069,7 @@ export default function App() {
 
   // Shared access-profile list loader (used by JIT @pro CRUD + Users editor).
   useEffect(() => {
-    if (!auth.token || !canManagePlatform) {
+    if (!auth.token || !canManagePlatform || !jitLicensed) {
       setAccessProfiles([]);
       setLoadingAccessProfiles(false);
       return;
@@ -1069,10 +1093,10 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [auth.token, canManagePlatform]);
+  }, [auth.token, canManagePlatform, jitLicensed]);
 
   useEffect(() => {
-    if (!auth.token) {
+    if (!auth.token || !jitLicensed) {
       setAccessGrants([]);
       setLoadingAccessGrants(false);
       return;
@@ -1096,7 +1120,7 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [auth.token]);
+  }, [auth.token, jitLicensed]);
 
 
   // Fetch dashboard stats periodically
@@ -1156,7 +1180,7 @@ export default function App() {
   }, [auth.token, canViewAudit]);
 
   useEffect(() => {
-    if (!auth.token || !canViewAudit) {
+    if (!auth.token || !canViewAudit || !securityCenterLicensed) {
       setContainmentStatus({ enabled: false, updatedAt: '', updatedBy: '', reason: '' });
       return;
     }
@@ -1183,10 +1207,10 @@ export default function App() {
       active = false;
       window.clearInterval(interval);
     };
-  }, [auth.token, canViewAudit]);
+  }, [auth.token, canViewAudit, securityCenterLicensed]);
 
   useEffect(() => {
-    if (!auth.token || !canViewAudit) {
+    if (!auth.token || !canViewAudit || !securityCenterLicensed) {
       setActiveSecurityIncident({ active: false, incident: null });
       return;
     }
@@ -1211,10 +1235,10 @@ export default function App() {
       active = false;
       window.clearInterval(interval);
     };
-  }, [auth.token, canViewAudit]);
+  }, [auth.token, canViewAudit, securityCenterLicensed]);
 
   useEffect(() => {
-    if (!auth.token || !canViewAudit) {
+    if (!auth.token || !canViewAudit || !securityCenterLicensed) {
       return undefined;
     }
 
@@ -1352,7 +1376,7 @@ export default function App() {
       active = false;
       window.clearInterval(interval);
     };
-  }, [auth.token, canViewAudit, activeLiveAlertProfile, activeSecurityIncident]);
+  }, [auth.token, canViewAudit, activeLiveAlertProfile, activeSecurityIncident, securityCenterLicensed]);
 
   useEffect(() => {
     if (!liveSecurityAlerts.length) {
@@ -1749,57 +1773,57 @@ export default function App() {
     }
     setQuickRefreshing(true);
     try {
-      const requests = [fetchSessions(), fetchResources(), fetchStats()];
-      if (canManagePlatform) {
-        requests.push(fetchUsers());
-      }
-      if (canViewAudit) {
-        requests.push(fetchAudit());
-        requests.push(fetchContainmentStatus());
-        requests.push(fetchActiveSecurityIncident());
-      }
-      const results = await Promise.all(requests);
-      const [
-        sessionData,
-        resourceData,
-        statsData,
-        maybeUsers,
-        maybeAudit,
-        maybeContainment,
-        maybeIncident
-      ] = results;
-
+      // Core data (always). Grouped fetches are isolated so one failing group
+      // never blocks the others, and premium groups run only when licensed —
+      // otherwise their 403s would raise a spurious upsell on a plain refresh.
+      const [sessionData, resourceData, statsData] = await Promise.all([
+        fetchSessions(),
+        fetchResources(),
+        fetchStats()
+      ]);
       setSessions(Array.isArray(sessionData?.items) ? sessionData.items : []);
       setResources(Array.isArray(resourceData?.items) ? resourceData.items : []);
       setStats(statsData || null);
+
       if (canManagePlatform) {
-        setUsers(Array.isArray(maybeUsers?.items) ? maybeUsers.items : []);
+        try {
+          const usersData = await fetchUsers();
+          setUsers(Array.isArray(usersData?.items) ? usersData.items : []);
+        } catch (_) {}
       }
       if (canViewAudit) {
-        const auditData = canManagePlatform ? maybeAudit : maybeUsers;
-        const items = Array.isArray(auditData?.items) ? auditData.items : [];
-        setSecurityAuditItems(items);
-        const containmentData = canManagePlatform ? maybeContainment : maybeAudit;
-        setContainmentStatus({
-          enabled: !!containmentData?.enabled,
-          updatedAt: containmentData?.updatedAt || '',
-          updatedBy: containmentData?.updatedBy || '',
-          reason: containmentData?.reason || ''
-        });
-        const incidentData = canManagePlatform ? maybeIncident : maybeContainment;
-        setActiveSecurityIncident({
-          active: !!incidentData?.active,
-          incident: incidentData?.incident || null
-        });
-        if (auditOpen) {
-          setAuditItems(items);
-        }
+        try {
+          const auditData = await fetchAudit();
+          const items = Array.isArray(auditData?.items) ? auditData.items : [];
+          setSecurityAuditItems(items);
+          if (auditOpen) setAuditItems(items);
+        } catch (_) {}
       }
-      try {
-        const grantsData = await fetchAccessGrants();
-        setAccessGrants(Array.isArray(grantsData?.items) ? grantsData.items : []);
-      } catch (_) {}
-      if (canManagePlatform) {
+      if (canViewAudit && securityCenterLicensed) {
+        try {
+          const [containmentData, incidentData] = await Promise.all([
+            fetchContainmentStatus(),
+            fetchActiveSecurityIncident()
+          ]);
+          setContainmentStatus({
+            enabled: !!containmentData?.enabled,
+            updatedAt: containmentData?.updatedAt || '',
+            updatedBy: containmentData?.updatedBy || '',
+            reason: containmentData?.reason || ''
+          });
+          setActiveSecurityIncident({
+            active: !!incidentData?.active,
+            incident: incidentData?.incident || null
+          });
+        } catch (_) {}
+      }
+      if (jitLicensed) {
+        try {
+          const grantsData = await fetchAccessGrants();
+          setAccessGrants(Array.isArray(grantsData?.items) ? grantsData.items : []);
+        } catch (_) {}
+      }
+      if (canManagePlatform && jitLicensed) {
         try {
           const profileData = await fetchAccessProfiles();
           setAccessProfiles(Array.isArray(profileData?.items) ? profileData.items : []);
@@ -1813,6 +1837,58 @@ export default function App() {
       setSessionError(error.message || t('feedback.unableRefreshData'));
     } finally {
       setQuickRefreshing(false);
+    }
+  };
+
+  const refreshLicenseStatus = async () => {
+    try {
+      const status = await fetchLicenseStatus();
+      setLicenseStatus(status);
+      return status;
+    } catch (_) {
+      return null;
+    }
+  };
+
+  const onApplyLicense = async () => {
+    const token = String(licenseUploadText || '').trim();
+    if (!token) {
+      setLicenseActionMsg({ error: true, message: locale === 'fr' ? 'Collez un jeton de licence.' : 'Paste a license token.' });
+      return;
+    }
+    setLicenseBusy(true);
+    setLicenseActionMsg(null);
+    try {
+      const res = await applyLicense(token);
+      await refreshLicenseStatus();
+      setLicenseUploadText('');
+      setLicenseActionMsg({
+        error: false,
+        message: (locale === 'fr' ? 'Licence appliquée : ' : 'License applied: ') +
+          `${res.tier || 'free'} / ${res.state}`
+      });
+    } catch (error) {
+      setLicenseActionMsg({ error: true, message: error.message || (locale === 'fr' ? 'Licence invalide.' : 'Invalid license.') });
+    } finally {
+      setLicenseBusy(false);
+    }
+  };
+
+  const onReloadLicense = async () => {
+    setLicenseBusy(true);
+    setLicenseActionMsg(null);
+    try {
+      await reloadLicense();
+      const status = await refreshLicenseStatus();
+      setLicenseActionMsg({
+        error: false,
+        message: (locale === 'fr' ? 'Rechargée depuis le disque : ' : 'Reloaded from disk: ') +
+          `${status?.tier || 'free'} / ${status?.state || 'none'}`
+      });
+    } catch (error) {
+      setLicenseActionMsg({ error: true, message: error.message || (locale === 'fr' ? 'Rechargement impossible.' : 'Reload failed.') });
+    } finally {
+      setLicenseBusy(false);
     }
   };
 
@@ -4686,6 +4762,81 @@ export default function App() {
           )}
 
           {adminSection === 'enterprise' && <EnterpriseIamPanel auth={auth} />}
+
+          {adminSection === 'license' && (
+          <div className="panel reveal">
+            <div className="panel-header">
+              <div>
+                <h3>{locale === 'fr' ? 'Licence' : 'License'}</h3>
+                <p>
+                  {locale === 'fr'
+                    ? 'Licence hors-ligne signée (Ed25519 + ML-DSA-65). Débloque les fonctionnalités premium en édition Enterprise.'
+                    : 'Signed offline license (Ed25519 + ML-DSA-65). Unlocks premium features in the Enterprise edition.'}
+                </p>
+              </div>
+              <span className={`pill ${licenseStatus?.state === 'valid' ? 'ok' : (licenseStatus?.state === 'expired' || licenseStatus?.state === 'revoked' ? 'error' : 'loading')}`}>
+                {licenseStatus?.state || 'none'}
+              </span>
+            </div>
+
+            <div className="relay-kpi-grid">
+              <article className="relay-kpi-card">
+                <span>{locale === 'fr' ? 'Édition' : 'Edition'}</span>
+                <strong>{licenseStatus?.edition || 'community'}</strong>
+              </article>
+              <article className={`relay-kpi-card ${licenseStatus?.state === 'valid' ? 'ok' : ''}`}>
+                <span>Tier</span>
+                <strong>{licenseStatus?.state === 'valid' ? (licenseStatus?.tier || 'free') : 'free'}</strong>
+              </article>
+              <article className="relay-kpi-card">
+                <span>{locale === 'fr' ? 'Type' : 'Kind'}</span>
+                <strong>{licenseStatus?.kind || 'n/a'}</strong>
+              </article>
+              <article className={`relay-kpi-card ${Number(licenseStatus?.daysRemaining) >= 0 && Number(licenseStatus?.daysRemaining) <= 7 ? 'warning' : ''}`}>
+                <span>{locale === 'fr' ? 'Jours restants' : 'Days left'}</span>
+                <strong>{Number.isFinite(Number(licenseStatus?.daysRemaining)) ? licenseStatus.daysRemaining : 'n/a'}</strong>
+              </article>
+            </div>
+
+            <div className="relay-enroll-token-box">
+              <p><strong>{locale === 'fr' ? 'Client' : 'Customer'}</strong>: {licenseStatus?.customer || 'n/a'}</p>
+              <p><strong>License ID</strong>: {licenseStatus?.licenseId || 'n/a'}</p>
+              <p><strong>{locale === 'fr' ? 'Expire le' : 'Expires at'}</strong>: {licenseStatus?.expiresAt || 'n/a'}</p>
+              <p><strong>Max nodes / seats</strong>: {Number(licenseStatus?.maxNodes) || 0} / {Number(licenseStatus?.maxSeats) || 0}</p>
+              <p><strong>Features</strong>: {Array.isArray(licenseStatus?.features) && licenseStatus.features.length ? licenseStatus.features.join(', ') : (locale === 'fr' ? 'par tier' : 'by tier')}</p>
+            </div>
+
+            <div className="panel-header" style={{ marginTop: '0.6rem' }}>
+              <div>
+                <h3>{locale === 'fr' ? 'Charger une licence' : 'Upload a license'}</h3>
+                <p>
+                  {locale === 'fr'
+                    ? 'Collez le contenu du fichier .jws. Il est vérifié puis persisté (rechargement à chaud, compatible air-gap).'
+                    : 'Paste the .jws file contents. It is verified, persisted and hot-reloaded (air-gap friendly).'}
+                </p>
+              </div>
+            </div>
+            <textarea
+              className="license-upload-input"
+              rows={5}
+              value={licenseUploadText}
+              onChange={(event) => setLicenseUploadText(event.target.value)}
+              placeholder="eyJ...header.eyJ...payload.eyJ...signatures"
+              spellCheck={false}
+            />
+            <div className="resource-actions">
+              <button type="button" onClick={onApplyLicense} disabled={licenseBusy || !licenseUploadText.trim()}>
+                {licenseBusy ? (locale === 'fr' ? 'Application...' : 'Applying...') : (locale === 'fr' ? 'Appliquer la licence' : 'Apply license')}
+              </button>
+              <button type="button" className="ghost" onClick={onReloadLicense} disabled={licenseBusy}>
+                {locale === 'fr' ? 'Recharger depuis le disque' : 'Reload from disk'}
+              </button>
+            </div>
+            {licenseActionMsg && (
+              <p className={licenseActionMsg.error ? 'error' : 'muted'}>{licenseActionMsg.message}</p>
+            )}
+          </div>
+          )}
 
           {adminSection === 'security' && stats && (
             <SectionCard

@@ -127,6 +127,11 @@ inline RuntimeConfig load_runtime_config(const AppContext &ctx) {
   config.relayEnrollmentEnabled = !relay_secret.empty();
   config.licenseInline = parse_string_env("ENDORIUMFORT_LICENSE");
   config.licenseFile = parse_string_env("ENDORIUMFORT_LICENSE_FILE");
+  // Default persistence target so the admin "upload license" flow always has a
+  // writable path. Relative to the working dir: resolves to /app/data/license.jws
+  // in Docker (WORKDIR /app, the ef-data volume) and to a writable dir in local
+  // dev. Overridden by the env var.
+  if (config.licenseFile.empty()) config.licenseFile = "data/license.jws";
   config.licenseCrlFile = parse_string_env("ENDORIUMFORT_LICENSE_CRL_FILE");
   return config;
 }

@@ -67,6 +67,25 @@ export async function fetchLicenseStatus() {
   return response.json();
 }
 
+export async function applyLicense(license) {
+  const response = await fetch('/api/license/apply', {
+    method: 'POST',
+    headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ license })
+  });
+  await ensureResponseOk(response, 'Failed to apply license');
+  return response.json();
+}
+
+export async function reloadLicense() {
+  const response = await fetch('/api/license/reload', {
+    method: 'POST',
+    headers: withAuthHeaders()
+  });
+  await ensureResponseOk(response, 'Failed to reload license');
+  return response.json();
+}
+
 export function setAuthToken(token) {
   authToken = token || '';
 }

@@ -2784,6 +2784,8 @@ button:disabled {
   align-items: center;
   justify-content: center;
   z-index: 1000;
+  padding: 1rem;
+  overflow-y: auto;
 }
 
 .modal-content {
@@ -2794,6 +2796,10 @@ button:disabled {
   width: 90%;
   box-shadow: var(--shadow);
   border: 1px solid var(--stroke);
+  /* Tall modals (TOTP setup: QR + secret + code field + buttons) must scroll
+     inside the viewport instead of overflowing off-screen. */
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
 }
 
 .modal-content h3 {
@@ -3617,4 +3623,19 @@ button:disabled {
   background: rgba(148, 163, 184, 0.16);
   border-color: rgba(148, 163, 184, 0.34);
   color: #cbd5e1;
+}
+
+/* License upload textarea (admin License section) */
+.license-upload-input {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  padding: 0.6rem;
+  border-radius: 0.6rem;
+  border: 1px solid var(--stroke);
+  background: var(--bg);
+  color: var(--text);
+  resize: vertical;
+  margin-bottom: 0.6rem;
+  word-break: break-all;
 }

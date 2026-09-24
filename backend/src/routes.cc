@@ -2807,7 +2807,9 @@ void register_totp_routes(CrowApp &app, AppContext &ctx) {
                     webauthn::base64url_encode(challenge->challenge) ||
                 client_data->origin != challenge->origin ||
                 (parsed_auth_data->flags & 0x01) == 0) {
-              return crow::response(401, "WebAuthn registration validation failed");
+              // 400 (not 401): the session is valid — only the passkey attestation
+              // failed. A 401 here would trip the frontend's global logout.
+              return crow::response(400, "WebAuthn registration validation failed");
             }
 
             WebAuthnCredential credential;

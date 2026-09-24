@@ -12,8 +12,11 @@
 #include <sqlite3.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <ctime>
+#include <filesystem>
+#include <system_error>
 #include <fstream>
 #include <mutex>
 #include <string>
@@ -373,6 +376,92 @@ void register_license_routes(CrowApp &app, AppContext &ctx) {
         }
         ctx.reload_license();
         const auto st = ctx.current_license_status();
+        crow::json::wvalue payload;
+        payload["status"] = "ok";
+        payload["state"] = license::to_string(st.state);
+        payload["tier"] = st.state == license::LicenseState::Valid
+                              ? st.claims.tier
+                              : std::string("free");
+        payload["daysRemaining"] = st.daysRemaining;
+        return crow::response{payload};
+      });
+
+  // Admin: upload a license token from the UI. Verifies it BEFORE persisting to
+  // the configured license file, then hot-reloads. Air-gap friendly (no server).
+  CROW_ROUTE(app, "/api/license/apply")
+      .methods(crow::HTTPMethod::Post)([&ctx](const crow::request &request) {
+        auto auth = ctx.find_auth(request);
+        if (!auth) return crow::response(401, "Unauthorized");
+        if (!ctx.has_permission(auth->userId, auth->role, "resources.manage")) {
+          return crow::response(403, "Forbidden");
+        }
+        auto body = crow::json::load(request.body);
+        if (!body || !body.has("license")) {
+          return crow::response(400, "Missing 'license' field");
+        }
+        std::string token = std::string(body["license"].s());
+        // Trim surrounding whitespace/newlines from a pasted token.
+        auto not_space = [](unsigned char c) { return !std::isspace(c); };
+        token.erase(token.begin(),
+                    std::find_if(token.begin(), token.end(), not_space));
+        token.erase(std::find_if(token.rbegin(), token.rend(), not_space).base(),
+                    token.end());
+        if (token.empty()) return crow::response(400, "Empty license token");
+
+        // Verify signature/claims BEFORE writing anything to disk.
+        const int64_t now = now_epoch_seconds();
+        const int64_t watermark =
+            std::max(db_get_int(ctx, "clock_watermark", 0), now);
+        std::unordered_set<std::string> denylist;
+        if (!ctx.license_crl_path.empty())
+          load_crl(ctx, ctx.license_crl_path, denylist);
+        const auto check = license::parse_and_verify(
+            token, license::issuer_keys(), now, watermark, denylist);
+        if (check.state == license::LicenseState::Invalid) {
+          return crow::response(400, std::string("Invalid license: ") +
+                                         (check.reason.empty() ? "verification failed"
+                                                               : check.reason));
+        }
+
+        std::string path = ctx.license_file_path;
+        if (path.empty()) {
+          return crow::response(
+              400,
+              "No license file path configured (set ENDORIUMFORT_LICENSE_FILE).");
+        }
+        // Ensure the parent directory exists (e.g. /app/data on first run).
+        std::error_code dir_ec;
+        const std::filesystem::path fs_path(path);
+        if (fs_path.has_parent_path()) {
+          std::filesystem::create_directories(fs_path.parent_path(), dir_ec);
+        }
+        {
+          std::ofstream out(path, std::ios::trunc);
+          if (!out) {
+            return crow::response(
+                500, std::string("Cannot write license file at '") + path +
+                         "' (check ENDORIUMFORT_LICENSE_FILE points to a "
+                         "writable path)");
+          }
+          out << token;
+        }
+        // A configured inline env token would otherwise shadow the file on reload.
+        ctx.license_inline.clear();
+        ctx.reload_license();
+
+        const auto st = ctx.current_license_status();
+        AuditEvent ev;
+        ev.id = ctx.next_audit_id.fetch_add(1);
+        ev.type = "license.uploaded";
+        ev.actor = auth->user;
+        ev.role = auth->role;
+        ev.createdAt = now_utc();
+        ev.payloadJson = std::string("{\"state\":\"") +
+                         json_escape(license::to_string(st.state)) +
+                         "\",\"tier\":\"" + json_escape(st.claims.tier) + "\"}";
+        ev.payloadIsJson = true;
+        ctx.append_audit(ev);
+
         crow::json::wvalue payload;
         payload["status"] = "ok";
         payload["state"] = license::to_string(st.state);

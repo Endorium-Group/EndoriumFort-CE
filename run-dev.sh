@@ -94,7 +94,12 @@ start_backend() {
   info "Starting backend on http://localhost:${BACKEND_PORT}"
   (
     cd "$BACKEND_BUILD_DIR"
-    ENDORIUMFORT_PORT="$BACKEND_PORT" ./endoriumfort_backend
+    # WebAuthn origin/RP must match the BROWSER origin (Vite on FRONTEND_PORT),
+    # not the proxied backend Host — otherwise passkey verification fails.
+    ENDORIUMFORT_PORT="$BACKEND_PORT" \
+    ENDORIUMFORT_WEBAUTHN_RP_ID="${ENDORIUMFORT_WEBAUTHN_RP_ID:-localhost}" \
+    ENDORIUMFORT_WEBAUTHN_ORIGIN="${ENDORIUMFORT_WEBAUTHN_ORIGIN:-http://localhost:${FRONTEND_PORT}}" \
+    ./endoriumfort_backend
   ) &
   BACKEND_PID=$!
 }
