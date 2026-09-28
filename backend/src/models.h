@@ -289,3 +289,19 @@ struct ClusterPeerNode {
   int managedRelays = 0;
   int managedSessions = 0;
 };
+
+// Tunnel-agent inventory entry (populated from X-EndoriumFort-Agent-* headers
+// seen on agent requests). Keyed by user@sourceIp.
+struct AgentInfo {
+  std::string agentKey;   // "user@sourceIp"
+  std::string user;
+  std::string os;
+  std::string arch;
+  std::string version;
+  std::string sourceIp;
+  std::string userAgent;
+  std::string firstSeenAt;
+  std::string lastSeenAt;
+  int64_t lastSeenEpoch = 0;
+  int64_t tunnelsRequested = 0;
+};

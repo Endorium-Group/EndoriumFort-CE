@@ -31,7 +31,7 @@ jobs:
           echo "Changed files:"
           echo "$CHANGED"
 
-          if echo "$CHANGED" | grep -Eq '^(backend/src/|frontend/src/|agent/main.go)'; then
+          if echo "$CHANGED" | grep -Eq '^(backend/src/|frontend/src/|agent/.*[.]go$)'; then
             if ! echo "$CHANGED" | grep -Eq '^CHANGELOG.md$'; then
               echo "ERROR: CHANGELOG.md must be updated for backend/frontend/agent runtime changes." >&2
               exit 1
@@ -48,7 +48,7 @@ jobs:
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           CHANGED="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
 
-          if echo "$CHANGED" | grep -Eq '^(backend/src/database|backend/src/routes|docker-compose.yml|Dockerfile|frontend/package.json|agent/main.go)'; then
+          if echo "$CHANGED" | grep -Eq '^(backend/src/database|backend/src/routes|docker-compose.yml|Dockerfile|frontend/package.json|agent/.*[.]go$)'; then
             if ! echo "$PR_BODY" | grep -Eiq '(migration|breaking changes?|upgrade|no migration (required|needed)|no breaking changes?|backward compatible|backwards compatible|\bn/?a\b|not applicable)'; then
               echo "ERROR: PR body must include migration/upgrade notes, or explicitly state no migration/no breaking changes, for potentially breaking operational changes." >&2
               exit 1

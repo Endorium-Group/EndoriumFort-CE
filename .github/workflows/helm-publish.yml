@@ -1,0 +1,95 @@
+# ─── EndoriumFort — Helm chart: lint + publish to GHCR (OCI) ──────────────────
+# Lints/renders the chart on every PR touching it, and on a version tag packages
+# it and pushes it as an OCI artifact to ghcr.io/<owner>/charts/endoriumfort.
+#
+# Install (once published):
+#   helm install ef oci://ghcr.io/endorium-group/charts/endoriumfort --version <X.Y.Z>
+name: Helm chart
+
+on:
+  push:
+    tags:
+      - "v*"
+    paths:
+      - "deploy/helm/**"
+      - ".github/workflows/helm-publish.yml"
+  pull_request:
+    paths:
+      - "deploy/helm/**"
+      - ".github/workflows/helm-publish.yml"
+  workflow_dispatch:
+
+env:
+  CHART_DIR: deploy/helm/endoriumfort
+
+jobs:
+  lint:
+    name: Lint & template
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: helm lint
+        run: helm lint "${CHART_DIR}" --values "${CHART_DIR}/ci/ingress-values.yaml"
+
+      - name: helm template (default values)
+        run: helm template ef "${CHART_DIR}" >/dev/null
+
+      - name: helm template (ingress + secrets)
+        run: helm template ef "${CHART_DIR}" --values "${CHART_DIR}/ci/ingress-values.yaml" >/dev/null
+
+  publish:
+    name: Package & push to GHCR
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: Derive version from tag
+        id: ver
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"   # GHCR namespaces must be lowercase
+          echo "owner=${OWNER}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Package chart
+        run: |
+          helm package "${CHART_DIR}" \
+            --version "${{ steps.ver.outputs.version }}" \
+            --app-version "${{ steps.ver.outputs.version }}" \
+            --destination dist
+
+      - name: Push chart to GHCR
+        run: |
+          helm push "dist/endoriumfort-${{ steps.ver.outputs.version }}.tgz" \
+            "oci://ghcr.io/${{ steps.ver.outputs.owner }}/charts"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Helm chart published :ship:"
+            echo ""
+            echo '```'
+            echo "helm install ef oci://ghcr.io/${{ steps.ver.outputs.owner }}/charts/endoriumfort --version ${{ steps.ver.outputs.version }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

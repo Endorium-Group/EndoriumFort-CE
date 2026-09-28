@@ -174,6 +174,8 @@ inline const std::vector<FeatureEntitlement> &feature_catalog() {
       {"ssh.ca", "enterprise", nullptr, GateLayer::PerRoute},
       {"automation.scheduler", "pro", nullptr, GateLayer::PerRoute},
       {"vault.rotation", "enterprise", nullptr, GateLayer::PerRoute},
+      {"vault.dynamic", "enterprise", nullptr, GateLayer::PerRoute},
+      {"itdr", "enterprise", nullptr, GateLayer::PerRoute},
   };
   return catalog;
 }

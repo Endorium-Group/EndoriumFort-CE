@@ -56,8 +56,11 @@ int main() {
   // Premium (Enterprise) route groups — no-op in the Community edition.
   register_pro_features(app, ctx);
 
-  // ── Start server ──
+  // ── Start server ── (blocks until SIGINT/SIGTERM)
   app.port(runtime_config.port).multithreaded().run();
+
+  // ── Graceful teardown: stop premium background workers (scheduler, …) ──
+  ctx.run_shutdown_hooks();
 
 #ifdef ENDORIUMFORT_SSH_ENABLED
 #ifndef _WIN32

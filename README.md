@@ -562,7 +562,11 @@ Run the relay daemon:
   --server https://bastion.example.com \
   --relay-id relay-paris-01 \
   --label "Relay Paris #1" \
-  --listen :18080 \
+  --listen 127.0.0.1:18080 \
+  --tls-cert /etc/endoriumfort-relay/server.pem \
+  --tls-key /etc/endoriumfort-relay/server-key.pem \
+  --client-ca /etc/endoriumfort-relay/bastion-client-ca.pem \
+  --allow-target 10.20.0.10:22 \
   --enroll-secret "<ENDORIUMFORT_RELAY_ENROLL_SECRET>" \
   --certificate "<relay_certificate_if_required>"
 ```
@@ -570,7 +574,21 @@ Run the relay daemon:
 Behavior:
 - enrolls once via `POST /api/relays/enroll`
 - keeps online state fresh via periodic `POST /api/relays/heartbeat`
-- runs a real TCP relay service using `HTTP CONNECT` on `--listen`
+- runs `HTTP CONNECT` over TLS with mandatory client certificates on `--listen` (default `127.0.0.1:18080`)
+- requires `--tls-cert`, `--tls-key`, `--client-ca`, and at least one repeatable `--allow-target IP:port`; startup fails if these are missing
+- only dials explicitly allowed IP/port pairs after validating the client certificate; hostnames, wildcard destinations and implicit ports are rejected
+
+**Migration:** plaintext CONNECT clients must switch to TLS and present a client certificate signed by the dedicated CA in `--client-ca`. Provision a server certificate matching the relay address and configure clients to verify it. Trust only a CA reserved for authorized bastion clients: every valid client certificate from that CA receives access to the relay's entire target allowlist. The enrollment `--certificate` header and enrollment tokens are separate from this TLS authentication. The backend enrollment/heartbeat API does not distribute these TLS credentials or configure CONNECT clients automatically. For a remote bastion, explicitly bind `--listen` to the relay's private network address and configure the permitted destinations. IPv6 targets use `[address]:port`. There is no automatic fallback to HTTP.
+
+For temporary plaintext CONNECT testing, replace the three TLS flags with:
+
+```bash
+--allow-http-connect-for 30m \
+--allow-http-client 127.0.0.1 \
+--allow-target 10.20.0.10:22
+```
+
+The duration is mandatory (maximum 24 hours); the relay and its active connections stop when it expires. Repeat `--allow-http-client` for each authorized source IP. The source address comes from the TCP connection, not forwarded headers. Destination restrictions still apply. This mode uses neither encryption nor client certificates; normal startup remains mutual TLS. `--allow-http` and `--insecure` separately control the relay-to-bastion API connection.
 
 You can alternatively bootstrap with one-time enrollment token:
 
@@ -578,7 +596,11 @@ You can alternatively bootstrap with one-time enrollment token:
 ./agent/endoriumfort-relay-linux-amd64 \
   --server https://bastion.example.com \
   --relay-id relay-paris-02 \
-  --listen :18080 \
+  --listen 127.0.0.1:18080 \
+  --tls-cert /etc/endoriumfort-relay/server.pem \
+  --tls-key /etc/endoriumfort-relay/server-key.pem \
+  --client-ca /etc/endoriumfort-relay/bastion-client-ca.pem \
+  --allow-target 10.20.0.10:22 \
   --enrollment-token "<one_time_token>" \
   --certificate "<relay_certificate_if_required>"
 ```
@@ -658,13 +680,15 @@ Security note (agent tunnel hardening):
 - Backend now caches handshake nonces per ticket for a short TTL to reject duplicate nonce reuse attempts.
 - Backend accepts only active key IDs (current plus short grace window) to support safe key rotation without breaking active clients.
 - Tunnel ticket issuance is rate-limited per user to reduce abuse/bruteforce pressure.
-- Agent transport policy is now strict by default: HTTPS/WSS required unless explicitly overridden for lab mode (`--allow-http` or `EF_ALLOW_INSECURE_HTTP=1`).
+- Agent transport policy is strict by default: HTTPS/WSS required. CLI and interactive commands retain explicit lab overrides; browser deep-links always require HTTPS with certificate validation.
 - A single running agent process can now host multiple concurrent local tunnels via repeated `--tunnel resource_id:local_port` options.
-- With `--manage`, tunnels can be added/removed at runtime from the same process (`add`, `remove`, `list`, `quit`) without restarting the agent.
+- With `--manage`, tunnels can be added/removed at runtime from the same process (`add`, `remove`, `list`, `quit`) without restarting the agent. `quit`, `exit`, end-of-input, and termination signals use the same idempotent shutdown path.
+- Removing or stopping a tunnel cancels pending ticket requests, WebSocket handshakes and retry waits, closes active connections, and waits for connection workers to finish before releasing the tunnel entry. An occupied local port is reported immediately when starting a tunnel.
+- Agent API requests (health, login, resources and tunnel tickets) have a 30-second total timeout, including response body reads, and 10-second connection/TLS/header deadlines. Responses are capped at 64 KiB (8 MiB for resource lists, 4 KiB for error bodies); oversized or malformed JSON responses are rejected. These request deadlines do not limit the lifetime of established tunnels.
 - Agent tracks per-tunnel health and traffic counters (`TX` / `RX` bytes), visible in `list`/`stats` manage commands and in `--tui` mode.
 - Agent retries WebSocket establishment with exponential backoff + jitter for better resilience during transient network/backend failures.
-- Agent can refresh token from `EF_TOKEN` or secure token file on auth failures to support token rotation with less downtime.
-- Token file loading now enforces strict permissions (mode `600`) for better local secret hygiene.
+- Agent can refresh a token on auth failures only when its saved server binding, or `EF_TOKEN_SERVER` for `EF_TOKEN`, matches the tunnel server.
+- Token storage uses current-user Windows DPAPI encryption on Windows, and strict file permissions (mode `600`) on Linux and macOS.
 - Optional `--log-json` enables structured logs for easier SIEM/observability pipelines.
 
 Or simply **click a resource tile** with the agent protocol:
@@ -694,10 +718,19 @@ Supported query parameters:
 - `server` (required)
 - `resource` (required)
 - `local-port` (optional, auto-allocated if omitted)
-- `token` (optional if already available in `EF_TOKEN` or `~/.endoriumfort_token`)
+- `token` (optional when a token is saved for the same server, or when `EF_TOKEN` and a matching `EF_TOKEN_SERVER` are configured)
 - `redirect-url` (optional, defaults to `http://127.0.0.1:<local-port>`)
 - `no-browser=1` (optional, skip automatic browser opening; useful for RDP/SSH/VNC client flows)
-- `insecure=1` / `allow-http=1` for lab usage only
+- `insecure=1` / `allow-http=1` and their aliases are rejected in links; lab usage requires direct CLI commands
+
+Credential protection:
+
+- On Windows, existing unencrypted token files are rejected: run `login --server` again to create the protected file. Do not copy it between user accounts.
+- `login --server` now saves the token together with its server in `~/.endoriumfort_token` (JSON on Linux/macOS; the entire record is encrypted with current-user DPAPI on Windows). The scheme, host, port and base path must match when the token is reused; default ports and trailing slashes are normalized.
+- **After upgrading, log in again.** Legacy plaintext token files have no trusted server binding and are rejected instead of being automatically assigned to a server chosen by a link.
+- For links and automatic token refresh, an environment token requires `EF_TOKEN_SERVER=https://your-bastion` alongside `EF_TOKEN`. An unbound `EF_TOKEN` remains supported for direct `list`/`connect` CLI commands where the operator chooses `--server` explicitly. A configured binding is always checked.
+- Links cannot enable HTTP or disable certificate validation, including through `EF_ALLOW_INSECURE_HTTP` or `EF_INSECURE_TLS`. CLI lab flags remain available.
+- API requests do not follow HTTP redirects, so login passwords and bearer tokens cannot be forwarded to another endpoint. Configure the canonical backend URL directly.
 
 Template placeholders in `redirect-url`:
 
@@ -737,13 +770,28 @@ Uninstall scripts are available in the same folders (`uninstall-protocol.*`).
 
 #### Build native installer packages
 
-The repository now includes packaging scripts for native installers:
+Each OS folder has a self-contained **build entry point** that compiles the agent
+from source and produces the native installer(s):
 
-- Linux (`.deb` / `.rpm`): `agent/packaging/linux/build-packages.sh`
-- macOS (`.pkg`): `agent/packaging/macos/build-pkg.sh`
-- Windows (`.msi`): `agent/packaging/windows/build-msi.ps1`
+- Linux (`.deb` / `.rpm`): `agent/packaging/linux/build.sh`
+- macOS (`.pkg`): `agent/packaging/macos/build.sh`
+- Windows (`.msi`): `agent/packaging/windows/build.ps1`
 
-Linux local build (requires `fpm`, `rpm`, and prebuilt Linux binaries in `release/`):
+Each entry point delegates to a lower-level **package-only** script that packages a
+prebuilt binary (used by CI): `build-packages.sh`, `build-pkg.sh`, `build-msi.ps1`.
+
+Every agent instance runs in the system terminal: interactive mode when launched with
+no arguments, and `open-link` (tunnel with visible logs) on a deep link. macOS opens
+Terminal.app, Windows opens a console window, and Linux uses the desktop environment's
+terminal (`Terminal=true`).
+
+Linux local build (compiles amd64 + arm64, then packages; requires `go`, `fpm`, `rpm`):
+
+```bash
+VERSION=1.1.0 bash agent/packaging/linux/build.sh
+```
+
+Package-only (requires prebuilt Linux binaries in `release/`):
 
 ```bash
 VERSION=1.1.0 bash agent/packaging/linux/build-packages.sh
@@ -755,7 +803,16 @@ Linux APT packages for relay + web bastion:
 VERSION=1.1.0 bash agent/packaging/linux/build-apt-packages.sh
 ```
 
-macOS local build (requires `pkgbuild` and a Darwin binary):
+macOS local build (compiles from source, then packages; requires `go` and `pkgbuild`):
+
+```bash
+# Both architectures:
+VERSION=1.1.0 bash agent/packaging/macos/build.sh
+# Single architecture:
+VERSION=1.1.0 ARCH=arm64 bash agent/packaging/macos/build.sh
+```
+
+Package-only (requires a prebuilt Darwin binary):
 
 ```bash
 VERSION=1.1.0 \
@@ -764,30 +821,46 @@ ARCH=arm64 \
 bash agent/packaging/macos/build-pkg.sh
 ```
 
+The `.pkg` also installs `/usr/local/bin/endoriumfort-agent`, linked to the agent
+inside `/Applications/EndoriumFortAgent.app`, and registers `/usr/local/bin` in
+`/etc/paths.d/endoriumfort-agent`. Open a new terminal after installation and run
+`command -v endoriumfort-agent` or `endoriumfort-agent --version`. This applies to
+the system-wide `.pkg` installer; the user-local protocol installer is separate.
+
 For Intel, use `ARCH=amd64` with `endoriumfort-agent-darwin-amd64`.
 Both packages contain a native Go agent and a Swift launcher compiled for the selected
 architecture, targeting macOS 12 or later. The packaging script checks the executable
 architectures and rejects mismatched payloads. If `ARCH` is omitted, it detects the
 architecture from the agent binary. CI also checks both executables inside each `.pkg`.
 
-The packaging helper now builds both macOS packages from prebuilt binaries:
+`agent/packaging/build-installers.sh` is a convenience dispatcher: it detects the
+host OS and runs the matching per-folder entry point (`linux/build.sh` on Linux,
+`macos/build.sh` on macOS). Windows is not covered by this dispatcher — run
+`windows/build.ps1` directly in PowerShell.
 
 ```bash
 bash agent/packaging/build-installers.sh
-# Build only one architecture:
+# macOS, single architecture:
 ARCH=arm64 bash agent/packaging/build-installers.sh
 ```
 
-It looks for the named macOS binaries in `release/` (or `RELEASE_DIR`) first,
-then in `agent/` for local build outputs. Set `BINARY` to package a specific
-executable; `ARCH` can be omitted to detect its architecture. `OUT_DIR` is passed
-through to the platform packaging script. Linux continues to use the Linux
-packaging script; on Windows, use the PowerShell script below.
+For the macOS/Linux entry points: `ARCH` selects a single architecture (macOS only;
+Linux always builds both), `BINARY=/path/to/agent` packages an existing executable
+without compiling (macOS), and packages are written under `release/` (or `RELEASE_DIR`).
+`OUT_DIR` is passed through to the underlying packaging script.
 
-Windows local build (requires WiX CLI):
+Windows local build (compiles from source, then packages; requires `go` and WiX CLI):
 
 ```powershell
 dotnet tool install --global wix
+.\agent\packaging\windows\build.ps1              # amd64 by default
+.\agent\packaging\windows\build.ps1 -Arch arm64  # Windows on ARM
+.\agent\packaging\windows\build.ps1 -SkipMsi     # compile the .exe only
+```
+
+Package-only (requires a prebuilt Windows binary):
+
+```powershell
 .\agent\packaging\windows\build-msi.ps1 -Version 1.1.0 -BinaryPath .\release\endoriumfort-agent-windows-amd64.exe
 # Windows on ARM:
 .\agent\packaging\windows\build-msi.ps1 -Version 1.1.0 -Arch arm64 -BinaryPath .\release\endoriumfort-agent-windows-arm64.exe

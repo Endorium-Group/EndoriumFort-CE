@@ -188,6 +188,18 @@ struct AppContext {
   // ── SSH session closure callback ──
   std::function<void(int)> close_ssh_for_session = [](int) {};
 
+  // ── Dynamic secrets seams (premium; set by the pro/ vault module) ──
+  // provision: given a session, create an ephemeral OS account on the target and
+  // return the login username + password to use. Returns false (with a reason in
+  // `detail`) if unavailable or provisioning failed — the caller then fails
+  // closed. deprovision: destroy the ephemeral account bound to a session id.
+  // Both are no-ops / empty in the Community edition (no dynamic secrets).
+  std::function<bool(const Session &, std::string & /*username*/,
+                     std::string & /*password*/, std::string & /*detail*/)>
+      provision_dynamic_credential;
+  std::function<void(int /*session_id*/)> deprovision_dynamic_for_session =
+      [](int) {};
+
   // ── Tunnel state ──
   std::mutex tunnel_mutex;
   std::unordered_map<crow::websocket::connection *,
@@ -241,6 +253,11 @@ struct AppContext {
   int relay_token_ttl_seconds = 86400;  // 24h
   int relay_heartbeat_stale_seconds = 90;
 
+  // ── Tunnel-agent inventory (populated from X-EndoriumFort-Agent-* headers) ──
+  std::mutex agents_mutex;
+  std::unordered_map<std::string, AgentInfo> agents;
+  int agent_stale_seconds = 300;  // agent considered offline after 5 min silence
+
   // ── Cluster / HA control-plane state ──
   std::mutex cluster_mutex;
   std::unordered_map<std::string, ClusterPeerNode> cluster_peers;
@@ -290,6 +307,16 @@ struct AppContext {
   void invalidate_user_tokens_except(int user_id, const std::string &token);
   void cleanup_expired_tokens();
   std::string compute_expiry();
+
+  // ── Graceful shutdown hooks ──
+  // Generic teardown registry (core). Premium background workers (e.g. the
+  // scheduler in pro/) register a stop callback here so main.cc can tear them
+  // down cleanly after the server loop returns. No premium code leaks into CE:
+  // the hook is only ever populated when a pro module registers one.
+  std::mutex shutdown_hooks_mutex;
+  std::vector<std::function<void()>> shutdown_hooks;
+  void register_shutdown_hook(std::function<void()> fn);
+  void run_shutdown_hooks();
 
   // ── Security ──
   bool check_rate_limit(const std::string &key);

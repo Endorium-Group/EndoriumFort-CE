@@ -286,6 +286,30 @@ std::string AppContext::compute_expiry() {
   return oss.str();
 }
 
+// ── Graceful shutdown hooks ───────────────────────────────────────────────
+
+void AppContext::register_shutdown_hook(std::function<void()> fn) {
+  if (!fn) return;
+  std::lock_guard<std::mutex> lock(shutdown_hooks_mutex);
+  shutdown_hooks.push_back(std::move(fn));
+}
+
+void AppContext::run_shutdown_hooks() {
+  std::vector<std::function<void()>> hooks;
+  {
+    std::lock_guard<std::mutex> lock(shutdown_hooks_mutex);
+    hooks.swap(shutdown_hooks);
+  }
+  // Run in reverse registration order (teardown mirrors setup).
+  for (auto it = hooks.rbegin(); it != hooks.rend(); ++it) {
+    try {
+      (*it)();
+    } catch (...) {
+      // Never let a teardown failure crash the shutdown path.
+    }
+  }
+}
+
 // ── Audit ───────────────────────────────────────────────────────────────
 
 void AppContext::append_audit(const AuditEvent &event) {
@@ -340,6 +364,29 @@ void AppContext::init_database() {
       ");";
   if (!sqlite.exec(license_state_schema, err))
     std::cerr << "SQLite license_state schema failed: " << err << '\n';
+
+  // Automation scheduler (premium): recurring/one-shot background jobs.
+  // The table lives in the core schema so the DB is edition-agnostic, but the
+  // engine that runs the jobs is compiled only in the Enterprise build (pro/).
+  const std::string scheduled_jobs_schema =
+      "CREATE TABLE IF NOT EXISTS scheduled_jobs ("
+      "id INTEGER PRIMARY KEY,"
+      "name TEXT NOT NULL UNIQUE,"
+      "kind TEXT NOT NULL,"
+      "feature TEXT NOT NULL DEFAULT 'automation.scheduler',"
+      "interval_seconds INTEGER NOT NULL DEFAULT 0,"
+      "enabled INTEGER NOT NULL DEFAULT 1,"
+      "next_run_epoch INTEGER NOT NULL DEFAULT 0,"
+      "last_run_epoch INTEGER NOT NULL DEFAULT 0,"
+      "last_status TEXT NOT NULL DEFAULT '',"
+      "last_detail TEXT NOT NULL DEFAULT '',"
+      "run_count INTEGER NOT NULL DEFAULT 0,"
+      "fail_count INTEGER NOT NULL DEFAULT 0,"
+      "payload_json TEXT NOT NULL DEFAULT '',"
+      "created_at TEXT NOT NULL DEFAULT ''"
+      ");";
+  if (!sqlite.exec(scheduled_jobs_schema, err))
+    std::cerr << "SQLite scheduled_jobs schema failed: " << err << '\n';
 
   const std::string session_schema =
       "CREATE TABLE IF NOT EXISTS sessions ("
@@ -833,6 +880,10 @@ void AppContext::terminate_session(int session_id, const std::string &actor,
       append_audit(anomaly);
     }
   }
+
+  // Dynamic secrets (premium): tear down any ephemeral OS account bound to this
+  // session. No-op in the Community edition (seam left unset).
+  if (deprovision_dynamic_for_session) deprovision_dynamic_for_session(session_id);
 }
 
 // ── Resource CRUD ───────────────────────────────────────────────────────

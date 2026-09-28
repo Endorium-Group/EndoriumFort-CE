@@ -1,0 +1,23 @@
+apiVersion: v2
+name: endoriumfort
+description: EndoriumFort — self-hosted Privileged Access Management (PAM) bastion.
+type: application
+# version = chart version, appVersion = shipped app image tag. Both are
+# overridden from the git tag by the release workflow (helm-publish.yml).
+version: 0.1.0
+appVersion: "0.5.1"
+kubeVersion: ">=1.23.0-0"
+home: https://github.com/Endorium-Group/EndoriumFort-CE
+sources:
+  - https://github.com/Endorium-Group/EndoriumFort-CE
+keywords:
+  - pam
+  - bastion
+  - ssh
+  - security
+  - zero-trust
+maintainers:
+  - name: Endorium-Group
+    url: https://github.com/Endorium-Group
+annotations:
+  category: Security

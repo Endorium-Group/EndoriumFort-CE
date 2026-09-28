@@ -1,0 +1,20 @@
+# Values used by CI to exercise the ingress + secret code paths during lint/template.
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: pam.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: endoriumfort-tls
+      hosts:
+        - pam.example.com
+config:
+  webauthn:
+    rpId: pam.example.com
+    origin: https://pam.example.com
+secrets:
+  vaultKey: "0000000000000000000000000000000000000000000000000000000000000000"
+  license: "dummy.license.token"

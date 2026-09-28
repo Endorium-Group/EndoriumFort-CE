@@ -88,10 +88,16 @@ jobs:
         run: npm run test:e2e -- --list
 
   agent-build-test:
-    name: Agent Build & Test
+    name: Agent Build & Test (${{ matrix.os }})
+    # The Go agent ships only with the Enterprise edition; the public Community
+    # core has no agent/ directory, so skip this job there.
     needs: detect
     if: ${{ needs.detect.outputs.has_agent == 'true' }}
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6

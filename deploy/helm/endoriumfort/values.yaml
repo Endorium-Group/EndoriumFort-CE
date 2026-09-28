@@ -1,0 +1,148 @@
+# ─── EndoriumFort Helm values ────────────────────────────────────────────────
+# The container runs the backend (:8080) and nginx (:80 redirect, :443 TLS with a
+# built-in self-signed cert) in one pod. In Kubernetes, terminate TLS at the
+# Ingress and re-encrypt to the pod on :443 (backend-protocol HTTPS). WebAuthn
+# needs a real HTTPS origin, so set ingress + webauthn.rpId/origin to your host.
+
+# EndoriumFort uses an embedded SQLite database, so run a SINGLE replica with a
+# ReadWriteOnce volume. Horizontal scaling requires the Enterprise cluster
+# feature (active/active), which is out of scope for this chart.
+replicaCount: 1
+
+image:
+  # Community image on GHCR. Enterprise users load their EE image into their own
+  # registry and override this (the EE image is not published to a registry).
+  repository: ghcr.io/endorium-group/endoriumfort
+  # Empty → Chart.appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+# nginx binds privileged ports 80/443 inside the container, so the pod runs as
+# root by default. Tighten only if you also change the image to use unprivileged
+# ports (e.g. via a sidecar / NET_BIND_SERVICE capability).
+podSecurityContext: {}
+securityContext: {}
+
+service:
+  type: ClusterIP
+  # Serve the TLS vhost (SPA + API + WS all live on :443 in the image).
+  port: 443
+  targetPort: 443
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: "nginx"
+  # The pod speaks HTTPS on :443 with a self-signed cert; tell the ingress to
+  # re-encrypt to the backend over HTTPS (nginx-ingress annotation shown).
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  hosts:
+    - host: endoriumfort.local
+      paths:
+        - path: /
+          pathType: Prefix
+  # cert-manager issues the browser-facing certificate here.
+  tls: []
+  #  - secretName: endoriumfort-tls
+  #    hosts:
+  #      - endoriumfort.local
+
+persistence:
+  data:
+    enabled: true
+    # DBs (endoriumfort.db, sessions.db), audit log, uploaded license.
+    size: 2Gi
+    accessMode: ReadWriteOnce
+    storageClass: ""
+    existingClaim: ""
+  recordings:
+    enabled: true
+    size: 10Gi
+    accessMode: ReadWriteOnce
+    storageClass: ""
+    existingClaim: ""
+
+resources:
+  limits:
+    cpu: "1"
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+# Application configuration (mapped to ENDORIUMFORT_* / ACME_* env vars).
+config:
+  timezone: "Europe/Paris"
+  backendPort: 8080
+  tokenTtlSeconds: 3600
+  webauthn:
+    # MUST match the public hostname the browser uses, or WebAuthn/passkeys fail.
+    challengeTtlSeconds: 180
+    rpId: ""      # e.g. "pam.example.com"
+    origin: ""    # e.g. "https://pam.example.com"
+  relay:
+    certRequired: true
+    certTtlSeconds: 2592000
+    enrollTokenTtlSeconds: 600
+    tokenTtlSeconds: 86400
+    heartbeatStaleSeconds: 90
+  # In-pod ACME/certbot is disabled on Kubernetes — use cert-manager at ingress.
+  acme:
+    enabled: false
+    domain: ""
+    email: ""
+
+# Secret values. Provide inline (rendered into a Secret) or reference an existing
+# Secret with the same keys. Leave blank to omit.
+secrets:
+  # Reuse an existing Secret instead of rendering one from the values below.
+  # Keys read: ENDORIUMFORT_VAULT_KEY, ENDORIUMFORT_LICENSE,
+  #            ENDORIUMFORT_RELAY_ENROLL_SECRET, ENDORIUMFORT_CLUSTER_SHARED_SECRET
+  existingSecret: ""
+  # 64 hex chars (32 bytes) — enables AES-256-GCM vault encryption at rest.
+  vaultKey: ""
+  # Offline license token (compact .jws). Alternatively upload it via the admin UI.
+  license: ""
+  relayEnrollSecret: ""
+  clusterSharedSecret: ""
+
+# Extra environment variables appended verbatim.
+extraEnv: []
+#  - name: ENDORIUMFORT_LOG_LEVEL
+#    value: "info"
+
+livenessProbe:
+  httpGet:
+    path: /api/health
+    port: backend
+  initialDelaySeconds: 15
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+readinessProbe:
+  httpGet:
+    path: /api/health
+    port: backend
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

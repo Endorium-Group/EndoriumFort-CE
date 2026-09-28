@@ -25,4 +25,12 @@ export function JitGovernancePanel() {
   return null;
 }
 
+export function VaultPanel() {
+  return null;
+}
+
+export function ItdrPanel() {
+  return null;
+}
+
 export const proEdition = 'community';

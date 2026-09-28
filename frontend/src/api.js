@@ -86,6 +86,100 @@ export async function reloadLicense() {
   return response.json();
 }
 
+export async function fetchAgents() {
+  const response = await fetch('/api/agents', {
+    headers: withAuthHeaders()
+  });
+  await ensureResponseOk(response, 'Failed to fetch agents');
+  return response.json();
+}
+
+// Mint a short-lived token to embed in an endoriumfort:// deep link (deep links
+// leak via history/logs, so we never put the long-lived session token there).
+export async function mintAgentToken() {
+  const response = await fetch('/api/auth/agent-token', {
+    method: 'POST',
+    headers: withAuthHeaders()
+  });
+  await ensureResponseOk(response, 'Failed to mint agent token');
+  return response.json();
+}
+
+// ── Secrets vault: rotation (premium) ──
+export async function fetchVaultRotation() {
+  const response = await fetch('/api/vault/rotation', { headers: withAuthHeaders() });
+  await ensureResponseOk(response, 'Failed to fetch rotation policies');
+  return response.json();
+}
+
+export async function configureVaultRotation(resourceId, payload) {
+  const response = await fetch(`/api/vault/rotation/${resourceId}`, {
+    method: 'PUT',
+    headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload)
+  });
+  await ensureResponseOk(response, 'Failed to configure rotation');
+  return response.json();
+}
+
+export async function rotateVaultNow(resourceId) {
+  const response = await fetch(`/api/vault/rotation/${resourceId}/rotate`, {
+    method: 'POST',
+    headers: withAuthHeaders()
+  });
+  await ensureResponseOk(response, 'Failed to rotate credential');
+  return response.json();
+}
+
+// ── Secrets vault: dynamic ephemeral accounts (premium) ──
+export async function fetchVaultDynamic() {
+  const response = await fetch('/api/vault/dynamic', { headers: withAuthHeaders() });
+  await ensureResponseOk(response, 'Failed to fetch dynamic secrets');
+  return response.json();
+}
+
+export async function configureVaultDynamic(resourceId, payload) {
+  const response = await fetch(`/api/vault/dynamic/${resourceId}`, {
+    method: 'PUT',
+    headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload)
+  });
+  await ensureResponseOk(response, 'Failed to configure dynamic secrets');
+  return response.json();
+}
+
+// ── ITDR: identity threat detection & response (premium) ──
+export async function fetchItdrRules() {
+  const response = await fetch('/api/itdr/rules', { headers: withAuthHeaders() });
+  await ensureResponseOk(response, 'Failed to fetch ITDR rules');
+  return response.json();
+}
+
+export async function updateItdrRule(rule, payload) {
+  const response = await fetch(`/api/itdr/rules/${encodeURIComponent(rule)}`, {
+    method: 'PUT',
+    headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload)
+  });
+  await ensureResponseOk(response, 'Failed to update ITDR rule');
+  return response.json();
+}
+
+export async function fetchItdrDetections() {
+  const response = await fetch('/api/itdr/detections', { headers: withAuthHeaders() });
+  await ensureResponseOk(response, 'Failed to fetch ITDR detections');
+  return response.json();
+}
+
+export async function ackItdrDetection(id) {
+  const response = await fetch(`/api/itdr/detections/${id}/ack`, {
+    method: 'POST',
+    headers: withAuthHeaders()
+  });
+  await ensureResponseOk(response, 'Failed to acknowledge detection');
+  return response.json();
+}
+
 export function setAuthToken(token) {
   authToken = token || '';
 }

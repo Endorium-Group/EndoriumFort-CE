@@ -1,0 +1,35 @@
+{{- if and .Values.persistence.data.enabled (not .Values.persistence.data.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "endoriumfort.fullname" . }}-data
+  labels:
+    {{- include "endoriumfort.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.persistence.data.accessMode | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.data.size | quote }}
+  {{- if .Values.persistence.data.storageClass }}
+  storageClassName: {{ .Values.persistence.data.storageClass | quote }}
+  {{- end }}
+{{- end }}
+{{- if and .Values.persistence.recordings.enabled (not .Values.persistence.recordings.existingClaim) }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "endoriumfort.fullname" . }}-recordings
+  labels:
+    {{- include "endoriumfort.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.persistence.recordings.accessMode | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.recordings.size | quote }}
+  {{- if .Values.persistence.recordings.storageClass }}
+  storageClassName: {{ .Values.persistence.recordings.storageClass | quote }}
+  {{- end }}
+{{- end }}

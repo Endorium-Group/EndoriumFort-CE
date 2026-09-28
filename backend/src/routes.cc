@@ -889,6 +889,49 @@ void register_auth_routes(CrowApp &app, AppContext &ctx) {
         return response;
       });
 
+  // POST /api/auth/agent-token
+  // Mint a SHORT-LIVED session token for embedding in an `endoriumfort://` deep
+  // link. Deep links leak (browser history, logs), so this token expires in a
+  // couple of minutes — long enough for the agent to fetch resources + obtain a
+  // tunnel ticket, after which it is useless. Same identity as the caller.
+  CROW_ROUTE(app, "/api/auth/agent-token").methods(crow::HTTPMethod::Post)(
+      [&ctx](const crow::request &request) {
+        auto auth = ctx.find_auth(request);
+        if (!auth) return crow::response(401, "Unauthorized");
+
+        const int ttl_seconds = 180;  // 3 minutes
+        AuthSession sess;
+        sess.userId = auth->userId;
+        sess.user = auth->user;
+        sess.role = auth->role;
+        sess.issuedAt = now_utc();
+        sess.expiresAt = utc_from_epoch_seconds(now_epoch_seconds() + ttl_seconds);
+        sess.token = ctx.generate_token();
+        {
+          std::lock_guard<std::mutex> lock(ctx.auth_mutex);
+          ctx.auth_sessions[sess.token] = sess;
+        }
+
+        AuditEvent evt;
+        evt.id = ctx.next_audit_id.fetch_add(1);
+        evt.type = "auth.agent_token.issued";
+        evt.actor = auth->user;
+        evt.role = auth->role;
+        evt.createdAt = now_utc();
+        evt.payloadJson = "{\"userId\":" + std::to_string(auth->userId) +
+                          ",\"ttlSeconds\":" + std::to_string(ttl_seconds) + "}";
+        evt.payloadIsJson = true;
+        ctx.append_audit(evt);
+
+        crow::json::wvalue payload;
+        payload["token"] = sess.token;
+        payload["expiresAt"] = sess.expiresAt;
+        payload["expiresInSeconds"] = ttl_seconds;
+        crow::response response{payload};
+        response.add_header("Cache-Control", "no-store");
+        return response;
+      });
+
   // POST /api/auth/logout
   CROW_ROUTE(app, "/api/auth/logout").methods(crow::HTTPMethod::Post)(
       [&ctx](const crow::request &request) {

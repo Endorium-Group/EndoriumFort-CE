@@ -17,7 +17,7 @@ frontend/package.json @NergYR
 frontend/package-lock.json @NergYR
 
 # Agent runtime surfaces
-agent/ @NergYR
+agent/ @NergYR @BluenessDev
 
 # Release and security governance docs
 SECURITY.md @NergYR

@@ -286,6 +286,30 @@ void register_ssh_routes(CrowApp &app, AppContext &ctx) {
             }
           }
 
+          // Dynamic secrets (premium): if this session uses an ephemeral account
+          // and the pro/ vault module installed a provisioner, create the account
+          // on the target now and log in as it. Fails closed on error. When no
+          // provisioner is installed (Community, or feature off) we fall through
+          // to the vaulted credential below (existing behaviour).
+          Session connect_session = target_session;
+          if (password.empty() &&
+              target_session.credentialSource == "ephemeral_account" &&
+              ctx.provision_dynamic_credential) {
+            std::string dyn_user, dyn_pass, dyn_detail;
+            if (ctx.provision_dynamic_credential(target_session, dyn_user,
+                                                 dyn_pass, dyn_detail)) {
+              connect_session.user = dyn_user;
+              password = dyn_pass;
+            } else {
+              conn.send_text(
+                  "{\"type\":\"error\",\"message\":\"" +
+                  json_escape("Ephemeral account provisioning failed: " +
+                              dyn_detail) +
+                  "\"}");
+              return;
+            }
+          }
+
           if (password.empty() && has_session_resource) {
             password = session_resource.sshPassword;
             if (target_session.credentialSource == "ephemeral_account" &&
@@ -311,7 +335,7 @@ void register_ssh_routes(CrowApp &app, AppContext &ctx) {
           }
 
           std::string error;
-          if (!ssh_connect(*connection, target_session, password, cols, rows,
+          if (!ssh_connect(*connection, connect_session, password, cols, rows,
                            error)) {
             ssh_disconnect(*connection);
             conn.send_text("{\"type\":\"error\",\"message\":\"" +

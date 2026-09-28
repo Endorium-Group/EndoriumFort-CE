@@ -113,6 +113,10 @@ if (ENDORIUMFORT_PRO)
     src/pro/security_center.cc
     src/pro/governance.cc
     src/pro/session_premium.cc
+    src/pro/scheduler.cc
+    src/pro/vault_rotation.cc
+    src/pro/vault_dynamic.cc
+    src/pro/itdr.cc
   )
   target_compile_definitions(endoriumfort_backend PRIVATE ENDORIUMFORT_PRO)
 else()
@@ -179,6 +183,14 @@ if (BUILD_TESTING)
     src/license.cc
     src/pro/security_center.cc
   )
+
+  add_executable(endoriumfort_backend_vault_gen_tests
+    tests/vault_gen_test.cc
+  )
+
+  add_executable(endoriumfort_backend_itdr_geo_tests
+    tests/itdr_geo_test.cc
+  )
   endif()
 
   add_executable(endoriumfort_backend_license_tests
@@ -225,6 +237,16 @@ if (BUILD_TESTING)
     PRIVATE
       ${crow_SOURCE_DIR}/include
       ${asio_SOURCE_DIR}/asio/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  target_include_directories(endoriumfort_backend_vault_gen_tests
+    PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  target_include_directories(endoriumfort_backend_itdr_geo_tests
+    PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
   endif()
@@ -300,6 +322,8 @@ if (BUILD_TESTING)
   if (ENDORIUMFORT_PRO)  # pro tests
   add_test(NAME backend_scim_routes_test COMMAND endoriumfort_backend_scim_routes_tests)
   add_test(NAME backend_security_alerts_test COMMAND endoriumfort_backend_security_alerts_tests)
+  add_test(NAME backend_vault_gen_test COMMAND endoriumfort_backend_vault_gen_tests)
+  add_test(NAME backend_itdr_geo_test COMMAND endoriumfort_backend_itdr_geo_tests)
   endif()
   add_test(NAME backend_license_test COMMAND endoriumfort_backend_license_tests)
 endif()

@@ -1,0 +1,145 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "endoriumfort.fullname" . }}
+  labels:
+    {{- include "endoriumfort.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  # SQLite is a single-writer store on a RWO volume — never roll two pods at once.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "endoriumfort.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "endoriumfort.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        {{- if include "endoriumfort.renderSecret" . }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "endoriumfort.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: endoriumfort
+          image: {{ include "endoriumfort.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+            - name: https
+              containerPort: 443
+              protocol: TCP
+            - name: backend
+              containerPort: {{ .Values.config.backendPort }}
+              protocol: TCP
+          env:
+            - name: TZ
+              value: {{ .Values.config.timezone | quote }}
+            - name: ENDORIUMFORT_PORT
+              value: {{ .Values.config.backendPort | quote }}
+            - name: ENDORIUMFORT_TOKEN_TTL_SECONDS
+              value: {{ .Values.config.tokenTtlSeconds | quote }}
+            - name: ENDORIUMFORT_WEBAUTHN_CHALLENGE_TTL_SECONDS
+              value: {{ .Values.config.webauthn.challengeTtlSeconds | quote }}
+            {{- with .Values.config.webauthn.rpId }}
+            - name: ENDORIUMFORT_WEBAUTHN_RP_ID
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.config.webauthn.origin }}
+            - name: ENDORIUMFORT_WEBAUTHN_ORIGIN
+              value: {{ . | quote }}
+            {{- end }}
+            - name: ENDORIUMFORT_RELAY_CERT_REQUIRED
+              value: {{ .Values.config.relay.certRequired | quote }}
+            - name: ENDORIUMFORT_RELAY_CERT_TTL_SECONDS
+              value: {{ .Values.config.relay.certTtlSeconds | quote }}
+            - name: ENDORIUMFORT_RELAY_ENROLL_TOKEN_TTL_SECONDS
+              value: {{ .Values.config.relay.enrollTokenTtlSeconds | quote }}
+            - name: ENDORIUMFORT_RELAY_TOKEN_TTL_SECONDS
+              value: {{ .Values.config.relay.tokenTtlSeconds | quote }}
+            - name: ENDORIUMFORT_RELAY_HEARTBEAT_STALE_SECONDS
+              value: {{ .Values.config.relay.heartbeatStaleSeconds | quote }}
+            - name: ACME_ENABLED
+              value: {{ ternary "1" "0" .Values.config.acme.enabled | quote }}
+            {{- with .Values.config.acme.domain }}
+            - name: ACME_DOMAIN
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.config.acme.email }}
+            - name: ACME_EMAIL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if or (include "endoriumfort.renderSecret" .) .Values.secrets.existingSecret }}
+          envFrom:
+            - secretRef:
+                name: {{ include "endoriumfort.secretName" . }}
+          {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: recordings
+              mountPath: /app/recordings
+      volumes:
+        - name: data
+          {{- if .Values.persistence.data.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.data.existingClaim | default (printf "%s-data" (include "endoriumfort.fullname" .)) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: recordings
+          {{- if .Values.persistence.recordings.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.recordings.existingClaim | default (printf "%s-recordings" (include "endoriumfort.fullname" .)) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

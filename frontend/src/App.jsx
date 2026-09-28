@@ -27,6 +27,7 @@ import {
   fetchLicenseStatus,
   applyLicense,
   reloadLicense,
+  mintAgentToken,
   fetchResources,
   fetchSessions,
   fetchStats,
@@ -68,7 +69,7 @@ import { EmptyState, InlineAlert, MetricTile, SectionCard, StatusBadge } from '.
 import { useI18n } from './i18n.jsx';
 // Premium UI comes from the `@pro` overlay: real components in the EE build
 // (src/pro/), no-op stubs in the CE build (src/pro-stub/). See vite.config.js.
-import { RecordingsPanel, VncViewerModal, EnterpriseIamPanel, RelayControlPanel, JitGovernancePanel } from '@pro';
+import { RecordingsPanel, VncViewerModal, EnterpriseIamPanel, RelayControlPanel, JitGovernancePanel, VaultPanel, ItdrPanel } from '@pro';
 
 const normalizeRole = (role) => {
   const value = String(role || '').toLowerCase();
@@ -781,6 +782,24 @@ export default function App() {
         requiredTier: 'enterprise',
         locked: lockOf('enterprise'),
         badge: lockOf('enterprise') ? '🔒' : 'SSO·LDAP·SCIM',
+        badgeTone: lockOf('enterprise') ? 'locked' : 'ok'
+      },
+      {
+        id: 'vault',
+        label: locale === 'fr' ? 'Coffre-fort' : 'Vault',
+        hint: locale === 'fr' ? 'Rotation + secrets dynamiques' : 'Rotation + dynamic secrets',
+        requiredTier: 'enterprise',
+        locked: lockOf('enterprise'),
+        badge: lockOf('enterprise') ? '🔒' : (locale === 'fr' ? 'Rotation·Éphémère' : 'Rotation·Ephemeral'),
+        badgeTone: lockOf('enterprise') ? 'locked' : 'ok'
+      },
+      {
+        id: 'itdr',
+        label: 'ITDR',
+        hint: locale === 'fr' ? 'Détection menaces + réponse' : 'Threat detection + response',
+        requiredTier: 'enterprise',
+        locked: lockOf('enterprise'),
+        badge: lockOf('enterprise') ? '🔒' : (locale === 'fr' ? 'Détection·Réponse' : 'Detect·Respond'),
         badgeTone: lockOf('enterprise') ? 'locked' : 'ok'
       },
       {
@@ -2316,7 +2335,7 @@ export default function App() {
 
   const isAgentTunnelProtocol = (protocol) => {
     const normalized = String(protocol || '').toLowerCase();
-    return normalized === 'agent' || normalized === 'rdp';
+    return normalized === 'agent' || normalized === 'rdp' || normalized === 'ssh';
   };
 
   const resolveAgentInstallGuide = () => {
@@ -2339,7 +2358,7 @@ export default function App() {
     };
   };
 
-  const buildAgentLaunchPayload = (resource, localPort) => {
+  const buildAgentLaunchPayload = async (resource, localPort) => {
     const normalizedOrigin = String(window.location.origin || '').replace(/\/$/, '');
     const resourceProtocol = String(resource?.protocol || '').toLowerCase();
     const openInBrowser = resourceProtocol === 'agent' || resourceProtocol === 'http' || resourceProtocol === 'https';
@@ -2349,13 +2368,30 @@ export default function App() {
     params.set('server', normalizedOrigin);
     params.set('resource', String(resource.id));
     params.set('local-port', String(localPort));
+    params.set('protocol', resourceProtocol);
+    // The resource's configured remote username (sshUsername) applies to both
+    // SSH and RDP launches so the native client starts without prompting.
+    if (resourceProtocol === 'ssh' && resource?.sshUsername) {
+      params.set('ssh-user', resource.sshUsername);
+    }
+    if (resourceProtocol === 'rdp' && resource?.sshUsername) {
+      params.set('rdp-user', resource.sshUsername);
+    }
     if (openInBrowser) {
       params.set('redirect-url', localUrl);
     } else {
       params.set('no-browser', '1');
     }
-    if (auth.token) {
-      params.set('token', auth.token);
+    // Embed a SHORT-LIVED scoped token (not the long-lived session token) — deep
+    // links leak via browser history/logs. Falls back to the session token if the
+    // mint call fails (e.g. transient error), so the launch still works.
+    let linkToken = auth.token;
+    try {
+      const minted = await mintAgentToken();
+      if (minted?.token) linkToken = minted.token;
+    } catch (_) {}
+    if (linkToken) {
+      params.set('token', linkToken);
     }
 
     return {
@@ -2459,7 +2495,7 @@ export default function App() {
     // Handle protocols that should use local TCP tunnel through the agent
     if (isAgentTunnelProtocol(resource.protocol)) {
       const randomPort = 10000 + Math.floor(Math.random() * 50000);
-      const launchPayload = buildAgentLaunchPayload(resource, randomPort);
+      const launchPayload = await buildAgentLaunchPayload(resource, randomPort);
       setAgentModal({ resource, port: randomPort, copied: 'idle', linkCopied: 'idle', installCopied: 'idle', launchState: 'opening', ...launchPayload });
       launchAgentDeepLink(launchPayload.deepLink);
       return true;
@@ -4762,6 +4798,18 @@ export default function App() {
           )}
 
           {adminSection === 'enterprise' && <EnterpriseIamPanel auth={auth} />}
+
+          {adminSection === 'vault' && (
+            <VaultPanel
+              auth={auth}
+              canManagePlatform={canManagePlatform}
+              resources={resources}
+            />
+          )}
+
+          {adminSection === 'itdr' && (
+            <ItdrPanel auth={auth} canManagePlatform={canManagePlatform} />
+          )}
 
           {adminSection === 'license' && (
           <div className="panel reveal">

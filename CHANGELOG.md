@@ -1,6 +1,138 @@
 # Changelog
 
-## Unreleased
+## 1.2.3 - 2026-09-24
+
+### Security
+
+- Store credentials in the native OS keychain when available (macOS Keychain via `security`, Linux Secret Service via `secret-tool`), falling back to the DPAPI/permission-protected file; Windows keeps DPAPI. Adds a `logout` command to remove a stored token.
+- Deep-links now ask for confirmation before doing anything, showing the target server/resource/protocol (anti-phishing against handler abuse). Configurable via `deeplink.confirm`, skipped when there is no terminal.
+- Optional server TLS certificate pinning: `server.tls-pin` (base64 SHA-256 SPKI, comma-separated for rotation) is enforced on both API requests and the tunnel handshake, even in lab TLS mode. A new `pin <server>` command prints the server's current pin.
+
+## 1.2.2 - 2026-09-24
+
+### RDP options and certificate handling
+
+- Configurable RDP behavior via `settings`: `rdp.cert-policy` (ignore/tofu/strict, default ignore), `rdp.clipboard` and `rdp.dynamic-resolution`.
+- On the loopback tunnel the certificate warning is suppressed by default (FreeRDP `/cert:ignore`, mstsc `authentication level:i:0`), with clipboard redirection and dynamic resolution enabled.
+- The release workflow bundles a self-contained FreeRDP into both macOS `.pkg` architectures via a per-arch runner matrix (`macos-13` for amd64, `macos-14` for arm64).
+
+## 1.2.1 - 2026-09-24
+
+### Local configuration and settings command
+
+- Add a JSON config file (`~/.endoriumfort_config.json`, override with `EF_CONFIG`) and a `settings` command to view and edit it: `settings` opens an interactive editor on a terminal (plain listing when not a TTY), plus `settings get|set|reset|path|list`.
+- Configurable: deep-link auto-close (`enabled`, grace, idle timeout, reconnect window) and the per-connection backend retry attempts; values are validated and clamped, and applied at tunnel launch.
+
+### Internal
+
+- Refactor the deep-link auto-close into a pure state machine with injected clock and health probe, covered by unit tests (no behavior change).
+
+## 1.2.0 - 2026-09-23
+
+### RDP support
+
+- Launch the native RDP client on the local tunnel for `rdp` resources (interactive mode and deep-links via `protocol=rdp`, `rdp-user`); the tunnel forwards raw TCP, so no RDP protocol code runs in the agent.
+- Windows uses the built-in `mstsc` (generated `.rdp`, prefilled username, nothing to install). macOS and Linux use FreeRDP (Apache-2.0): `xfreerdp`/`sdl-freerdp`, with the Homebrew locations probed on macOS since a GUI-launched agent does not inherit the shell PATH.
+- Linux packages depend on a FreeRDP client (`freerdp3-x11 | freerdp2-x11` for deb, `freerdp` for rpm) so RDP works out of the box.
+- The macOS `.pkg` can bundle a self-contained FreeRDP into the app (`Contents/Resources/freerdp`, dylibs relocated to `@executable_path/lib`, ad-hoc signed) when built on the matching architecture; the agent prefers the bundled client and otherwise falls back to a system/Homebrew FreeRDP.
+
+### Agent identity reporting
+
+- Send the agent OS, CPU architecture and version to the server on every API request and the tunnel handshake via `X-EndoriumFort-Agent-OS`, `-Arch` and `-Version` headers (informational, never part of the tunnel signature).
+
+### Deep-link tunnel resilience
+
+- On a session end, distinguish a clean disconnect (backend reachable) from a backend outage (unreachable): a clean exit closes after a short grace period, while an outage keeps the listener and log window open for a 60s reconnect window so a new client can reconnect on the same local port without reopening the deep-link.
+
+## 1.1.1 - 2026-09-22
+
+### Deep-link auto-close and terminal lifecycle
+
+- Deep-link launches auto-close when the connection is lost: a session ended (a connection was used then all closed), the backend became unreachable while idle, no connection within a 30s idle timeout, or the local listener died.
+- In the deep-link log window, Ctrl+C (SIGINT) no longer tears down the tunnel; only closing the window (SIGHUP on Unix, SIGTERM on Windows) or the auto-close monitor ends the session. Interactive/connect modes keep Ctrl+C. A `tunnel.autoclose.enabled` log line marks the ignored-SIGINT mode for diagnosis.
+- The SSH window closes when ssh exits (exit, dropped session, or Ctrl+C at a prompt): macOS waits for the tab to finish then closes it, Windows uses `cmd /c`, and Linux emulators already close on command exit.
+- Pin SSH host-key verification to a stable `HostKeyAlias` per resource (`accept-new`) instead of the ephemeral `[127.0.0.1]:port`, avoiding repeated prompts and known_hosts churn.
+
+## 1.1.0 - 2026-09-22
+
+### Agent target browser protocol
+
+- Stop forcing HTTP for local agent tunnel browser links: honor explicit web protocols and infer HTTPS for target ports 443/8443.
+- Allow HTTP/HTTPS selection in the agent launch dialog for nonstandard ports, updating both the local link and deep-link redirect.
+
+### macOS command-line installation
+
+- Include an `endoriumfort-agent` symlink in `/usr/local/bin` and a macOS `paths.d` entry in the installer payload.
+- Disable app bundle relocation so the CLI consistently targets the system-wide application.
+
+### Agent cleanup
+
+- Replace positional tunnel ticket return values with a named structure and remove unused runtime state and test-only wrappers.
+- Share boolean parsing, simplify retry delay calculations and normalize imports.
+- Move legacy main tests alongside their respective modules.
+- Remove checked-in agent executables and ignore local build outputs.
+
+### Agent source organization
+
+- Reduce the agent entrypoint to command dispatch and build version metadata.
+- Separate CLI, interactive prompts, deep links, logging, transport security, tunnel lifecycle, live management, forwarding and ticket signing into focused Go files.
+- Preserve existing behavior and the `main.version` linker symbol; keep building the full agent package.
+- Extend release gates to all agent Go source files and document the source layout.
+
+### Temporary HTTP CONNECT exception
+
+- Allow explicitly timed HTTP CONNECT operation with `--allow-http-connect-for` (up to 24 hours), restricted by mandatory client IP and destination allowlists.
+- Stop the relay and active connections at expiration; retain mutual TLS by default.
+- Test allowed forwarding, denied clients/destinations, disabled/expired exceptions and configuration validation.
+
+### Authenticated and restricted Go relay CONNECT service
+
+- Require mutual TLS with a dedicated client CA before accepting CONNECT requests; default to loopback listening.
+- Require an explicit allowlist of literal IP:port destinations and reject unlisted targets before dialing, without DNS lookups.
+- Bound request headers, reject CONNECT bodies, cancel active connections at shutdown and wait for forwarding workers.
+- Breaking change: deployments need server TLS credentials, authorized client certificates, and `--allow-target` entries; enrollment alone no longer enables an open proxy.
+- Add integration tests for missing/foreign certificates, plaintext clients, denied destinations, authorized forwarding and bounded headers.
+
+### macOS installer helper builds from source
+
+- Compile the requested macOS architectures before packaging, so `ARCH=arm64 bash agent/packaging/build-installers.sh` works without prebuilt executables.
+- Build both architectures by default, preserve explicit `BINARY` packaging, and automatically remove temporary executables on success or failure.
+
+### Bounded agent HTTP requests
+
+- Apply a 30-second overall timeout and bounded connection, TLS and response-header waits to agent API requests, including lab TLS mode.
+- Propagate request contexts and preserve cancellation/deadline errors through response body reads.
+- Limit health/login/ticket responses to 64 KiB, resource lists to 8 MiB, error bodies to 4 KiB and response headers to 64 KiB.
+- Validate HTTP status and complete JSON bodies, reject missing login tokens, and close health responses before interactive prompts.
+- Reuse HTTP transports and retain the prohibition on redirects carrying credentials.
+- Test response limits, malformed JSON, cancellation during headers/body reads, deadlines and invalid URLs.
+
+### Complete agent tunnel shutdown
+
+- Cancel pending ticket requests, WebSocket handshakes and retry delays when removing or stopping tunnels.
+- Close active TCP/WebSocket connections and wait for both forwarding directions and connection workers before completing shutdown.
+- Make concurrent stop requests safe and allow immediate restart on the same port after shutdown.
+- Report listener binding failures directly from tunnel startup.
+- Add shutdown regression tests for connection setup, live forwarding, EOF and concurrent stops.
+
+### Windows agent credential storage
+
+- Protect the token and its server binding together with current-user Windows DPAPI before writing to disk, including temporary files.
+- Replace the incompatible Unix permission check on Windows; preserve strict permissions on Linux and macOS.
+- Reject legacy unencrypted Windows credentials with a request to log in again.
+- Add native Windows encryption regression tests and run agent CI on Windows, macOS and Linux.
+### Agent management shutdown
+- Fixed the double-close panic when leaving `--manage` through `quit`, `exit`, or end-of-input.
+- Unified management and signal shutdown through context cancellation, retaining signal handlers until cleanup completes.
+- Added shutdown regression tests for management commands, EOF, concurrent cancellation, SIGINT, and SIGTERM.
+
+### Agent credential scope and deep-link security
+- Bound saved credentials to their server and required a fresh login for legacy unbound token files.
+- Required matching `EF_TOKEN_SERVER` bindings for environment tokens used by deep-links and automatic retries.
+- Enforced HTTPS and certificate validation for deep-links, independently of link parameters and CLI lab settings.
+- Disabled API redirects to prevent forwarding authentication headers or login bodies.
+- Added regression tests for credential scope, token refresh, transport overrides, redirects, and rejection before network access.
+
 ### macOS Intel and Apple Silicon
 - Fixed macOS installer launchers to target the package architecture instead of the build host, with macOS 12 as the minimum deployment target.
 - Added architecture checks for the agent and launcher, including verification of both packaged executables in CI.

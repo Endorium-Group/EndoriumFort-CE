@@ -262,7 +262,8 @@ bool gate_before(const crow::request &req, crow::response &res) {
              path_has_prefix(path, "/api/ws/vnc")) {
     feature = "vnc";
   } else if (path_has_prefix(path, "/api/tunnel") ||
-             path_has_prefix(path, "/ws/tunnel")) {
+             path_has_prefix(path, "/ws/tunnel") ||
+             path_has_prefix(path, "/api/agents")) {
     feature = "tunnel";
   } else if (path_has_prefix(path, "/api/recordings")) {
     feature = "recording";
