@@ -21,7 +21,7 @@ jobs:
     outputs:
       community: ${{ steps.check.outputs.community }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: check
         run: |
           if [ -f backend/src/pro/pro_features.cc ]; then
@@ -44,7 +44,7 @@ jobs:
             build-essential cmake git ca-certificates pkg-config \
             libsqlite3-dev libssh2-1-dev nodejs npm dpkg-dev gnupg openssl
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Resolve version
         id: ver

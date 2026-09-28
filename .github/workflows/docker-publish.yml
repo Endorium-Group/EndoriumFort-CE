@@ -34,7 +34,7 @@ jobs:
       community: ${{ steps.check.outputs.community }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Detect edition
         id: check
         run: |
@@ -53,7 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Detect Docker Hub credentials
         id: dockerhub
