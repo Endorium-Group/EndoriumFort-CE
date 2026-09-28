@@ -64,16 +64,24 @@ jobs:
 
       - name: Derive version from tag
         id: ver
+        env:
+          # Force the chart's GHCR org when the workflow repo owner differs from
+          # the publishing org (e.g. publishing from the private NergYR repo to
+          # endorium-group). Requires GHCR_TOKEN (a PAT) for the cross-org push.
+          CHART_ORG: ${{ vars.CHART_ORG }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          OWNER="${GITHUB_REPOSITORY_OWNER,,}"   # GHCR namespaces must be lowercase
+          OWNER="${CHART_ORG:-$GITHUB_REPOSITORY_OWNER}"
+          OWNER="${OWNER,,}"   # GHCR namespaces must be lowercase
           echo "owner=${OWNER}" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | \
-            helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          # GITHUB_TOKEN only writes packages under the repo owner. For cross-org
+          # publishing set GHCR_TOKEN (a PAT with write:packages on the org).
+          echo "${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}" | \
+            helm registry login ghcr.io -u "${{ vars.GHCR_USER || github.actor }}" --password-stdin
 
       - name: Package chart
         run: |

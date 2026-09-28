@@ -46,10 +46,13 @@ jobs:
 
   build-and-push:
     needs: detect
-    # Publish the public COMMUNITY image only from the public core repo. In the
-    # private (Enterprise) repo this job is skipped — the Enterprise edition is
-    # delivered privately via ee-release.yml (signed tarball).
-    if: ${{ needs.detect.outputs.community == 'true' }}
+    # Runs in BOTH repos (freemium single-image model):
+    #  - private repo (pro/ present)  → FREEMIUM image (premium compiled +
+    #    license-gated + public prod issuer key) at :<ver> / :latest — the image
+    #    everyone deploys and unlocks by applying a license.
+    #  - public CE repo (no pro/)     → premium-free Community image at
+    #    :<ver>-ce / :community for source purists.
+    # Edition + tags are auto-selected in the meta step.
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -75,26 +78,40 @@ jobs:
         env:
           HAS_DOCKERHUB: ${{ steps.dockerhub.outputs.enabled }}
         run: |
+          # ── Edition detection ──
+          # pro/ present (private repo) → publish the FREEMIUM image: premium code
+          # compiled in but license-gated (fail-closed → free tier without a
+          # license), with the PUBLIC prod issuer key embedded so customers can
+          # unlock by simply applying a license. This is the canonical public
+          # image (like gitlab/gitlab-ee). pro/ absent (public CE repo) → a
+          # premium-free Community image published under a distinct -ce tag.
+          if [ -f backend/src/pro/pro_features.cc ]; then
+            EDITION=enterprise; PROD_ISSUER=ON; SUFFIX=""; MOVING=latest
+          else
+            EDITION=community;  PROD_ISSUER=OFF; SUFFIX="-ce"; MOVING=community
+          fi
+          echo "edition=$EDITION" >> "$GITHUB_OUTPUT"
+          echo "prod_issuer=$PROD_ISSUER" >> "$GITHUB_OUTPUT"
+
           if [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "tag" ]]; then
             VERSION="${GITHUB_REF#refs/tags/v}"
-            TAG_NAME="${GITHUB_REF#refs/tags/}"
             echo "version=$VERSION" >> "$GITHUB_OUTPUT"
             echo "tags<<EOF" >> "$GITHUB_OUTPUT"
             if [[ "$HAS_DOCKERHUB" == "true" ]]; then
-              echo "${{ env.DOCKERHUB_REPO }}:${VERSION}" >> "$GITHUB_OUTPUT"
-              echo "${{ env.DOCKERHUB_REPO }}:latest" >> "$GITHUB_OUTPUT"
+              echo "${{ env.DOCKERHUB_REPO }}:${VERSION}${SUFFIX}" >> "$GITHUB_OUTPUT"
+              echo "${{ env.DOCKERHUB_REPO }}:${MOVING}" >> "$GITHUB_OUTPUT"
             fi
-            echo "${{ env.GHCR_REPO }}:${VERSION}" >> "$GITHUB_OUTPUT"
-            echo "${{ env.GHCR_REPO }}:latest" >> "$GITHUB_OUTPUT"
+            echo "${{ env.GHCR_REPO }}:${VERSION}${SUFFIX}" >> "$GITHUB_OUTPUT"
+            echo "${{ env.GHCR_REPO }}:${MOVING}" >> "$GITHUB_OUTPUT"
             echo "EOF" >> "$GITHUB_OUTPUT"
           else
             TAG="${{ github.event.inputs.tag || 'latest' }}"
             echo "version=$TAG" >> "$GITHUB_OUTPUT"
             echo "tags<<EOF" >> "$GITHUB_OUTPUT"
             if [[ "$HAS_DOCKERHUB" == "true" ]]; then
-              echo "${{ env.DOCKERHUB_REPO }}:${TAG}" >> "$GITHUB_OUTPUT"
+              echo "${{ env.DOCKERHUB_REPO }}:${TAG}${SUFFIX}" >> "$GITHUB_OUTPUT"
             fi
-            echo "${{ env.GHCR_REPO }}:${TAG}" >> "$GITHUB_OUTPUT"
+            echo "${{ env.GHCR_REPO }}:${TAG}${SUFFIX}" >> "$GITHUB_OUTPUT"
             echo "EOF" >> "$GITHUB_OUTPUT"
           fi
 
@@ -109,8 +126,14 @@ jobs:
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          # GITHUB_TOKEN can only write packages under the workflow repo's OWNER.
+          # This repo is private under a different owner than the target org
+          # (endorium-group), so cross-org push needs a PAT with write:packages
+          # that has access to that org. Set secret GHCR_TOKEN (PAT) + optionally
+          # var GHCR_USER (the PAT owner). Falls back to GITHUB_TOKEN when the
+          # workflow repo IS under the target org (e.g. the public CE repo).
+          username: ${{ vars.GHCR_USER || github.actor }}
+          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Build and push
         id: build_push
@@ -118,16 +141,20 @@ jobs:
         with:
           context: .
           push: true
-          # Public registry gets the COMMUNITY edition (premium code absent).
-          # The Enterprise edition is delivered as a signed tarball (ee-release.yml).
+          # Edition is auto-detected in the meta step: the private repo publishes
+          # the FREEMIUM image (premium compiled + license-gated + public prod
+          # issuer key embedded → apply a license to unlock); the public CE repo
+          # publishes a premium-free Community image under a -ce tag. The prod
+          # issuer key embedded here is a PUBLIC key — no secret is exposed.
           build-args: |
-            EDITION=community
+            EDITION=${{ steps.meta.outputs.edition }}
+            PROD_ISSUER=${{ steps.meta.outputs.prod_issuer }}
           tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           labels: |
-            org.opencontainers.image.title=EndoriumFort Community
-            org.opencontainers.image.description=Privileged Access Management (PAM) Bastion — Community Edition
+            org.opencontainers.image.title=EndoriumFort
+            org.opencontainers.image.description=Privileged Access Management (PAM) Bastion (${{ steps.meta.outputs.edition }}; premium license-gated)
             org.opencontainers.image.version=${{ steps.meta.outputs.version }}
             org.opencontainers.image.source=https://github.com/Endorium-Group/EndoriumFort-CE
             org.opencontainers.image.vendor=Endorium-Group

@@ -16,6 +16,13 @@ helm install ef oci://ghcr.io/endorium-group/charts/endoriumfort \
   --set secrets.vaultKey=$(openssl rand -hex 32)
 ```
 
+> **First-time 401 `unauthorized`?** A GHCR package is **private by default** on its
+> first publish, independently of the repository being public — so an anonymous
+> `helm install` gets `401`. One-time fix (org owner): GitHub → org **Packages** →
+> `charts/endoriumfort` → **Package settings** → **Change visibility → Public**.
+> To keep it private instead, `helm registry login ghcr.io -u <user> --password-stdin`
+> with a PAT (`read:packages`) before installing.
+
 ## Architecture notes
 
 - One pod runs the backend (`:8080`) and nginx (`:80` redirect, `:443` TLS with a
@@ -60,11 +67,13 @@ the self-signed cert once (HTTPS is still a secure context, so WebAuthn works).
 If you prefer nginx-ingress on k3s, disable Traefik (`--disable traefik`), install
 ingress-nginx, and use the default values.
 
-## License (Enterprise)
+## License (freemium)
 
-Provide the offline license token inline via `secrets.license` (or a referenced
-`secrets.existingSecret` with key `ENDORIUMFORT_LICENSE`), or upload it later in the
-admin UI. Enterprise users override `image.repository`/`image.tag` to point at the
-registry into which they loaded the EE image.
+The default image is **freemium**: premium is compiled in but license-gated, so it
+runs as the free tier out of the box. To unlock premium, provide the offline license
+token inline via `secrets.license` (or a `secrets.existingSecret` with key
+`ENDORIUMFORT_LICENSE`), or upload it in the admin UI — **no image swap needed**.
+A premium-free Community image is published under the `:<ver>-ce` tag for those who
+want it.
 
 See `values.yaml` for the full list of options.

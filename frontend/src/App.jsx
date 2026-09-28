@@ -2463,8 +2463,17 @@ export default function App() {
 
     const protocol = String(resource.protocol || '').toLowerCase();
 
-    // Handle web resources via proxy
+    // Handle web resources via proxy: open the bastion-proxied page in a bare
+    // new browser tab (no app chrome — just the resource). window.open runs in
+    // the click gesture (no await before this point), so it isn't popup-blocked;
+    // if the browser blocks it anyway, fall back to the inline embedded view.
     if (protocol === 'http' || protocol === 'https') {
+      const proxyUrl = `/proxy/${resource.id}/`;
+      const win = window.open(proxyUrl, '_blank', 'noopener,noreferrer');
+      if (win) {
+        setSessionError('');
+        return true;
+      }
       setInlineWebResource(resource);
       setVncViewerSession(null);
       setMainTab('sessions');
@@ -6134,6 +6143,13 @@ export default function App() {
           <div className="resource-actions">
             <button
               type="button"
+              className="secondary"
+              onClick={() => window.open(`/proxy/${inlineWebResource.id}/`, '_blank', 'noopener,noreferrer')}
+            >
+              {locale === 'fr' ? 'Ouvrir dans un onglet' : 'Open in new tab'}
+            </button>
+            <button
+              type="button"
               className="ghost"
               onClick={() => setInlineWebResource(null)}
             >
@@ -6145,7 +6161,7 @@ export default function App() {
           title={`resource-${inlineWebResource.id}`}
           src={`/proxy/${inlineWebResource.id}/`}
           className="proxy-iframe"
-          style={{ minHeight: '520px', borderRadius: '12px', border: '1px solid var(--stroke)' }}
+          style={{ width: '100%', height: 'calc(100vh - 240px)', minHeight: '520px', borderRadius: '12px', border: '1px solid var(--stroke)', background: '#fff' }}
           sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-modals allow-top-navigation-by-user-activation"
         />
       </section>

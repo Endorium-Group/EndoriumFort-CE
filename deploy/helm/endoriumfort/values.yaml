@@ -10,8 +10,10 @@
 replicaCount: 1
 
 image:
-  # Community image on GHCR. Enterprise users load their EE image into their own
-  # registry and override this (the EE image is not published to a registry).
+  # Freemium image on GHCR: premium is compiled in but license-gated (runs as the
+  # free tier without a license). Apply an offline license (secrets.license or the
+  # admin UI) to unlock premium — no image swap needed. A premium-free Community
+  # image is published separately under the ":<ver>-ce" tag for source purists.
   repository: ghcr.io/endorium-group/endoriumfort
   # Empty → Chart.appVersion.
   tag: ""
