@@ -24,7 +24,7 @@ jobs:
     outputs:
       matrix: ${{ steps.set.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - id: set
         # The Go agent ships only with the Enterprise edition. Include the go
         # language in the analysis matrix only when agent/ is present, so the
@@ -48,7 +48,7 @@ jobs:
       matrix: ${{ fromJSON(needs.detect.outputs.matrix) }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Go (go)
         if: matrix.key == 'go'
