@@ -1,0 +1,11 @@
+{{- if and .Values.ingress.enabled .Values.traefik.serversTransport.enabled }}
+# Lets Traefik (k3s default ingress) re-encrypt to the pod's self-signed :443.
+apiVersion: traefik.io/v1alpha1
+kind: ServersTransport
+metadata:
+  name: {{ include "endoriumfort.fullname" . }}
+  labels:
+    {{- include "endoriumfort.labels" . | nindent 4 }}
+spec:
+  insecureSkipVerify: {{ .Values.traefik.serversTransport.insecureSkipVerify }}
+{{- end }}

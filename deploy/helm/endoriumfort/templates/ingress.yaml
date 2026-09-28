@@ -1,13 +1,18 @@
 {{- if .Values.ingress.enabled -}}
 {{- $fullName := include "endoriumfort.fullname" . -}}
 {{- $svcPort := .Values.service.port -}}
+{{- $ann := deepCopy (.Values.ingress.annotations | default dict) -}}
+{{- if .Values.traefik.serversTransport.enabled -}}
+{{-   $_ := set $ann "traefik.ingress.kubernetes.io/service.serversscheme" "https" -}}
+{{-   $_ := set $ann "traefik.ingress.kubernetes.io/service.serverstransport" (printf "%s-%s@kubernetescrd" .Release.Namespace $fullName) -}}
+{{- end -}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ $fullName }}
   labels:
     {{- include "endoriumfort.labels" . | nindent 4 }}
-  {{- with .Values.ingress.annotations }}
+  {{- with $ann }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}

@@ -117,8 +117,13 @@ if (ENDORIUMFORT_PRO)
     src/pro/vault_rotation.cc
     src/pro/vault_dynamic.cc
     src/pro/itdr.cc
+    src/pro/k8s.cc
   )
   target_compile_definitions(endoriumfort_backend PRIVATE ENDORIUMFORT_PRO)
+  # forkpty(3) for the Kubernetes exec PTY bridge (Linux: libutil).
+  if (NOT WIN32)
+    target_link_libraries(endoriumfort_backend PRIVATE util)
+  endif()
 else()
   target_sources(endoriumfort_backend PRIVATE src/pro_stub.cc)
 endif()

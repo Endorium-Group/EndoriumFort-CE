@@ -73,10 +73,23 @@ RUN if [ "$EDITION" = "community" ]; then export EF_EDITION=community; fi \
 # ═══════════════════════════════════════════════════════════════════════════
 FROM debian:trixie-slim AS production
 
+# Edition switch (mirrors the build stages). The Kubernetes resource type needs
+# kubectl, which is only installed for the Enterprise image.
+ARG EDITION=enterprise
+ARG TARGETARCH=amd64
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
   nginx libsqlite3-0 libssh2-1 ca-certificates curl openssl certbot \
   && rm -rf /var/lib/apt/lists/* \
   && useradd --system --shell /usr/sbin/nologin --home-dir /app endoriumfort
+
+# kubectl for the Kubernetes exec feature (Enterprise only; skipped for CE).
+RUN if [ "$EDITION" != "community" ]; then \
+      KVER="$(curl -fsSL https://dl.k8s.io/release/stable.txt)" \
+      && curl -fsSL "https://dl.k8s.io/release/${KVER}/bin/linux/${TARGETARCH}/kubectl" \
+           -o /usr/local/bin/kubectl \
+      && chmod 755 /usr/local/bin/kubectl; \
+    fi
 
 WORKDIR /app
 

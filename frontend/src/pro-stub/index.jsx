@@ -33,4 +33,8 @@ export function ItdrPanel() {
   return null;
 }
 
+export function K8sPanel() {
+  return null;
+}
+
 export const proEdition = 'community';

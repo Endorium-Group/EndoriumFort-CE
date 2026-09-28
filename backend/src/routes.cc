@@ -1499,16 +1499,18 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
           return crow::response(400, "Invalid tunnelTicketRateLimitMaxAttempts");
 
         // Validate protocol whitelist
-        if (!is_allowed_role(protocol, {"ssh", "rdp", "vnc", "http", "https", "agent"}))
-          return crow::response(400, "Invalid protocol. Allowed: ssh, rdp, vnc, http, https, agent");
+        if (!is_allowed_role(protocol, {"ssh", "rdp", "vnc", "http", "https", "agent", "k8s"}))
+          return crow::response(400, "Invalid protocol. Allowed: ssh, rdp, vnc, http, https, agent, k8s");
 
         // Input length limits
         if (name.size() > 255 || target.size() > 255 || description.size() > 1024 ||
             tags_csv.size() > 512)
           return crow::response(400, "Field too long");
 
-        // SSRF protection: allow loopback only for SSH resources.
-        if (!ctx.is_safe_target(target, protocol == "ssh"))
+        // SSRF protection: allow loopback only for SSH resources. Kubernetes
+        // resources are not dialled directly — kubectl connects using the
+        // uploaded kubeconfig's server — so target is a display label here.
+        if (protocol != "k8s" && !ctx.is_safe_target(target, protocol == "ssh"))
           return crow::response(400, "Target address is not allowed for this protocol");
 
         // Validate imageUrl scheme if provided
@@ -1637,7 +1639,7 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
               return crow::response(400, "Invalid tunnelTicketRateLimitMaxAttempts");
 
             // Validate protocol whitelist
-            if (!is_allowed_role(protocol, {"ssh", "rdp", "vnc", "http", "https", "agent"}))
+            if (!is_allowed_role(protocol, {"ssh", "rdp", "vnc", "http", "https", "agent", "k8s"}))
               return crow::response(400, "Invalid protocol");
 
             // Input length limits
@@ -1645,8 +1647,9 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
                 tags_csv.size() > 512)
               return crow::response(400, "Field too long");
 
-            // SSRF protection: allow loopback only for SSH resources.
-            if (!ctx.is_safe_target(target, protocol == "ssh"))
+            // SSRF protection: allow loopback only for SSH resources. Kubernetes
+            // resources connect via the uploaded kubeconfig, not `target`.
+            if (protocol != "k8s" && !ctx.is_safe_target(target, protocol == "ssh"))
               return crow::response(400, "Target address is not allowed for this protocol");
 
             Resource resource;

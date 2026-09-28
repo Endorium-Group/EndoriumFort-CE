@@ -62,6 +62,8 @@ import {
   getUserAccessProfiles,
   grantAccessProfile,
   revokeAccessProfile,
+  fetchK8sResources,
+  configureK8sResource,
 } from './api.js';
 import { describeAccessOutcome, describeResourcePolicy, normalizeRiskLevel } from './accessPolicy.js';
 import AdminSectionNav from './components/admin/AdminSectionNav.jsx';
@@ -69,7 +71,7 @@ import { EmptyState, InlineAlert, MetricTile, SectionCard, StatusBadge } from '.
 import { useI18n } from './i18n.jsx';
 // Premium UI comes from the `@pro` overlay: real components in the EE build
 // (src/pro/), no-op stubs in the CE build (src/pro-stub/). See vite.config.js.
-import { RecordingsPanel, VncViewerModal, EnterpriseIamPanel, RelayControlPanel, JitGovernancePanel, VaultPanel, ItdrPanel } from '@pro';
+import { RecordingsPanel, VncViewerModal, EnterpriseIamPanel, RelayControlPanel, JitGovernancePanel, VaultPanel, ItdrPanel, K8sPanel } from '@pro';
 
 const normalizeRole = (role) => {
   const value = String(role || '').toLowerCase();
@@ -369,6 +371,8 @@ export default function App() {
     httpPassword: '',
     sshUsername: '',
     sshPassword: '',
+    k8sNamespace: 'default',
+    k8sKubeconfig: '',
     requireAccessJustification: false,
     requireDualApproval: false,
     enableCommandGuard: false,
@@ -801,6 +805,15 @@ export default function App() {
         locked: lockOf('enterprise'),
         badge: lockOf('enterprise') ? '🔒' : (locale === 'fr' ? 'Détection·Réponse' : 'Detect·Respond'),
         badgeTone: lockOf('enterprise') ? 'locked' : 'ok'
+      },
+      {
+        id: 'k8s',
+        label: 'Kubernetes',
+        hint: locale === 'fr' ? 'Exec shell dans les pods' : 'Pod exec shell',
+        requiredTier: 'pro',
+        locked: lockOf('pro'),
+        badge: lockOf('pro') ? '🔒' : 'kubectl exec',
+        badgeTone: lockOf('pro') ? 'locked' : 'ok'
       },
       {
         id: 'security',
@@ -2810,7 +2823,7 @@ export default function App() {
       name: trimmedName,
       target: trimmedTarget,
       protocol: selectedProtocol,
-      port: Number.parseInt(resourceForm.port, 10) || 22,
+      port: Number.parseInt(resourceForm.port, 10) || (selectedProtocol === 'k8s' ? 443 : 22),
       tunnelTicketRateLimitMaxAttempts: Math.max(
         0,
         Number.parseInt(resourceForm.tunnelTicketRateLimitMaxAttempts, 10) || 0
@@ -2832,6 +2845,7 @@ export default function App() {
     };
     try {
       setSavingResource(true);
+      let savedId = editingResourceId;
       if (editingResourceId) {
         const updated = await updateResource(editingResourceId, payload);
         setResources((prev) =>
@@ -2839,7 +2853,21 @@ export default function App() {
         );
       } else {
         const created = await createResource(payload);
+        savedId = created.id;
         setResources((prev) => [...prev, created]);
+      }
+      // Kubernetes credential (kubeconfig + namespace) lives in a separate
+      // encrypted store keyed by resource id — persist it after the resource
+      // exists. kubeconfig left empty on edit keeps the current one.
+      if (selectedProtocol === 'k8s' && savedId) {
+        try {
+          await configureK8sResource(savedId, {
+            namespace: (resourceForm.k8sNamespace || 'default').trim(),
+            kubeconfig: resourceForm.k8sKubeconfig || ''
+          });
+        } catch (k8sErr) {
+          setResourceError(k8sErr.message || 'Resource saved but kubeconfig failed');
+        }
       }
       setEditingResourceId(null);
       setResourceForm({
@@ -2857,6 +2885,8 @@ export default function App() {
         httpPassword: '',
         sshUsername: '',
         sshPassword: '',
+        k8sNamespace: 'default',
+        k8sKubeconfig: '',
         requireAccessJustification: false,
         requireDualApproval: false,
         enableCommandGuard: false,
@@ -2870,8 +2900,18 @@ export default function App() {
     }
   };
 
-  const onEditResource = (resource) => {
+  const onEditResource = async (resource) => {
     setEditingResourceId(resource.id);
+    // For k8s resources, recover the stored namespace so saving doesn't reset it
+    // (the kubeconfig itself is never sent back — the field stays empty = keep).
+    let k8sNamespace = 'default';
+    if ((resource.protocol || '').toLowerCase() === 'k8s') {
+      try {
+        const res = await fetchK8sResources();
+        const cfg = (res.items || []).find((c) => c.resourceId === resource.id);
+        if (cfg && cfg.namespace) k8sNamespace = cfg.namespace;
+      } catch (_) {}
+    }
     setResourceForm({
       name: resource.name || '',
       target: resource.target || '',
@@ -2889,6 +2929,8 @@ export default function App() {
       httpPassword: '',
       sshUsername: resource.sshUsername || '',
       sshPassword: '',
+      k8sNamespace,
+      k8sKubeconfig: '',
       requireAccessJustification: !!resource.requireAccessJustification,
       requireDualApproval: !!resource.requireDualApproval,
       enableCommandGuard: !!resource.enableCommandGuard,
@@ -4166,6 +4208,7 @@ export default function App() {
                       <option value="vnc">vnc</option>
                       <option value="http">http</option>
                       <option value="agent">agent (tunnel)</option>
+                      <option value="k8s">kubernetes</option>
                     </select>
                   </label>
                   <label>
@@ -4253,6 +4296,35 @@ export default function App() {
                           placeholder={editingResourceId ? 'Leave empty to keep current' : 'Stored securely, injected on connect'}
                           autoComplete="new-password"
                         />
+                      </label>
+                    </>
+                  )}
+                  {resourceForm.protocol === 'k8s' && (
+                    <>
+                      <label>
+                        Namespace
+                        <input
+                          name="k8sNamespace"
+                          value={resourceForm.k8sNamespace}
+                          onChange={onResourceFieldChange}
+                          placeholder="default"
+                          autoComplete="off"
+                        />
+                      </label>
+                      <label className="full">
+                        kubeconfig (YAML)
+                        <textarea
+                          name="k8sKubeconfig"
+                          rows={6}
+                          value={resourceForm.k8sKubeconfig}
+                          onChange={onResourceFieldChange}
+                          placeholder={editingResourceId ? 'Leave empty to keep current kubeconfig' : 'apiVersion: v1\nkind: Config\n...'}
+                          autoComplete="off"
+                          style={{ fontFamily: 'monospace' }}
+                        />
+                        <small className="muted">
+                          Stored encrypted. The cluster is reached via this kubeconfig — the Target field above is just a label.
+                        </small>
                       </label>
                     </>
                   )}
@@ -4395,6 +4467,8 @@ export default function App() {
                         httpPassword: '',
                         sshUsername: '',
                         sshPassword: '',
+                        k8sNamespace: 'default',
+                        k8sKubeconfig: '',
                         requireAccessJustification: false,
                         requireDualApproval: false,
                         enableCommandGuard: false,
@@ -4809,6 +4883,10 @@ export default function App() {
 
           {adminSection === 'itdr' && (
             <ItdrPanel auth={auth} canManagePlatform={canManagePlatform} />
+          )}
+
+          {adminSection === 'k8s' && (
+            <K8sPanel auth={auth} canManagePlatform={canManagePlatform} resources={resources} />
           )}
 
           {adminSection === 'license' && (

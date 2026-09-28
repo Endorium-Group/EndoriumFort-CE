@@ -62,6 +62,15 @@ ingress:
   #    hosts:
   #      - endoriumfort.local
 
+# k3s ships Traefik (not nginx-ingress). Enable this to re-encrypt to the pod's
+# self-signed :443 via a Traefik ServersTransport, and to auto-add the matching
+# ingress annotations. Set ingress.className to "traefik" and clear the nginx
+# annotations (see examples/values-k3s.yaml).
+traefik:
+  serversTransport:
+    enabled: false
+    insecureSkipVerify: true  # the pod cert is self-signed; TLS still applies at ingress
+
 persistence:
   data:
     enabled: true

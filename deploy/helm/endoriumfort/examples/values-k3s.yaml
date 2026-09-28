@@ -1,0 +1,44 @@
+# EndoriumFort on k3s (default Traefik ingress + re-encrypt to the pod's :443).
+#
+#   helm install ef oci://ghcr.io/endorium-group/charts/endoriumfort \
+#     -n endoriumfort --create-namespace \
+#     -f values-k3s.yaml \
+#     --set-string secrets.vaultKey=$(openssl rand -hex 32)
+#
+# Uses k3s defaults: local-path storage (storageClass left empty) + Traefik.
+
+ingress:
+  enabled: true
+  className: traefik
+  # Clear the nginx-ingress defaults — Traefik annotations are auto-added by the
+  # chart when traefik.serversTransport.enabled=true.
+  annotations: {}
+  hosts:
+    - host: pam.homelab.lan
+      paths:
+        - path: /
+          pathType: Prefix
+  # With cert-manager installed, add a certificate here; otherwise Traefik serves
+  # its own default cert (browser warning, but HTTPS/secure context still works).
+  tls: []
+  #  - secretName: endoriumfort-tls
+  #    hosts:
+  #      - pam.homelab.lan
+
+traefik:
+  serversTransport:
+    enabled: true          # re-encrypt to the pod's self-signed :443
+    insecureSkipVerify: true
+
+config:
+  webauthn:
+    rpId: pam.homelab.lan
+    origin: https://pam.homelab.lan
+
+# local-path is node-local — fine on a single-node k3s. Leave storageClass empty
+# to use the k3s default.
+persistence:
+  data:
+    size: 2Gi
+  recordings:
+    size: 10Gi

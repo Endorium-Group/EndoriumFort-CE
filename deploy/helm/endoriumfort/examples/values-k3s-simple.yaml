@@ -1,0 +1,27 @@
+# EndoriumFort on k3s WITHOUT ingress — simplest home-lab setup.
+#
+# Exposes the pod's TLS :443 directly through a LoadBalancer (k3s ServiceLB gives
+# it a node IP). You reach https://<node-ip> and accept the built-in self-signed
+# certificate once. HTTPS = secure context, so WebAuthn/passkeys still work.
+#
+#   helm install ef oci://ghcr.io/endorium-group/charts/endoriumfort \
+#     -n endoriumfort --create-namespace \
+#     -f values-k3s-simple.yaml \
+#     --set-string secrets.vaultKey=$(openssl rand -hex 32) \
+#     --set config.webauthn.rpId=<node-ip> \
+#     --set config.webauthn.origin=https://<node-ip>
+
+service:
+  type: LoadBalancer
+  port: 443
+  targetPort: 443
+
+ingress:
+  enabled: false
+
+# Set these to the address you actually browse to (node IP or a LAN DNS name),
+# or WebAuthn enrolment/login will fail.
+config:
+  webauthn:
+    rpId: ""      # e.g. 192.168.1.50  (or pam.homelab.lan)
+    origin: ""    # e.g. https://192.168.1.50

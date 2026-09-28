@@ -180,6 +180,31 @@ export async function ackItdrDetection(id) {
   return response.json();
 }
 
+// ── Kubernetes resources (premium) ──
+export async function fetchK8sResources() {
+  const response = await fetch('/api/k8s/resources', { headers: withAuthHeaders() });
+  await ensureResponseOk(response, 'Failed to fetch Kubernetes resources');
+  return response.json();
+}
+
+export async function configureK8sResource(resourceId, payload) {
+  const response = await fetch(`/api/k8s/resources/${resourceId}`, {
+    method: 'PUT',
+    headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload)
+  });
+  await ensureResponseOk(response, 'Failed to configure Kubernetes resource');
+  return response.json();
+}
+
+export async function fetchK8sPods(resourceId) {
+  const response = await fetch(`/api/k8s/resources/${resourceId}/pods`, {
+    headers: withAuthHeaders()
+  });
+  await ensureResponseOk(response, 'Failed to list pods');
+  return response.json();
+}
+
 export function setAuthToken(token) {
   authToken = token || '';
 }

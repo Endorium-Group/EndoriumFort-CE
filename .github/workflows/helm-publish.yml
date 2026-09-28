@@ -43,6 +43,9 @@ jobs:
       - name: helm template (ingress + secrets)
         run: helm template ef "${CHART_DIR}" --values "${CHART_DIR}/ci/ingress-values.yaml" >/dev/null
 
+      - name: helm template (k3s / Traefik example)
+        run: helm template ef "${CHART_DIR}" -n endoriumfort --values "${CHART_DIR}/examples/values-k3s.yaml" >/dev/null
+
   publish:
     name: Package & push to GHCR
     if: startsWith(github.ref, 'refs/tags/v')

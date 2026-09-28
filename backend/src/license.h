@@ -176,6 +176,7 @@ inline const std::vector<FeatureEntitlement> &feature_catalog() {
       {"vault.rotation", "enterprise", nullptr, GateLayer::PerRoute},
       {"vault.dynamic", "enterprise", nullptr, GateLayer::PerRoute},
       {"itdr", "enterprise", nullptr, GateLayer::PerRoute},
+      {"k8s", "pro", nullptr, GateLayer::PerRoute},
   };
   return catalog;
 }
