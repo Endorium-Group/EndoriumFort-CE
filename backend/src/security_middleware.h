@@ -97,6 +97,17 @@ struct SecurityHeadersMiddleware {
 
   void after_handle(crow::request &req, crow::response &res,
                     context & /*ctx*/) {
+    // Reverse-proxied third-party apps (/proxy/*) must NOT inherit the SPA's
+    // strict CSP / X-Frame-Options / Cache-Control, or they break — e.g. the
+    // embedded app's login form POST is blocked by `form-action 'self'`, and the
+    // duplicated Cache-Control confuses caches. Access to these routes is already
+    // gated by auth in the proxy handler, and the proxied response carries the
+    // target app's own headers. Add only MIME sniffing protection here.
+    if (req.url.rfind("/proxy/", 0) == 0) {
+      res.add_header("X-Content-Type-Options", "nosniff");
+      return;
+    }
+
     res.add_header("X-Content-Type-Options", "nosniff");
     res.add_header("X-Frame-Options", "SAMEORIGIN");
     // X-XSS-Protection is deprecated in modern browsers; disable legacy mode.

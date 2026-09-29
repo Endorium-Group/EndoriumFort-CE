@@ -177,6 +177,8 @@ inline const std::vector<FeatureEntitlement> &feature_catalog() {
       {"vault.dynamic", "enterprise", nullptr, GateLayer::PerRoute},
       {"itdr", "enterprise", nullptr, GateLayer::PerRoute},
       {"k8s", "pro", nullptr, GateLayer::PerRoute},
+      // RBI itself is core/free; recording its graphical stream is Enterprise.
+      {"rbi.recording", "enterprise", nullptr, GateLayer::PerRoute},
   };
   return catalog;
 }

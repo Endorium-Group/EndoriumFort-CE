@@ -72,6 +72,8 @@ import { useI18n } from './i18n.jsx';
 // Premium UI comes from the `@pro` overlay: real components in the EE build
 // (src/pro/), no-op stubs in the CE build (src/pro-stub/). See vite.config.js.
 import { RecordingsPanel, VncViewerModal, EnterpriseIamPanel, RelayControlPanel, JitGovernancePanel, VaultPanel, ItdrPanel, K8sPanel } from '@pro';
+// Remote Browser Isolation viewer — core feature (present in CE too).
+import RbiViewerModal from './RbiViewerModal.jsx';
 
 const normalizeRole = (role) => {
   const value = String(role || '').toLowerCase();
@@ -423,6 +425,7 @@ export default function App() {
   const [licenseActionMsg, setLicenseActionMsg] = useState(null); // {error, message} | null
   const [inlineWebResource, setInlineWebResource] = useState(null);
   const [vncViewerSession, setVncViewerSession] = useState(null);
+  const [rbiViewerSession, setRbiViewerSession] = useState(null);
   const [accessPromptResource, setAccessPromptResource] = useState(null);
   const [accessPromptReason, setAccessPromptReason] = useState('');
   const [accessPromptTicketId, setAccessPromptTicketId] = useState('');
@@ -2463,21 +2466,43 @@ export default function App() {
 
     const protocol = String(resource.protocol || '').toLowerCase();
 
-    // Handle web resources via proxy: open the bastion-proxied page in a bare
-    // new browser tab (no app chrome — just the resource). window.open runs in
-    // the click gesture (no await before this point), so it isn't popup-blocked;
-    // if the browser blocks it anyway, fall back to the inline embedded view.
+    // Handle web resources via Remote Browser Isolation (RBI): create a session
+    // and open a server-side headless Chromium streamed as pixels. The target
+    // site never touches the operator's browser, and apps that break under
+    // subpath proxying (Zabbix, etc.) render exactly as they would natively.
     if (protocol === 'http' || protocol === 'https') {
-      const proxyUrl = `/proxy/${resource.id}/`;
-      const win = window.open(proxyUrl, '_blank', 'noopener,noreferrer');
-      if (win) {
+      try {
+        const payload = {
+          resourceId: resource.id,
+          target: resource.target,
+          user: resource.httpUsername || auth.user,
+          protocol: resource.protocol,
+          port: resource.port,
+          justification: (accessMeta.justification || '').trim(),
+          ticketId: (accessMeta.ticketId || '').trim(),
+          purpose: (accessMeta.purpose || '').trim(),
+          purposeEvidence: (accessMeta.purposeEvidence || '').trim(),
+          accessRequestId: accessMeta.accessRequestId || undefined
+        };
+        const created = await createSession(payload);
+        setSessions((prev) => [created, ...prev]);
+        if (created?.accessGrantId) {
+          fetchAccessGrants()
+            .then((data) => {
+              setAccessGrants(Array.isArray(data?.items) ? data.items : []);
+            })
+            .catch(() => {});
+        }
         setSessionError('');
+        setInlineWebResource(null);
+        setVncViewerSession(null);
+        setRbiViewerSession(created);
+        setMainTab('sessions');
         return true;
+      } catch (error) {
+        setSessionError(error.message || 'Unable to create session');
+        return false;
       }
-      setInlineWebResource(resource);
-      setVncViewerSession(null);
-      setMainTab('sessions');
-      return true;
     }
 
     if (protocol === 'vnc') {
@@ -6144,7 +6169,7 @@ export default function App() {
             <button
               type="button"
               className="secondary"
-              onClick={() => window.open(`/proxy/${inlineWebResource.id}/`, '_blank', 'noopener,noreferrer')}
+              onClick={() => window.open(`/proxy/${inlineWebResource.id}`, '_blank', 'noopener,noreferrer')}
             >
               {locale === 'fr' ? 'Ouvrir dans un onglet' : 'Open in new tab'}
             </button>
@@ -6159,7 +6184,7 @@ export default function App() {
         </div>
         <iframe
           title={`resource-${inlineWebResource.id}`}
-          src={`/proxy/${inlineWebResource.id}/`}
+          src={`/proxy/${inlineWebResource.id}`}
           className="proxy-iframe"
           style={{ width: '100%', height: 'calc(100vh - 240px)', minHeight: '520px', borderRadius: '12px', border: '1px solid var(--stroke)', background: '#fff' }}
           sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-modals allow-top-navigation-by-user-activation"
@@ -6171,6 +6196,22 @@ export default function App() {
         <VncViewerModal
           session={vncViewerSession}
           onClose={() => setVncViewerSession(null)}
+        />
+      )}
+
+      {rbiViewerSession && (
+        <RbiViewerModal
+          session={rbiViewerSession}
+          onClose={() => {
+            const closed = rbiViewerSession;
+            setRbiViewerSession(null);
+            if (closed?.id) {
+              terminateSession(closed.id).catch(() => {});
+              setSessions((prev) =>
+                prev.map((s) => (s.id === closed.id ? { ...s, status: 'terminated' } : s))
+              );
+            }
+          }}
         />
       )}
 

@@ -52,6 +52,7 @@ int main() {
   register_proxy_routes(app, ctx);
   register_web_resource_routes(app, ctx);
   register_ssh_routes(app, ctx);
+  register_rbi_routes(app, ctx);
 
   // Premium (Enterprise) route groups — no-op in the Community edition.
   register_pro_features(app, ctx);

@@ -200,6 +200,18 @@ struct AppContext {
   std::function<void(int /*session_id*/)> deprovision_dynamic_for_session =
       [](int) {};
 
+  // ── RBI recording seams (premium; set by pro/rbi_recording.cc, no-op in CE) ──
+  // The RBI browser lives in core (rbi.cc), but recording its graphical stream is
+  // an Enterprise feature. When present AND licensed (rbi.recording), the pro
+  // module returns an opaque handle (>0) from open, receives each JPEG frame, and
+  // finalizes on close. Unset in CE (and in EE without the license) → no capture.
+  std::function<int64_t(int /*session_id*/, int /*width*/, int /*height*/,
+                        const std::string & /*title*/)>
+      rbi_recording_open;
+  std::function<void(int64_t /*handle*/, const std::string & /*jpeg*/)>
+      rbi_recording_frame;
+  std::function<void(int64_t /*handle*/)> rbi_recording_close;
+
   // ── Tunnel state ──
   std::mutex tunnel_mutex;
   std::unordered_map<crow::websocket::connection *,

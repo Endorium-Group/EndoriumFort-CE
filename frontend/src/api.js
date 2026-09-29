@@ -382,6 +382,15 @@ export async function fetchAudit() {
   return response.json();
 }
 
+// Download a graphical RBI recording (.efr) as an ArrayBuffer (EE feature).
+export async function fetchRbiRecording(recId) {
+  const response = await fetch(`/api/recordings/${recId}/rbi`, {
+    headers: withAuthHeaders()
+  });
+  await ensureResponseOk(response, 'Failed to fetch RBI recording');
+  return response.arrayBuffer();
+}
+
 export async function fetchSecurityAlerts(sinceId = 0) {
   const response = await fetch(`/api/security/alerts?sinceId=${Number(sinceId) || 0}`, {
     headers: withAuthHeaders()

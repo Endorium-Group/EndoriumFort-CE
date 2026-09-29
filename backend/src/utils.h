@@ -578,6 +578,34 @@ inline std::string base64_encode(const std::string &input) {
   return result;
 }
 
+// Standard base64 decoder (ignores whitespace, stops at '='). Used to turn the
+// base64 JPEG frames from Chromium's CDP screencast back into raw bytes before
+// streaming them to the browser over the RBI WebSocket.
+inline std::string base64_decode(const std::string &input) {
+  auto value = [](unsigned char c) -> int {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+  };
+  std::string out;
+  int bits = 0, acc = 0;
+  for (unsigned char c : input) {
+    if (c == '=' ) break;
+    const int v = value(c);
+    if (v < 0) continue;  // skip newlines/whitespace/invalid
+    acc = (acc << 6) | v;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out += static_cast<char>((acc >> bits) & 0xff);
+    }
+  }
+  return out;
+}
+
 inline crow::json::wvalue session_to_json(const Session &session) {
   crow::json::wvalue payload;
   payload["id"] = session.id;

@@ -1112,6 +1112,11 @@ void register_proxy_routes(CrowApp &app, AppContext &ctx) {
         return handle_proxy_request(ctx, request, resource_id, "");
       });
 
+  // NOTE: Crow's router 404s on a trailing-slash root like /proxy/<id>/ (the
+  // <path> tag below does not match an empty segment, and registering an explicit
+  // "/proxy/<int>/" rule collides with "/proxy/<int>"). The frontend therefore
+  // requests /proxy/<id> WITHOUT a trailing slash; the proxied HTML gets a
+  // <base href="/proxy/<id>/"> so relative assets resolve to /proxy/<id>/<path>.
   CROW_ROUTE(app, "/proxy/<int>/<path>")
       .methods(crow::HTTPMethod::Get, crow::HTTPMethod::Post,
                crow::HTTPMethod::Put, crow::HTTPMethod::Delete,

@@ -78,8 +78,11 @@ FROM debian:trixie-slim AS production
 ARG EDITION=enterprise
 ARG TARGETARCH=amd64
 
+# chromium powers Remote Browser Isolation (RBI) — a CORE feature, so it is
+# installed for both editions. fonts-liberation gives pages sane default fonts.
 RUN apt-get update && apt-get install -y --no-install-recommends \
   nginx libsqlite3-0 libssh2-1 ca-certificates curl openssl certbot \
+  chromium fonts-liberation \
   && rm -rf /var/lib/apt/lists/* \
   && useradd --system --shell /usr/sbin/nologin --home-dir /app endoriumfort
 

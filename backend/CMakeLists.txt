@@ -58,6 +58,7 @@ add_executable(endoriumfort_backend
   src/iam_common.cc
   src/license.cc
   src/ssh.cc
+  src/rbi.cc
   src/session_recording.cc
 )
 
@@ -118,6 +119,7 @@ if (ENDORIUMFORT_PRO)
     src/pro/vault_dynamic.cc
     src/pro/itdr.cc
     src/pro/k8s.cc
+    src/pro/rbi_recording.cc
   )
   target_compile_definitions(endoriumfort_backend PRIVATE ENDORIUMFORT_PRO)
   # forkpty(3) for the Kubernetes exec PTY bridge (Linux: libutil).

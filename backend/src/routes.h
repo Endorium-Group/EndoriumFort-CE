@@ -19,6 +19,9 @@ void register_stats_routes(CrowApp &app, AppContext &ctx);
 void register_relay_routes(CrowApp &app, AppContext &ctx);
 void register_enterprise_routes(CrowApp &app, AppContext &ctx);
 void register_license_routes(CrowApp &app, AppContext &ctx);
+// Remote Browser Isolation (core / CE): server-side headless Chromium streamed
+// to the operator over a WebSocket (CDP screencast). Not license-gated.
+void register_rbi_routes(CrowApp &app, AppContext &ctx);
 
 // Open-core extension hook. Registers all premium (Enterprise) route groups.
 // The Enterprise build defines it in src/pro/pro_features.cc; the Community
