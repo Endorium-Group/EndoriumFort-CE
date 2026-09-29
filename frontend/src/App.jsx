@@ -373,6 +373,7 @@ export default function App() {
     httpPassword: '',
     sshUsername: '',
     sshPassword: '',
+    agentProtocol: 'tcp',
     k8sNamespace: 'default',
     k8sKubeconfig: '',
     requireAccessJustification: false,
@@ -2351,7 +2352,9 @@ export default function App() {
 
   const isAgentTunnelProtocol = (protocol) => {
     const normalized = String(protocol || '').toLowerCase();
-    return normalized === 'agent' || normalized === 'rdp' || normalized === 'ssh';
+    // SSH keeps the in-browser web terminal; only "agent" tunnels and direct RDP
+    // (which has no web viewer) launch via the native agent deep link.
+    return normalized === 'agent' || normalized === 'rdp';
   };
 
   const resolveAgentInstallGuide = () => {
@@ -2377,21 +2380,30 @@ export default function App() {
   const buildAgentLaunchPayload = async (resource, localPort) => {
     const normalizedOrigin = String(window.location.origin || '').replace(/\/$/, '');
     const resourceProtocol = String(resource?.protocol || '').toLowerCase();
-    const openInBrowser = resourceProtocol === 'agent' || resourceProtocol === 'http' || resourceProtocol === 'https';
+    // For "agent" resources the tunnelled protocol + user are configured on the
+    // resource (agentProtocol / sshUsername) and injected as &protocol / &user;
+    // for direct rdp/vnc resources they come from the protocol itself.
+    const effectiveProtocol =
+      resourceProtocol === 'agent'
+        ? String(resource?.agentProtocol || 'tcp').toLowerCase()
+        : resourceProtocol;
+    const tunnelUser = String(resource?.sshUsername || '').trim();
+    // ssh/rdp/vnc launch a native client; http/https/tcp expose a local web app.
+    const openInBrowser =
+      effectiveProtocol === 'http' || effectiveProtocol === 'https' || effectiveProtocol === 'tcp';
     const localEndpoint = `127.0.0.1:${localPort}`;
     const localUrl = `http://127.0.0.1:${localPort}`;
     const params = new URLSearchParams();
     params.set('server', normalizedOrigin);
     params.set('resource', String(resource.id));
     params.set('local-port', String(localPort));
-    params.set('protocol', resourceProtocol);
-    // The resource's configured remote username (sshUsername) applies to both
-    // SSH and RDP launches so the native client starts without prompting.
-    if (resourceProtocol === 'ssh' && resource?.sshUsername) {
-      params.set('ssh-user', resource.sshUsername);
-    }
-    if (resourceProtocol === 'rdp' && resource?.sshUsername) {
-      params.set('rdp-user', resource.sshUsername);
+    params.set('protocol', effectiveProtocol);
+    // Generic &user (the agent maps it to the SSH user) plus the protocol-specific
+    // param the native client expects, so it launches without prompting.
+    if (tunnelUser) {
+      params.set('user', tunnelUser);
+      if (effectiveProtocol === 'ssh') params.set('ssh-user', tunnelUser);
+      if (effectiveProtocol === 'rdp') params.set('rdp-user', tunnelUser);
     }
     if (openInBrowser) {
       params.set('redirect-url', localUrl);
@@ -2871,6 +2883,7 @@ export default function App() {
       httpPassword: resourceForm.httpPassword,
       sshUsername: resourceForm.sshUsername.trim(),
       sshPassword: resourceForm.sshPassword,
+      agentProtocol: selectedProtocol === 'agent' ? (resourceForm.agentProtocol || 'tcp') : '',
       requireAccessJustification: !!resourceForm.requireAccessJustification,
       requireDualApproval: !!resourceForm.requireDualApproval,
       enableCommandGuard: !!resourceForm.enableCommandGuard,
@@ -2919,6 +2932,7 @@ export default function App() {
         httpPassword: '',
         sshUsername: '',
         sshPassword: '',
+        agentProtocol: 'tcp',
         k8sNamespace: 'default',
         k8sKubeconfig: '',
         requireAccessJustification: false,
@@ -2963,6 +2977,7 @@ export default function App() {
       httpPassword: '',
       sshUsername: resource.sshUsername || '',
       sshPassword: '',
+      agentProtocol: resource.agentProtocol || 'tcp',
       k8sNamespace,
       k8sKubeconfig: '',
       requireAccessJustification: !!resource.requireAccessJustification,
@@ -4270,6 +4285,37 @@ export default function App() {
                       />
                       <small className="muted">0 = unlimited. Applied per user and per resource.</small>
                     </label>
+                  )}
+                  {resourceForm.protocol === 'agent' && (
+                    <>
+                      <label>
+                        Tunneled protocol
+                        <select
+                          name="agentProtocol"
+                          value={resourceForm.agentProtocol}
+                          onChange={onResourceFieldChange}
+                        >
+                          <option value="tcp">tcp (generic)</option>
+                          <option value="ssh">ssh</option>
+                          <option value="rdp">rdp</option>
+                          <option value="vnc">vnc</option>
+                          <option value="http">http</option>
+                          <option value="https">https</option>
+                        </select>
+                        <small className="muted">Injected into the agent deep link as &amp;protocol.</small>
+                      </label>
+                      <label>
+                        User (optional)
+                        <input
+                          name="sshUsername"
+                          value={resourceForm.sshUsername}
+                          onChange={onResourceFieldChange}
+                          placeholder="administrator"
+                          autoComplete="off"
+                        />
+                        <small className="muted">Injected into the agent deep link as &amp;user.</small>
+                      </label>
+                    </>
                   )}
                   {(resourceForm.protocol === 'http' || resourceForm.protocol === 'https') && (
                     <>

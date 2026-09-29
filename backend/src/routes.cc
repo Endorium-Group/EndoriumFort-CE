@@ -1466,6 +1466,8 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
         if (body.has("sshUsername")) ssh_username = body["sshUsername"].s();
         std::string ssh_password;
         if (body.has("sshPassword")) ssh_password = body["sshPassword"].s();
+        std::string agent_protocol;
+        if (body.has("agentProtocol")) agent_protocol = to_lower(body["agentProtocol"].s());
         bool require_access_justification = false;
         if (body.has("requireAccessJustification")) {
           require_access_justification = body["requireAccessJustification"].b();
@@ -1502,6 +1504,18 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
         if (!is_allowed_role(protocol, {"ssh", "rdp", "vnc", "http", "https", "agent", "k8s"}))
           return crow::response(400, "Invalid protocol. Allowed: ssh, rdp, vnc, http, https, agent, k8s");
 
+        // Agent resources carry a tunnelled protocol (injected into the agent
+        // deep link). Only meaningful for protocol == "agent".
+        if (protocol == "agent") {
+          if (agent_protocol.empty()) agent_protocol = "tcp";
+          if (!is_allowed_role(agent_protocol,
+                               {"ssh", "rdp", "vnc", "http", "https", "tcp"}))
+            return crow::response(400,
+                "Invalid agentProtocol. Allowed: ssh, rdp, vnc, http, https, tcp");
+        } else {
+          agent_protocol.clear();
+        }
+
         // Input length limits
         if (name.size() > 255 || target.size() > 255 || description.size() > 1024 ||
             tags_csv.size() > 512)
@@ -1534,6 +1548,7 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
         resource.httpPassword = http_password;
         resource.sshUsername = ssh_username;
         resource.sshPassword = ssh_password;
+        resource.agentProtocol = agent_protocol;
         resource.requireAccessJustification = require_access_justification;
         resource.requireDualApproval = require_dual_approval;
         resource.enableCommandGuard = enable_command_guard;
@@ -1606,6 +1621,8 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
             if (body.has("sshUsername")) ssh_username = body["sshUsername"].s();
             std::string ssh_password;
             if (body.has("sshPassword")) ssh_password = body["sshPassword"].s();
+            std::string agent_protocol;
+            if (body.has("agentProtocol")) agent_protocol = to_lower(body["agentProtocol"].s());
             bool require_access_justification = false;
             if (body.has("requireAccessJustification")) {
               require_access_justification = body["requireAccessJustification"].b();
@@ -1642,6 +1659,17 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
             if (!is_allowed_role(protocol, {"ssh", "rdp", "vnc", "http", "https", "agent", "k8s"}))
               return crow::response(400, "Invalid protocol");
 
+            // Agent resources carry a tunnelled protocol (see create handler).
+            if (protocol == "agent") {
+              if (agent_protocol.empty()) agent_protocol = "tcp";
+              if (!is_allowed_role(agent_protocol,
+                                   {"ssh", "rdp", "vnc", "http", "https", "tcp"}))
+                return crow::response(400,
+                    "Invalid agentProtocol. Allowed: ssh, rdp, vnc, http, https, tcp");
+            } else {
+              agent_protocol.clear();
+            }
+
             // Input length limits
             if (name.size() > 255 || target.size() > 255 || description.size() > 1024 ||
                 tags_csv.size() > 512)
@@ -1675,6 +1703,7 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
               resource.sshUsername = ssh_username;
               // Only update sshPassword if provided (non-empty)
               if (!ssh_password.empty()) resource.sshPassword = ssh_password;
+              resource.agentProtocol = agent_protocol;
               resource.requireAccessJustification = require_access_justification;
               resource.requireDualApproval = require_dual_approval;
               resource.enableCommandGuard = enable_command_guard;

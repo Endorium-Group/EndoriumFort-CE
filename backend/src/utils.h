@@ -642,6 +642,7 @@ inline crow::json::wvalue resource_to_json(const Resource &resource) {
   payload["credentialSource"] = resource.credentialSource;
   payload["httpUsername"] = resource.httpUsername;
   payload["sshUsername"] = resource.sshUsername;
+  payload["agentProtocol"] = resource.agentProtocol;
   payload["hasCredentials"] = !resource.sshPassword.empty();
   payload["requireAccessJustification"] = resource.requireAccessJustification;
   payload["requireDualApproval"] = resource.requireDualApproval;

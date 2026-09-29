@@ -434,6 +434,7 @@ void AppContext::init_database() {
   sqlite.exec("ALTER TABLE resources ADD COLUMN http_password TEXT;", err);
   sqlite.exec("ALTER TABLE resources ADD COLUMN ssh_username TEXT;", err);
   sqlite.exec("ALTER TABLE resources ADD COLUMN ssh_password TEXT;", err);
+  sqlite.exec("ALTER TABLE resources ADD COLUMN agent_protocol TEXT;", err);
   sqlite.exec("ALTER TABLE resources ADD COLUMN require_access_justification INTEGER DEFAULT 0;", err);
   sqlite.exec("ALTER TABLE resources ADD COLUMN require_dual_approval INTEGER DEFAULT 0;", err);
   sqlite.exec("ALTER TABLE resources ADD COLUMN enable_command_guard INTEGER DEFAULT 0;", err);
@@ -897,7 +898,7 @@ void AppContext::load_resources_from_db() {
       "created_at, updated_at, ssh_username, ssh_password, "
       "require_access_justification, require_dual_approval, "
       "enable_command_guard, adaptive_access_policy, risk_level, "
-      "tunnel_ticket_rate_limit_max_attempts FROM resources";
+      "tunnel_ticket_rate_limit_max_attempts, agent_protocol FROM resources";
   sqlite3_stmt *stmt = nullptr;
   if (sqlite3_prepare_v2(sqlite.db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
     std::cerr << "SQLite resource select failed: " << sqlite3_errmsg(sqlite.db) << '\n';
@@ -955,6 +956,8 @@ void AppContext::load_resources_from_db() {
       if (r.tunnelTicketRateLimitMaxAttempts < 0) {
         r.tunnelTicketRateLimitMaxAttempts = 0;
       }
+      auto ap = sqlite3_column_text(stmt, 22);
+      if (ap) r.agentProtocol = reinterpret_cast<const char *>(ap);
       resources[r.id] = r;
       if (r.id > max_id) max_id = r.id;
     }
@@ -972,8 +975,8 @@ bool AppContext::insert_resource(const Resource &r) {
       "http_password, created_at, updated_at, ssh_username, ssh_password, "
       "require_access_justification, require_dual_approval, "
       "enable_command_guard, adaptive_access_policy, risk_level, "
-      "tunnel_ticket_rate_limit_max_attempts) "
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+      "tunnel_ticket_rate_limit_max_attempts, agent_protocol) "
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
   sqlite3_stmt *stmt = nullptr;
   if (sqlite3_prepare_v2(sqlite.db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
     std::cerr << "SQLite resource insert failed: " << sqlite3_errmsg(sqlite.db) << '\n';
@@ -1019,6 +1022,8 @@ bool AppContext::insert_resource(const Resource &r) {
     sqlite3_bind_int(stmt, 20, r.adaptiveAccessPolicy ? 1 : 0);
     sqlite3_bind_text(stmt, 21, r.riskLevel.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(stmt, 22, std::max(0, r.tunnelTicketRateLimitMaxAttempts));
+    r.agentProtocol.empty() ? sqlite3_bind_null(stmt, 23)
+      : sqlite3_bind_text(stmt, 23, r.agentProtocol.c_str(), -1, SQLITE_TRANSIENT);
   bool ok = sqlite3_step(stmt) == SQLITE_DONE;
   if (!ok) std::cerr << "SQLite resource insert failed: " << sqlite3_errmsg(sqlite.db) << '\n';
   sqlite3_finalize(stmt);
@@ -1034,7 +1039,7 @@ bool AppContext::update_resource_db(const Resource &r) {
       "http_username=?, http_password=?, updated_at=?, ssh_username=?, ssh_password=?, "
       "require_access_justification=?, require_dual_approval=?, "
       "enable_command_guard=?, adaptive_access_policy=?, risk_level=?, "
-      "tunnel_ticket_rate_limit_max_attempts=? "
+      "tunnel_ticket_rate_limit_max_attempts=?, agent_protocol=? "
       "WHERE id=?";
   sqlite3_stmt *stmt = nullptr;
   if (sqlite3_prepare_v2(sqlite.db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -1079,7 +1084,9 @@ bool AppContext::update_resource_db(const Resource &r) {
     sqlite3_bind_int(stmt, 18, r.adaptiveAccessPolicy ? 1 : 0);
     sqlite3_bind_text(stmt, 19, r.riskLevel.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(stmt, 20, std::max(0, r.tunnelTicketRateLimitMaxAttempts));
-    sqlite3_bind_int(stmt, 21, r.id);
+    r.agentProtocol.empty() ? sqlite3_bind_null(stmt, 21)
+      : sqlite3_bind_text(stmt, 21, r.agentProtocol.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 22, r.id);
   bool ok = sqlite3_step(stmt) == SQLITE_DONE;
   if (!ok) std::cerr << "SQLite resource update failed: " << sqlite3_errmsg(sqlite.db) << '\n';
   sqlite3_finalize(stmt);

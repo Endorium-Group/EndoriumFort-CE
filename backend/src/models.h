@@ -42,6 +42,10 @@ struct Resource {
   std::string httpPassword;
   std::string sshUsername;
   std::string sshPassword;
+  // For "agent" resources: the protocol the agent tunnel actually carries (ssh,
+  // rdp, vnc, http, https, tcp). Empty for non-agent resources. Injected into the
+  // agent deep link as &protocol so the native client launches correctly.
+  std::string agentProtocol;
   bool requireAccessJustification = false;
   bool requireDualApproval = false;
   bool enableCommandGuard = false;
