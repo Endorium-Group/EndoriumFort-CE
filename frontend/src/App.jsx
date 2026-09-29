@@ -2483,6 +2483,11 @@ export default function App() {
     // site never touches the operator's browser, and apps that break under
     // subpath proxying (Zabbix, etc.) render exactly as they would natively.
     if (protocol === 'http' || protocol === 'https') {
+      // Open the isolated-browser tab synchronously (inside the click gesture) so
+      // it isn't popup-blocked; navigate it to the decoration-free full-screen RBI
+      // page once the session exists. If the browser blocks it, fall back to the
+      // in-app modal.
+      const rbiTab = window.open('about:blank', '_blank');
       try {
         const payload = {
           resourceId: resource.id,
@@ -2508,10 +2513,15 @@ export default function App() {
         setSessionError('');
         setInlineWebResource(null);
         setVncViewerSession(null);
-        setRbiViewerSession(created);
-        setMainTab('sessions');
+        if (rbiTab) {
+          rbiTab.location = `${window.location.origin}/?rbi=${created.id}`;
+        } else {
+          setRbiViewerSession(created);
+          setMainTab('sessions');
+        }
         return true;
       } catch (error) {
+        if (rbiTab) rbiTab.close();
         setSessionError(error.message || 'Unable to create session');
         return false;
       }

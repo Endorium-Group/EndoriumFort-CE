@@ -25,7 +25,7 @@ function cdpButton(button) {
   return 'none';
 }
 
-export default function RbiViewerModal({ session, onClose }) {
+export default function RbiViewerModal({ session, onClose, fullscreen = false }) {
   const { t } = useI18n();
   const imgRef = useRef(null);
   const shellRef = useRef(null);
@@ -169,6 +169,70 @@ export default function RbiViewerModal({ session, onClose }) {
     : status === 'error' ? t('common.error') || 'Error'
     : t('common.connecting') || 'Connecting…';
 
+  const surface = (
+    <div
+      ref={shellRef}
+      className="vnc-canvas-shell rbi-canvas-shell"
+      tabIndex={0}
+      onMouseMove={onMouseMove}
+      onMouseDown={onMouseDown}
+      onMouseUp={onMouseUp}
+      onWheel={onWheel}
+      onContextMenu={onContextMenu}
+      onKeyDown={onKeyDown}
+      onKeyUp={onKeyUp}
+      style={fullscreen
+        ? { outline: 'none', width: '100%', height: '100%', flex: 1 }
+        : { outline: 'none' }}
+    >
+      <img
+        ref={imgRef}
+        alt="remote browser"
+        draggable={false}
+        style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', userSelect: 'none' }}
+      />
+    </div>
+  );
+
+  // Fullscreen: a decoration-free page (own tab) — just the remote surface, with
+  // a transient status overlay while connecting and a minimal floating close.
+  if (fullscreen) {
+    return (
+      <div
+        style={{
+          position: 'fixed', inset: 0, width: '100vw', height: '100vh',
+          background: '#000', display: 'flex', flexDirection: 'column', overflow: 'hidden'
+        }}
+      >
+        {surface}
+        {status !== 'connected' && (
+          <div style={{
+            position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+            color: '#fff', fontFamily: 'system-ui, sans-serif', textAlign: 'center', pointerEvents: 'none'
+          }}>
+            <div style={{ fontSize: '15px', opacity: 0.85 }}>{statusLabel}</div>
+            {statusMessage ? <div style={{ fontSize: '13px', opacity: 0.6, marginTop: '6px' }}>{statusMessage}</div> : null}
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={onClose}
+          title={t('common.close') || 'Close'}
+          style={{
+            position: 'fixed', top: '8px', right: '10px', zIndex: 10,
+            width: '28px', height: '28px', borderRadius: '6px', border: 'none',
+            background: 'rgba(0,0,0,0.45)', color: '#fff', cursor: 'pointer',
+            fontSize: '16px', lineHeight: '28px', padding: 0, opacity: 0.5
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }}
+          onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.5'; }}
+        >
+          ✕
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content vnc-modal" onClick={(e) => e.stopPropagation()}>
@@ -191,26 +255,7 @@ export default function RbiViewerModal({ session, onClose }) {
 
         {statusMessage ? <p className="muted vnc-status-message">{statusMessage}</p> : null}
 
-        <div
-          ref={shellRef}
-          className="vnc-canvas-shell rbi-canvas-shell"
-          tabIndex={0}
-          onMouseMove={onMouseMove}
-          onMouseDown={onMouseDown}
-          onMouseUp={onMouseUp}
-          onWheel={onWheel}
-          onContextMenu={onContextMenu}
-          onKeyDown={onKeyDown}
-          onKeyUp={onKeyUp}
-          style={{ outline: 'none' }}
-        >
-          <img
-            ref={imgRef}
-            alt="remote browser"
-            draggable={false}
-            style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', userSelect: 'none' }}
-          />
-        </div>
+        {surface}
       </div>
     </div>
   );
