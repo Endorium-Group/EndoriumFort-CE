@@ -179,6 +179,9 @@ inline const std::vector<FeatureEntitlement> &feature_catalog() {
       {"k8s", "pro", nullptr, GateLayer::PerRoute},
       // RBI itself is core/free; recording its graphical stream is Enterprise.
       {"rbi.recording", "enterprise", nullptr, GateLayer::PerRoute},
+      // RBI file transfer / clipboard is a core capability; the DLP policy that
+      // governs it (allow/deny per direction, size/extension limits) + audit is EE.
+      {"rbi.transfer", "enterprise", nullptr, GateLayer::PerRoute},
   };
   return catalog;
 }

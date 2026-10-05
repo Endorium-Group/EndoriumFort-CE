@@ -6,6 +6,16 @@
 # Build: docker build -t endoriumfort .
 # Run:   docker compose up -d
 
+# RBI streaming engine baked into the image:
+#   cdp  (default) → in-image chromium + CDP/MJPEG (no CEF fetch)
+#   cef            → build + bundle the CEF-OSR "tiles" helper (homemade dirty-rect
+#                    transport). Requires CEF_VERSION. The runtime engine is still
+#                    chosen via ENDORIUMFORT_RBI_ENGINE at deploy time.
+ARG RBI_ENGINE=cdp
+# Validated CEF build (chromium 154); override to pin another. Only used when
+# RBI_ENGINE=cef. main.cc compiles clean against these headers (needs C++20).
+ARG CEF_VERSION=154.0.32+g682c378+chromium-154.0.8037.58
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  Stage 1 — Build backend (C++17)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -69,6 +79,55 @@ RUN if [ "$EDITION" = "community" ]; then export EF_EDITION=community; fi \
   && npm run build
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  Stage 2b — RBI CEF-OSR "tiles" helper (only when RBI_ENGINE=cef)
+# ═══════════════════════════════════════════════════════════════════════════
+# Empty default so `RBI_ENGINE=cdp` builds pull nothing (no CEF download).
+FROM debian:trixie-slim AS rbi-cdp
+RUN mkdir -p /rbi-out
+
+# Real CEF helper build. Downloads a pinned CEF minimal distribution, builds the
+# helper + copies the CEF runtime files next to it.
+FROM debian:trixie-slim AS rbi-cef-build
+ARG CEF_VERSION
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential cmake ninja-build git ca-certificates curl python3 bzip2 \
+      libjpeg62-turbo-dev libx11-dev \
+      libasound2 libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 libcairo2 libcups2 \
+      libdbus-1-3 libexpat1 libgbm1 libglib2.0-0 libnss3 libnspr4 libpango-1.0-0 \
+      libudev1 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 \
+      libxkbcommon0 libxrandr2 \
+  && rm -rf /var/lib/apt/lists/*
+RUN test -n "$CEF_VERSION" || (echo "CEF_VERSION build-arg is required for RBI_ENGINE=cef" >&2; exit 1)
+WORKDIR /opt
+# CEF version strings contain '+' → URL-encode as %2B for the download. The CDN
+# can drop large transfers, so resume (-C -) with retries until the archive is
+# valid (bzip2 -t), then extract.
+RUN CEF_ENC="$(printf '%s' "$CEF_VERSION" | sed 's/+/%2B/g')" \
+  && URL="https://cef-builds.spotifycdn.com/cef_binary_${CEF_ENC}_linux64_minimal.tar.bz2" \
+  && n=0 \
+  && until bzip2 -t cef.tar.bz2 2>/dev/null; do \
+       n=$((n+1)); [ "$n" -gt 60 ] && { echo "CEF download failed after $n tries" >&2; exit 1; }; \
+       curl -sS --connect-timeout 20 --max-time 180 -C - "$URL" -o cef.tar.bz2 || true; \
+     done \
+  && mkdir -p /opt/cef \
+  && tar -xjf cef.tar.bz2 -C /opt/cef --strip-components=1 \
+  && rm cef.tar.bz2
+COPY backend/tools/rbi-cef /src/rbi-cef
+RUN cmake -S /src/rbi-cef -B /build -G Ninja -DCEF_ROOT=/opt/cef -DCMAKE_BUILD_TYPE=Release \
+  && cmake --build /build -j"$(nproc)"
+# Normalise output: the helper + all CEF runtime files land flat in /rbi-out.
+RUN mkdir -p /rbi-out \
+  && cp -a /build/endoriumfort-rbi-cef /rbi-out/ \
+  && find /build -maxdepth 1 -type f \( -name '*.so' -o -name '*.bin' -o -name '*.dat' -o -name '*.pak' -o -name 'chrome-sandbox' \) -exec cp -a {} /rbi-out/ \; \
+  && if [ -d /build/locales ]; then cp -a /build/locales /rbi-out/; fi
+
+FROM rbi-cef-build AS rbi-cef
+RUN echo "cef helper staged"
+
+# Select which RBI stage feeds the production image (rbi-cdp = empty, rbi-cef = helper).
+FROM rbi-${RBI_ENGINE} AS rbi-selected
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  Stage 3 — Production image
 # ═══════════════════════════════════════════════════════════════════════════
 FROM debian:trixie-slim AS production
@@ -77,14 +136,26 @@ FROM debian:trixie-slim AS production
 # kubectl, which is only installed for the Enterprise image.
 ARG EDITION=enterprise
 ARG TARGETARCH=amd64
+ARG RBI_ENGINE=cdp
 
-# chromium powers Remote Browser Isolation (RBI) — a CORE feature, so it is
-# installed for both editions. fonts-liberation gives pages sane default fonts.
+# chromium powers the default RBI engine (CDP/MJPEG) — a CORE feature, installed
+# for both editions. fonts-liberation gives pages sane default fonts.
 RUN apt-get update && apt-get install -y --no-install-recommends \
   nginx libsqlite3-0 libssh2-1 ca-certificates curl openssl certbot \
   chromium fonts-liberation \
   && rm -rf /var/lib/apt/lists/* \
   && useradd --system --shell /usr/sbin/nologin --home-dir /app endoriumfort
+
+# When the CEF "tiles" helper is bundled it needs libjpeg + the usual Chromium
+# runtime shared libraries present in the image.
+RUN if [ "$RBI_ENGINE" = "cef" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends \
+        libjpeg62-turbo libx11-6 libxcb1 libxext6 libexpat1 libudev1 libdbus-1-3 \
+        libglib2.0-0 libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
+        libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
+        libxrandr2 libgbm1 libasound2 libpango-1.0-0 libcairo2 libatspi2.0-0 libxshmfence1 \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
 
 # kubectl for the Kubernetes exec feature (Enterprise only; skipped for CE).
 RUN if [ "$EDITION" != "community" ]; then \
@@ -99,6 +170,11 @@ WORKDIR /app
 # Backend binary
 COPY --from=backend-build /build/backend/build/endoriumfort_backend /app/bin/endoriumfort_backend
 RUN chmod 755 /app/bin/endoriumfort_backend
+
+# RBI "tiles" helper + CEF runtime (empty when RBI_ENGINE=cdp). To activate at
+# runtime set ENDORIUMFORT_RBI_ENGINE=tiles (the helper path below is preset).
+COPY --from=rbi-selected /rbi-out/ /app/bin/rbi/
+ENV ENDORIUMFORT_RBI_HELPER=/app/bin/rbi/endoriumfort-rbi-cef
 
 # Frontend static files
 COPY --from=frontend-build /build/frontend/dist /app/frontend

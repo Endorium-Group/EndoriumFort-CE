@@ -27,13 +27,20 @@ function cdpButton(button) {
 
 export default function RbiViewerModal({ session, onClose, fullscreen = false }) {
   const { t } = useI18n();
-  const imgRef = useRef(null);
+  const canvasRef = useRef(null);
   const shellRef = useRef(null);
   const wsRef = useRef(null);
-  const urlRef = useRef('');
   const clickCountRef = useRef(0);
+  const lastMoveRef = useRef(0);
+  const uploadIdRef = useRef(1);
+  const downloadsRef = useRef(new Map());
+  const fileInputRef = useRef(null);
+  const pendingDialogRef = useRef(0);
+  const handlersRef = useRef({});
   const [status, setStatus] = useState('connecting');
   const [statusMessage, setStatusMessage] = useState('');
+  const [caps, setCaps] = useState({ fileTransfer: true, clipboardPaste: true });
+  const [transfer, setTransfer] = useState(null);  // {dir:'up'|'down', name, pct} | null
 
   useEffect(() => {
     if (!session?.id) return undefined;
@@ -73,13 +80,111 @@ export default function RbiViewerModal({ session, onClose, fullscreen = false })
         }
         return;
       }
-      // Binary frame: raw JPEG bytes.
-      const blob = new Blob([event.data], { type: 'image/jpeg' });
-      const objectUrl = URL.createObjectURL(blob);
-      if (imgRef.current) imgRef.current.src = objectUrl;
-      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
-      urlRef.current = objectUrl;
+      // Binary frame. Two engines share this channel, discriminated by the first
+      // byte: a full JPEG starts with 0xFF (MJPEG/CDP engine); the "tiles" engine
+      // sends [u8 type][payload] where type is 1 (tile) or 2 (surface-info).
+      const bytes = new Uint8Array(event.data);
+      if (bytes.length === 0) return;
       if (status !== 'connected') setStatus('connected');
+
+      // Transfer frames (not pixels): 4=file-dialog, 5/6/7=download begin/chunk/end.
+      const t0 = bytes[0];
+      if (t0 === 4 || t0 === 5 || t0 === 6 || t0 === 7) {
+        const d = new DataView(event.data, 1);
+        if (t0 === 4) {
+          // [u32 seq][u8 mode][u8 multiple][u16 acceptLen][accept]
+          if (d.byteLength < 8) return;
+          const seq = d.getUint32(0);
+          const multiple = d.getUint8(5) === 1;
+          const acceptLen = d.getUint16(6);
+          let accept = '';
+          if (d.byteLength >= 8 + acceptLen) {
+            accept = new TextDecoder().decode(new Uint8Array(event.data, 1 + 8, acceptLen));
+          }
+          handlersRef.current.triggerFilePicker?.(seq, accept, multiple);
+          return;
+        }
+        if (d.byteLength < 4) return;
+        const id = d.getUint32(0);
+        if (t0 === 5) {
+          const size = Number(d.getBigUint64(4));
+          const nameLen = d.getUint16(12);
+          const name = new TextDecoder().decode(new Uint8Array(event.data, 1 + 14, nameLen));
+          downloadsRef.current.set(id, { name, size, chunks: [], got: 0 });
+          setTransfer({ dir: 'down', name, pct: size ? 0 : null });
+        } else if (t0 === 6) {
+          const entry = downloadsRef.current.get(id);
+          if (!entry) return;
+          const chunk = new Uint8Array(event.data.slice(1 + 4));
+          entry.chunks.push(chunk);
+          entry.got += chunk.byteLength;
+          if (entry.size) setTransfer({ dir: 'down', name: entry.name, pct: Math.round((entry.got / entry.size) * 100) });
+        } else if (t0 === 7) {
+          const entry = downloadsRef.current.get(id);
+          downloadsRef.current.delete(id);
+          if (!entry) return;
+          const blob = new Blob(entry.chunks, { type: 'application/octet-stream' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = entry.name || 'download.bin';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 10000);
+          setTransfer(null);
+        }
+        return;
+      }
+
+      const ctx = canvasRef.current?.getContext('2d');
+      if (!ctx) return;
+
+      if (bytes[0] === 0xff) {
+        // Full-frame JPEG (CDP engine): draw scaled to fill the canvas.
+        createImageBitmap(new Blob([bytes], { type: 'image/jpeg' })).then((bmp) => {
+          const cv = canvasRef.current;
+          if (!cv) return;
+          if (cv.width !== bmp.width || cv.height !== bmp.height) {
+            cv.width = bmp.width; cv.height = bmp.height;
+          }
+          ctx.drawImage(bmp, 0, 0);
+          bmp.close && bmp.close();
+        }).catch(() => {});
+        return;
+      }
+
+      const type = bytes[0];
+      const dv = new DataView(event.data, 1);
+      if (type === 2) {
+        // surface-info: [u16 w][u16 h]
+        if (dv.byteLength < 4) return;
+        const w = dv.getUint16(0), h = dv.getUint16(1 * 2);
+        const cv = canvasRef.current;
+        if (cv && (cv.width !== w || cv.height !== h)) { cv.width = w; cv.height = h; }
+        return;
+      }
+      if (type === 1) {
+        // tile: [u16 x][u16 y][u16 w][u16 h][u8 format][image bytes]
+        if (dv.byteLength < 9) return;
+        const x = dv.getUint16(0), y = dv.getUint16(2);
+        const w = dv.getUint16(4), h = dv.getUint16(6);
+        const format = dv.getUint8(8);
+        const imgBytes = new Uint8Array(event.data, 1 + 9);
+        if (format === 2) {
+          // raw RGBA
+          if (imgBytes.length < w * h * 4) return;
+          const data = new Uint8ClampedArray(imgBytes.buffer, imgBytes.byteOffset, w * h * 4);
+          ctx.putImageData(new ImageData(data, w, h), x, y);
+        } else {
+          const mime = format === 1 ? 'image/webp' : 'image/jpeg';
+          createImageBitmap(new Blob([imgBytes], { type: mime })).then((bmp) => {
+            const c = canvasRef.current?.getContext('2d');
+            if (c) c.drawImage(bmp, x, y);
+            bmp.close && bmp.close();
+          }).catch(() => {});
+        }
+      }
     };
 
     ws.onclose = () => {
@@ -106,22 +211,126 @@ export default function RbiViewerModal({ session, onClose, fullscreen = false })
       observer.disconnect();
       if (resizeTimer) clearTimeout(resizeTimer);
       try { ws.close(); } catch (_) { /* noop */ }
-      if (urlRef.current) {
-        URL.revokeObjectURL(urlRef.current);
-        urlRef.current = '';
-      }
       wsRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.id]);
+
+  // Best-effort capability probe: gate the drag-drop / paste UI to what this
+  // deployment's engine supports (file transfer needs the tiles engine). The
+  // backend is the real gate; defaults stay permissive if the probe fails.
+  useEffect(() => {
+    let token = '';
+    try {
+      const saved = localStorage.getItem('endoriumfort_auth');
+      if (saved) token = (JSON.parse(saved) || {}).token || '';
+    } catch (_) { /* ignore */ }
+    let cancelled = false;
+    fetch('/api/rbi/capabilities', {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      credentials: 'same-origin',
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        setCaps({
+          fileTransfer: data.fileTransfer !== false,
+          clipboardPaste: data.clipboardPaste !== false,
+        });
+      })
+      .catch(() => { /* keep permissive defaults */ });
+    return () => { cancelled = true; };
+  }, []);
 
   const send = (obj) => {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
   };
 
+  // ── File transfer (upload hôte → cible) ──
+  // Stream a File to the isolated browser as binary chunks over the same WS:
+  // begin (JSON) → [u8 0x10][u32 id][bytes] chunks (with backpressure) → end.
+  async function uploadFile(file, opts = {}) {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const id = (uploadIdRef.current++) >>> 0;
+    send({ type: 'upload-begin', id, name: file.name, size: file.size, ...opts });
+    const CHUNK = 256 * 1024;
+    let off = 0;
+    setTransfer({ dir: 'up', name: file.name, pct: 0 });
+    try {
+      while (off < file.size) {
+        while (ws.bufferedAmount > 8 * 1024 * 1024) {
+          // eslint-disable-next-line no-await-in-loop
+          await new Promise((r) => setTimeout(r, 15));
+          if (ws.readyState !== WebSocket.OPEN) return;
+        }
+        // eslint-disable-next-line no-await-in-loop
+        const slice = await file.slice(off, off + CHUNK).arrayBuffer();
+        const frame = new Uint8Array(5 + slice.byteLength);
+        frame[0] = 0x10;
+        new DataView(frame.buffer).setUint32(1, id);
+        frame.set(new Uint8Array(slice), 5);
+        ws.send(frame);
+        off += slice.byteLength;
+        setTransfer({ dir: 'up', name: file.name, pct: Math.round((off / Math.max(1, file.size)) * 100) });
+      }
+      send({ type: 'upload-end', id });
+    } catch (_) {
+      send({ type: 'upload-cancel', id });
+    } finally {
+      setTimeout(() => setTransfer(null), 1200);
+    }
+  }
+  handlersRef.current.uploadFile = uploadFile;
+
+  // The isolated page opened a file picker (e.g. ESXi "Upload"): open a local
+  // picker and stream the chosen file back as the dialog's completion.
+  function triggerFilePicker(seq, accept, multiple) {
+    pendingDialogRef.current = seq;
+    const input = fileInputRef.current;
+    if (!input) { send({ type: 'file-pick-cancel', dialogSeq: seq }); return; }
+    input.value = '';
+    input.accept = accept || '';
+    input.multiple = !!multiple;
+    input.click();
+  }
+  handlersRef.current.triggerFilePicker = triggerFilePicker;
+
+  const onFileInputChange = (e) => {
+    const seq = pendingDialogRef.current;
+    pendingDialogRef.current = 0;
+    const files = Array.from(e.target.files || []);
+    if (!files.length) { send({ type: 'file-pick-cancel', dialogSeq: seq }); return; }
+    uploadFile(files[0], { dialogSeq: seq });  // v1: one file per dialog
+  };
+  const onFileInputCancel = () => {
+    const seq = pendingDialogRef.current;
+    pendingDialogRef.current = 0;
+    if (seq) send({ type: 'file-pick-cancel', dialogSeq: seq });
+  };
+
+  const onPaste = (e) => {
+    if (!caps.clipboardPaste) return;
+    const text = e.clipboardData?.getData('text') || '';
+    if (text) { e.preventDefault(); send({ type: 'paste', text }); }
+  };
+  const onDragOver = (e) => {
+    if (!caps.fileTransfer) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  };
+  const onDrop = (e) => {
+    if (!caps.fileTransfer) return;
+    e.preventDefault();
+    const files = Array.from(e.dataTransfer?.files || []);
+    if (!files.length) return;
+    const { x, y } = normPoint(e);
+    files.forEach((f) => uploadFile(f, { drop: true, x, y }));
+  };
+
   const normPoint = (e) => {
-    const rect = imgRef.current?.getBoundingClientRect();
+    const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect || rect.width === 0 || rect.height === 0) return { x: 0, y: 0 };
     return {
       x: Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)),
@@ -130,6 +339,12 @@ export default function RbiViewerModal({ session, onClose, fullscreen = false })
   };
 
   const onMouseMove = (e) => {
+    // Throttle pointer moves to ~60 Hz: raw mousemove can fire hundreds of times
+    // per second, and each becomes a server-side CDP Input dispatch. Coalescing
+    // cuts WS traffic + server CPU without perceptible loss.
+    const now = performance.now();
+    if (now - lastMoveRef.current < 16) return;
+    lastMoveRef.current = now;
     const { x, y } = normPoint(e);
     send({ type: 'mouse', event: 'move', x, y, button: 'none' });
   };
@@ -149,7 +364,13 @@ export default function RbiViewerModal({ session, onClose, fullscreen = false })
   };
   const onContextMenu = (e) => e.preventDefault();
 
+  const isPasteShortcut = (e) =>
+    caps.clipboardPaste && (e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V');
+
   const onKeyDown = (e) => {
+    // Let Ctrl/Cmd+V surface as a native `paste` event (handled by onPaste) rather
+    // than forwarding the keystroke to the remote.
+    if (isPasteShortcut(e)) return;
     e.preventDefault();
     const printable = e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey;
     send({
@@ -159,6 +380,7 @@ export default function RbiViewerModal({ session, onClose, fullscreen = false })
     });
   };
   const onKeyUp = (e) => {
+    if (isPasteShortcut(e)) return;
     e.preventDefault();
     send({ type: 'key', event: 'up', key: e.key, code: e.code, keyCode: e.keyCode || 0, modifiers: modifiersOf(e) });
   };
@@ -181,17 +403,44 @@ export default function RbiViewerModal({ session, onClose, fullscreen = false })
       onContextMenu={onContextMenu}
       onKeyDown={onKeyDown}
       onKeyUp={onKeyUp}
+      onPaste={onPaste}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
       style={fullscreen
         ? { outline: 'none', width: '100%', height: '100%', flex: 1 }
         : { outline: 'none' }}
     >
-      <img
-        ref={imgRef}
-        alt="remote browser"
-        draggable={false}
+      <canvas
+        ref={canvasRef}
         style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', userSelect: 'none' }}
       />
     </div>
+  );
+
+  // Decoration-free transfer affordances: a hidden picker (driven by the isolated
+  // page's file dialog) + a transient progress toast for up/downloads.
+  const transferUi = (
+    <>
+      <input
+        ref={fileInputRef}
+        type="file"
+        style={{ display: 'none' }}
+        onChange={onFileInputChange}
+        onCancel={onFileInputCancel}
+      />
+      {transfer && (
+        <div style={{
+          position: 'fixed', bottom: '16px', left: '50%', transform: 'translateX(-50%)',
+          background: 'rgba(20,22,28,0.92)', color: '#fff', padding: '8px 14px',
+          borderRadius: '8px', fontFamily: 'system-ui, sans-serif', fontSize: '13px',
+          pointerEvents: 'none', zIndex: 10, maxWidth: '80vw', whiteSpace: 'nowrap',
+          overflow: 'hidden', textOverflow: 'ellipsis',
+        }}>
+          {transfer.dir === 'up' ? '↑' : '↓'} {transfer.name}
+          {typeof transfer.pct === 'number' ? ` — ${transfer.pct}%` : '…'}
+        </div>
+      )}
+    </>
   );
 
   // Fullscreen: a decoration-free page (own tab) — just the remote surface, with
@@ -205,6 +454,7 @@ export default function RbiViewerModal({ session, onClose, fullscreen = false })
         }}
       >
         {surface}
+        {transferUi}
         {status !== 'connected' && (
           <div style={{
             position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
@@ -214,21 +464,6 @@ export default function RbiViewerModal({ session, onClose, fullscreen = false })
             {statusMessage ? <div style={{ fontSize: '13px', opacity: 0.6, marginTop: '6px' }}>{statusMessage}</div> : null}
           </div>
         )}
-        <button
-          type="button"
-          onClick={onClose}
-          title={t('common.close') || 'Close'}
-          style={{
-            position: 'fixed', top: '8px', right: '10px', zIndex: 10,
-            width: '28px', height: '28px', borderRadius: '6px', border: 'none',
-            background: 'rgba(0,0,0,0.45)', color: '#fff', cursor: 'pointer',
-            fontSize: '16px', lineHeight: '28px', padding: 0, opacity: 0.5
-          }}
-          onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }}
-          onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.5'; }}
-        >
-          ✕
-        </button>
       </div>
     );
   }
@@ -256,6 +491,7 @@ export default function RbiViewerModal({ session, onClose, fullscreen = false })
         {statusMessage ? <p className="muted vnc-status-message">{statusMessage}</p> : null}
 
         {surface}
+        {transferUi}
       </div>
     </div>
   );

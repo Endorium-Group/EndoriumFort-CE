@@ -205,12 +205,26 @@ struct AppContext {
   // an Enterprise feature. When present AND licensed (rbi.recording), the pro
   // module returns an opaque handle (>0) from open, receives each JPEG frame, and
   // finalizes on close. Unset in CE (and in EE without the license) → no capture.
+  // format: "mjpeg" (full-frame JPEG, cdp engine) or "tiles" (dirty-rect tile
+  // stream, tiles engine) — selects the on-disk .efr container the player reads.
   std::function<int64_t(int /*session_id*/, int /*width*/, int /*height*/,
-                        const std::string & /*title*/)>
+                        const std::string & /*title*/, const std::string & /*format*/)>
       rbi_recording_open;
   std::function<void(int64_t /*handle*/, const std::string & /*jpeg*/)>
       rbi_recording_frame;
   std::function<void(int64_t /*handle*/)> rbi_recording_close;
+
+  // ── RBI transfer policy seam (premium; set by pro/rbi_transfer.cc, no-op in CE) ──
+  // File transfer (upload/download) and clipboard paste in the isolated browser is
+  // a CORE capability (rbi.cc relays the bytes). Governing it — a DLP policy that
+  // may allow/deny per direction, cap sizes, filter extensions — plus the audit
+  // trail, is Enterprise. When unset (CE, or EE without the `rbi.transfer` license)
+  // every transfer is allowed: the capability must never be bricked by licensing.
+  // The pro module, when licensed, returns false to block and records an audit
+  // event for each attempt. direction: "upload" | "download" | "paste".
+  std::function<bool(int /*session_id*/, const std::string & /*direction*/,
+                     const std::string & /*name*/, int64_t /*size*/)>
+      rbi_transfer_check;
 
   // ── Tunnel state ──
   std::mutex tunnel_mutex;

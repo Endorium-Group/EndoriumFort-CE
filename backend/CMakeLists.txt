@@ -120,6 +120,7 @@ if (ENDORIUMFORT_PRO)
     src/pro/itdr.cc
     src/pro/k8s.cc
     src/pro/rbi_recording.cc
+    src/pro/rbi_transfer.cc
   )
   target_compile_definitions(endoriumfort_backend PRIVATE ENDORIUMFORT_PRO)
   # forkpty(3) for the Kubernetes exec PTY bridge (Linux: libutil).
@@ -144,6 +145,15 @@ endif()
 
 if (WIN32)
   target_link_libraries(endoriumfort_backend PRIVATE ws2_32 mswsock)
+endif()
+
+# Dev/test stand-in for the RBI "tiles" engine helper (no CEF needed). Point
+# ENDORIUMFORT_RBI_HELPER at it and set ENDORIUMFORT_RBI_ENGINE=tiles to exercise
+# the homemade dirty-rect transport end-to-end. Not shipped in the image.
+if (NOT WIN32)
+  add_executable(endoriumfort_rbi_stub tools/rbi_stub_helper.cc)
+  find_package(Threads REQUIRED)
+  target_link_libraries(endoriumfort_rbi_stub PRIVATE Threads::Threads)
 endif()
 
 if (BUILD_TESTING)
