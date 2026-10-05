@@ -68,6 +68,14 @@ CefRefPtr<CefBrowser> g_browser;  // UI-thread owned
 std::mutex g_out_mutex;
 int g_last_surface_w = 0, g_last_surface_h = 0;
 
+// Offscreen popup (native <select> dropdown, autocomplete, …) origin in view
+// coords. CEF renders these as a SEPARATE PET_POPUP surface; without compositing
+// them the dropdown is invisible. We offset the popup's tiles by this origin so
+// the frontend draws them over the page at the right place.
+std::atomic<int> g_popup_x{0};
+std::atomic<int> g_popup_y{0};
+std::atomic<bool> g_popup_shown{false};
+
 // Where downloads (cible → hôte) are staged before being streamed back over
 // stdout. Set from the cache dir (argv[4]) in main(); cleaned with the session.
 std::string g_download_dir;
@@ -401,14 +409,34 @@ class RbiClient : public CefClient,
     rect.Set(0, 0, g_width.load(), g_height.load());
   }
 
+  // Native popup widgets (<select> dropdowns, autocomplete) are drawn as a
+  // separate PET_POPUP surface; capture where to composite it.
+  void OnPopupShow(CefRefPtr<CefBrowser>, bool show) override {
+    g_popup_shown = show;
+    // When the popup closes CEF repaints the view region underneath (a PET_VIEW
+    // OnPaint), which overwrites the stale dropdown pixels — nothing to do here.
+  }
+  void OnPopupSize(CefRefPtr<CefBrowser>, const CefRect& rect) override {
+    g_popup_x = rect.x < 0 ? 0 : rect.x;
+    g_popup_y = rect.y < 0 ? 0 : rect.y;
+  }
+
   void OnPaint(CefRefPtr<CefBrowser>, PaintElementType type,
                const RectList& dirtyRects, const void* buffer,
                int width, int height) override {
-    if (type != PET_VIEW) return;
-    if (width != g_last_surface_w || height != g_last_surface_h) {
-      g_last_surface_w = width;
-      g_last_surface_h = height;
-      emit_surface(width, height);
+    int ox = 0, oy = 0;
+    if (type == PET_VIEW) {
+      if (width != g_last_surface_w || height != g_last_surface_h) {
+        g_last_surface_w = width;
+        g_last_surface_h = height;
+        emit_surface(width, height);
+      }
+    } else if (type == PET_POPUP) {
+      if (!g_popup_shown.load()) return;  // ignore trailing paints after close
+      ox = g_popup_x.load();
+      oy = g_popup_y.load();
+    } else {
+      return;
     }
     const uint8_t* view = static_cast<const uint8_t*>(buffer);
     const int quality = [] {
@@ -432,9 +460,11 @@ class RbiClient : public CefClient,
       extract_tile_rgba(view, width, rx, ry, rw, rh, img);
       format = 2;  // raw RGBA
 #endif
+      // Tile position is absolute in the view: popup tiles are offset by the
+      // popup's on-screen origin so they composite over the page.
       std::string payload;
-      put_u16(payload, static_cast<uint16_t>(rx));
-      put_u16(payload, static_cast<uint16_t>(ry));
+      put_u16(payload, static_cast<uint16_t>(ox + rx));
+      put_u16(payload, static_cast<uint16_t>(oy + ry));
       put_u16(payload, static_cast<uint16_t>(rw));
       put_u16(payload, static_cast<uint16_t>(rh));
       payload.push_back(static_cast<char>(format));

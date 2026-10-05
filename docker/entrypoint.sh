@@ -75,6 +75,15 @@ shutdown() {
 }
 trap shutdown TERM INT
 
+# RBI engine: if the CEF "tiles" helper is bundled (RBI_ENGINE=cef image) and the
+# operator hasn't chosen an engine, default to tiles — the cdp fallback can't
+# render native <select> popups or carry file transfers. Explicit override wins.
+if [ -z "$ENDORIUMFORT_RBI_ENGINE" ] && [ -x /app/bin/rbi/endoriumfort-rbi-cef ]; then
+  export ENDORIUMFORT_RBI_ENGINE=tiles
+  echo "[entrypoint] CEF helper present → defaulting ENDORIUMFORT_RBI_ENGINE=tiles"
+fi
+echo "[entrypoint] RBI engine: ${ENDORIUMFORT_RBI_ENGINE:-cdp}"
+
 # Start backend in background
 echo "[entrypoint] Starting backend on :8080..."
 /app/bin/endoriumfort_backend &

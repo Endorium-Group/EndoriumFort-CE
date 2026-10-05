@@ -43,6 +43,13 @@ find_package(JPEG QUIET)
 set(EF_RBI_TARGET endoriumfort-rbi-cef)
 add_executable(${EF_RBI_TARGET} main.cc)
 SET_EXECUTABLE_TARGET_PROPERTIES(${EF_RBI_TARGET})
+# CEF's macro sets rpath to "." (relative to the *working directory*). The backend
+# launches the helper with a different cwd (/app/data), so libcef.so beside the
+# binary isn't found → "cannot open shared object file". Add an $ORIGIN rpath so
+# the loader always looks next to the binary, regardless of cwd.
+set_target_properties(${EF_RBI_TARGET} PROPERTIES
+  BUILD_RPATH "$ORIGIN"
+  INSTALL_RPATH "$ORIGIN")
 add_dependencies(${EF_RBI_TARGET} libcef_dll_wrapper)
 target_include_directories(${EF_RBI_TARGET} PRIVATE "${CEF_ROOT}")
 target_link_libraries(${EF_RBI_TARGET}

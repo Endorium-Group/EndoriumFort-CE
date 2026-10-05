@@ -58,6 +58,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      # The RBI CEF ("tiles") stage downloads + extracts a ~2GB Chromium Embedded
+      # Framework and the image bundles its runtime, so reclaim the runner disk the
+      # hosted image wastes on toolchains we don't use (otherwise the build can hit
+      # "no space left on device").
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /usr/local/.ghcup /opt/hostedtoolcache/CodeQL || true
+          sudo docker image prune -af || true
+          df -h /
+
       - name: Detect Docker Hub credentials
         id: dockerhub
         env:
@@ -149,6 +160,8 @@ jobs:
           build-args: |
             EDITION=${{ steps.meta.outputs.edition }}
             PROD_ISSUER=${{ steps.meta.outputs.prod_issuer }}
+            RBI_ENGINE=cef
+            CEF_VERSION=154.0.32+g682c378+chromium-154.0.8037.58
           tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
