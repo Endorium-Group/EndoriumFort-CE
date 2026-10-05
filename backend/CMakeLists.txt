@@ -149,8 +149,10 @@ endif()
 
 # Dev/test stand-in for the RBI "tiles" engine helper (no CEF needed). Point
 # ENDORIUMFORT_RBI_HELPER at it and set ENDORIUMFORT_RBI_ENGINE=tiles to exercise
-# the homemade dirty-rect transport end-to-end. Not shipped in the image.
-if (NOT WIN32)
+# the homemade dirty-rect transport end-to-end. Not shipped in the image — and the
+# Docker backend-build stage does not copy backend/tools/, so guard on the source
+# being present (mirrors the pro/ block) to keep `cmake` generate happy there.
+if (NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/rbi_stub_helper.cc")
   add_executable(endoriumfort_rbi_stub tools/rbi_stub_helper.cc)
   find_package(Threads REQUIRED)
   target_link_libraries(endoriumfort_rbi_stub PRIVATE Threads::Threads)
