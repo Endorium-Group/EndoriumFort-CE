@@ -549,6 +549,39 @@ cef_mouse_button_type_t mouse_button_type(const std::string& b) {
   return MBT_LEFT;
 }
 
+// Translate the frontend's CDP-convention modifier bitmask (Alt=1, Ctrl=2,
+// Meta=4, Shift=8) into CEF's EVENTFLAG_* bits (which are different: Shift=2,
+// Ctrl=4, Alt=8, Command=128). Passing the raw CDP bits scrambles modifiers
+// (Shift read as Alt, etc.) → wrong casing + spurious shortcuts.
+uint32_t cef_event_flags(int cdp_mods) {
+  uint32_t f = 0;
+  if (cdp_mods & 1) f |= EVENTFLAG_ALT_DOWN;      // CDP Alt
+  if (cdp_mods & 2) f |= EVENTFLAG_CONTROL_DOWN;  // CDP Ctrl
+  if (cdp_mods & 4) f |= EVENTFLAG_COMMAND_DOWN;  // CDP Meta
+  if (cdp_mods & 8) f |= EVENTFLAG_SHIFT_DOWN;    // CDP Shift
+  return f;
+}
+
+// Insert literal text: one CHAR event per UTF-16 unit (astral → surrogate pair).
+// Used for paste (P), typed text (T) and legacy char events.
+void post_text(const std::string& utf8) {
+  std::vector<char16_t> units = utf8_to_utf16(utf8);
+  if (units.empty()) return;
+  post_ui([units] {
+    if (!g_browser) return;
+    auto host = g_browser->GetHost();
+    for (char16_t ch : units) {
+      CefKeyEvent ce;
+      ce.type = KEYEVENT_CHAR;
+      ce.modifiers = 0;
+      ce.windows_key_code = ch;
+      ce.character = ch;
+      ce.unmodified_character = ch;
+      host->SendKeyEvent(ce);
+    }
+  });
+}
+
 void handle_line(const std::string& line) {
   if (line.empty()) return;
   const char kind = line[0];
@@ -588,48 +621,48 @@ void handle_line(const std::string& line) {
       return;
     std::string e(ev);
     std::string text = (textb64[0] && strcmp(textb64, "-") != 0) ? b64decode(textb64) : "";
-    post_ui([e, keyCode, mods, text] {
+    if (e == "char") {
+      // Legacy/compat: a bare character event → insert text.
+      post_text(text);
+      return;
+    }
+    // Control / navigation / shortcut keys. Text (letters, AltGr, accents, IME)
+    // comes via the `T` line, not here — so `down`/`up` carry no character.
+    const uint32_t flags = cef_event_flags(mods);
+    post_ui([e, keyCode, flags] {
       if (!g_browser) return;
       auto host = g_browser->GetHost();
       CefKeyEvent ke;
-      ke.modifiers = static_cast<uint32_t>(mods);
+      ke.modifiers = flags;
       ke.windows_key_code = keyCode;
       ke.native_key_code = keyCode;
-      if (e == "char") {
-        ke.type = KEYEVENT_CHAR;
-        // First UTF-16 unit of the text (BMP fast path).
-        char16_t ch = 0;
-        if (!text.empty()) ch = static_cast<unsigned char>(text[0]);
-        ke.windows_key_code = ch;
-        ke.character = ch;
-        ke.unmodified_character = ch;
-      } else if (e == "down") {
+      if (e == "down") {
         ke.type = KEYEVENT_RAWKEYDOWN;
+        host->SendKeyEvent(ke);
+        // Enter also needs a CHAR to insert a newline in a <textarea> (in a
+        // single-line input the RAWKEYDOWN already submits). Tab stays keydown-
+        // only so it navigates fields instead of inserting a tab character.
+        if (keyCode == 13) {
+          CefKeyEvent ce;
+          ce.type = KEYEVENT_CHAR;
+          ce.modifiers = flags;
+          ce.windows_key_code = '\r';
+          ce.character = '\r';
+          ce.unmodified_character = '\r';
+          host->SendKeyEvent(ce);
+        }
       } else {
         ke.type = KEYEVENT_KEYUP;
-      }
-      host->SendKeyEvent(ke);
-    });
-    return;
-  }
-  if (kind == 'P') {
-    // P <textB64> — paste: inject each UTF-16 unit as a CHAR key event.
-    if (line.size() < 3) return;
-    std::string text = b64decode(line.substr(2));
-    std::vector<char16_t> units = utf8_to_utf16(text);
-    post_ui([units] {
-      if (!g_browser) return;
-      auto host = g_browser->GetHost();
-      for (char16_t ch : units) {
-        CefKeyEvent ke;
-        ke.type = KEYEVENT_CHAR;
-        ke.modifiers = 0;
-        ke.windows_key_code = ch;
-        ke.character = ch;
-        ke.unmodified_character = ch;
         host->SendKeyEvent(ke);
       }
     });
+    return;
+  }
+  if (kind == 'P' || kind == 'T') {
+    // P <textB64> = paste, T <textB64> = typed text. Both insert literal text as
+    // CHAR events; they differ only on the backend (P is DLP-gated, T is not).
+    if (line.size() < 3) return;
+    post_text(b64decode(line.substr(2)));
     return;
   }
   if (kind == 'U') {

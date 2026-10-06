@@ -88,13 +88,17 @@ persistence:
     storageClass: ""
     existingClaim: ""
 
+# The image bundles the CEF ("tiles") Remote Browser Isolation engine (a headless
+# Chromium), which needs well over 1Gi when an RBI session is open. Each concurrent
+# RBI session launches its own browser, so raise the limit (and ENDORIUMFORT_RBI_MAX_SESSIONS)
+# further if you expect several at once.
 resources:
   limits:
-    cpu: "1"
-    memory: 1Gi
+    cpu: "2"
+    memory: 2Gi
   requests:
     cpu: 250m
-    memory: 256Mi
+    memory: 512Mi
 
 # Application configuration (mapped to ENDORIUMFORT_* / ACME_* env vars).
 config:

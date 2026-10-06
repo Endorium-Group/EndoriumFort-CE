@@ -25,6 +25,16 @@ function cdpButton(button) {
   return 'none';
 }
 
+// Keys forwarded as key events (navigation / editing / function keys). Everything
+// else that produces text is captured as composed text via the hidden input's
+// `input`/composition events — robust to layouts (AZERTY), AltGr, dead keys, IME.
+const CONTROL_KEYS = new Set([
+  'Enter', 'Tab', 'Backspace', 'Delete', 'Escape', 'Insert',
+  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+  'Home', 'End', 'PageUp', 'PageDown',
+  'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12',
+]);
+
 export default function RbiViewerModal({ session, onClose, fullscreen = false }) {
   const { t } = useI18n();
   const canvasRef = useRef(null);
@@ -37,6 +47,8 @@ export default function RbiViewerModal({ session, onClose, fullscreen = false })
   const fileInputRef = useRef(null);
   const pendingDialogRef = useRef(0);
   const handlersRef = useRef({});
+  const keyInputRef = useRef(null);   // hidden textarea capturing composed text
+  const composingRef = useRef(false); // IME composition in progress
   const [status, setStatus] = useState('connecting');
   const [statusMessage, setStatusMessage] = useState('');
   const [caps, setCaps] = useState({ fileTransfer: true, clipboardPaste: true });
@@ -242,6 +254,13 @@ export default function RbiViewerModal({ session, onClose, fullscreen = false })
     return () => { cancelled = true; };
   }, []);
 
+  // Grab keyboard focus once connected so typing works without a click first.
+  useEffect(() => {
+    if (status !== 'connected') return undefined;
+    const id = setTimeout(() => { try { keyInputRef.current?.focus({ preventScroll: true }); } catch (_) { keyInputRef.current?.focus(); } }, 60);
+    return () => clearTimeout(id);
+  }, [status]);
+
   const send = (obj) => {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
@@ -310,11 +329,33 @@ export default function RbiViewerModal({ session, onClose, fullscreen = false })
     if (seq) send({ type: 'file-pick-cancel', dialogSeq: seq });
   };
 
-  const onPaste = (e) => {
+  // ── Keyboard text capture (hidden textarea) ──
+  // The textarea is kept empty: we read what the browser *composed* — which
+  // already accounts for layout (AZERTY), Shift, AltGr, dead keys/accents and
+  // IME — forward it as `text`, then reset. Control keys go through onKeyDown.
+  const focusKeyInput = () => {
+    const el = keyInputRef.current;
+    if (el && document.activeElement !== el) {
+      try { el.focus({ preventScroll: true }); } catch (_) { el.focus(); }
+    }
+  };
+  const flushText = () => {
+    const el = keyInputRef.current;
+    if (!el) return;
+    const text = el.value;
+    el.value = '';
+    if (text) send({ type: 'text', text });
+  };
+  const onTextInput = () => { if (!composingRef.current) flushText(); };
+  const onCompositionStart = () => { composingRef.current = true; };
+  const onCompositionEnd = () => { composingRef.current = false; flushText(); };
+  const onKbPaste = (e) => {
+    e.preventDefault();
     if (!caps.clipboardPaste) return;
     const text = e.clipboardData?.getData('text') || '';
-    if (text) { e.preventDefault(); send({ type: 'paste', text }); }
+    if (text) send({ type: 'paste', text });
   };
+
   const onDragOver = (e) => {
     if (!caps.fileTransfer) return;
     e.preventDefault();
@@ -349,7 +390,7 @@ export default function RbiViewerModal({ session, onClose, fullscreen = false })
     send({ type: 'mouse', event: 'move', x, y, button: 'none' });
   };
   const onMouseDown = (e) => {
-    if (shellRef.current) shellRef.current.focus();
+    focusKeyInput();
     clickCountRef.current = e.detail || 1;
     const { x, y } = normPoint(e);
     send({ type: 'mouse', event: 'down', x, y, button: cdpButton(e.button), clickCount: clickCountRef.current });
@@ -364,25 +405,31 @@ export default function RbiViewerModal({ session, onClose, fullscreen = false })
   };
   const onContextMenu = (e) => e.preventDefault();
 
-  const isPasteShortcut = (e) =>
-    caps.clipboardPaste && (e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V');
-
+  // Only control/navigation/shortcut keys are forwarded as key events; printable
+  // text is handled by the hidden textarea (onTextInput). AltGr (Ctrl+Alt) is NOT
+  // treated as a shortcut so AZERTY symbols (@ # [ ] { } € \\ …) type normally.
+  const classifyKey = (e) => {
+    const altGr = typeof e.getModifierState === 'function' && e.getModifierState('AltGraph');
+    const shortcut = (e.ctrlKey || e.metaKey) && !altGr;
+    const pasteCombo = shortcut && caps.clipboardPaste && (e.key === 'v' || e.key === 'V');
+    return { shortcut, pasteCombo, forward: CONTROL_KEYS.has(e.key) || shortcut };
+  };
   const onKeyDown = (e) => {
-    // Let Ctrl/Cmd+V surface as a native `paste` event (handled by onPaste) rather
-    // than forwarding the keystroke to the remote.
-    if (isPasteShortcut(e)) return;
-    e.preventDefault();
-    const printable = e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey;
-    send({
-      type: 'key', event: 'down', key: e.key, code: e.code,
-      keyCode: e.keyCode || 0, modifiers: modifiersOf(e),
-      text: printable ? e.key : '',
-    });
+    const { forward, pasteCombo } = classifyKey(e);
+    if (pasteCombo) return;  // let the native paste event fire (onKbPaste)
+    if (forward) {
+      e.preventDefault();
+      send({ type: 'key', event: 'down', key: e.key, code: e.code, keyCode: e.keyCode || 0, modifiers: modifiersOf(e) });
+    }
+    // else: text key → the textarea receives it; onTextInput forwards the text.
   };
   const onKeyUp = (e) => {
-    if (isPasteShortcut(e)) return;
-    e.preventDefault();
-    send({ type: 'key', event: 'up', key: e.key, code: e.code, keyCode: e.keyCode || 0, modifiers: modifiersOf(e) });
+    const { forward, pasteCombo } = classifyKey(e);
+    if (pasteCombo) return;
+    if (forward) {
+      e.preventDefault();
+      send({ type: 'key', event: 'up', key: e.key, code: e.code, keyCode: e.keyCode || 0, modifiers: modifiersOf(e) });
+    }
   };
 
   const statusLabel =
@@ -395,24 +442,45 @@ export default function RbiViewerModal({ session, onClose, fullscreen = false })
     <div
       ref={shellRef}
       className="vnc-canvas-shell rbi-canvas-shell"
-      tabIndex={0}
+      tabIndex={-1}
       onMouseMove={onMouseMove}
       onMouseDown={onMouseDown}
       onMouseUp={onMouseUp}
       onWheel={onWheel}
       onContextMenu={onContextMenu}
-      onKeyDown={onKeyDown}
-      onKeyUp={onKeyUp}
-      onPaste={onPaste}
       onDragOver={onDragOver}
       onDrop={onDrop}
       style={fullscreen
-        ? { outline: 'none', width: '100%', height: '100%', flex: 1 }
-        : { outline: 'none' }}
+        ? { outline: 'none', width: '100%', height: '100%', flex: 1, position: 'relative' }
+        : { outline: 'none', position: 'relative' }}
     >
       <canvas
         ref={canvasRef}
         style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', userSelect: 'none' }}
+      />
+      {/* Hidden, always-empty capture field: owns keyboard focus so the browser
+          composes text (layout/AltGr/dead keys/IME) for us. pointer-events:none
+          lets clicks reach the canvas; we focus it programmatically on mousedown. */}
+      <textarea
+        ref={keyInputRef}
+        onKeyDown={onKeyDown}
+        onKeyUp={onKeyUp}
+        onInput={onTextInput}
+        onCompositionStart={onCompositionStart}
+        onCompositionEnd={onCompositionEnd}
+        onPaste={onKbPaste}
+        autoCapitalize="none"
+        autoCorrect="off"
+        autoComplete="off"
+        spellCheck={false}
+        aria-hidden="true"
+        tabIndex={-1}
+        style={{
+          position: 'absolute', inset: 0, width: '100%', height: '100%',
+          opacity: 0, border: 'none', resize: 'none', padding: 0, margin: 0,
+          pointerEvents: 'none', caretColor: 'transparent', color: 'transparent',
+          background: 'transparent', overflow: 'hidden', whiteSpace: 'pre',
+        }}
       />
     </div>
   );

@@ -88,6 +88,8 @@ jobs:
         id: meta
         env:
           HAS_DOCKERHUB: ${{ steps.dockerhub.outputs.enabled }}
+          # Via env (not inline ${{ }}) so the free-text dispatch tag can't inject shell.
+          IN_TAG: ${{ github.event.inputs.tag }}
         run: |
           # ── Edition detection ──
           # pro/ present (private repo) → publish the FREEMIUM image: premium code
@@ -116,7 +118,7 @@ jobs:
             echo "${{ env.GHCR_REPO }}:${MOVING}" >> "$GITHUB_OUTPUT"
             echo "EOF" >> "$GITHUB_OUTPUT"
           else
-            TAG="${{ github.event.inputs.tag || 'latest' }}"
+            TAG="${IN_TAG:-latest}"
             echo "version=$TAG" >> "$GITHUB_OUTPUT"
             echo "tags<<EOF" >> "$GITHUB_OUTPUT"
             if [[ "$HAS_DOCKERHUB" == "true" ]]; then

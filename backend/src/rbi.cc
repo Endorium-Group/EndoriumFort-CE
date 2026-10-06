@@ -900,6 +900,20 @@ void register_rbi_routes(CrowApp &app, AppContext &ctx) {
           return;
         }
 
+        // ── Typed text (robust keyboard: letters/AltGr/accents/IME come here as
+        //    composed text, not keystrokes). Not DLP-gated — that's `paste`. ──
+        if (type == "text") {
+          const std::string text = j.has("text") ? std::string(j["text"].s()) : "";
+          if (text.empty()) return;
+          if (tiles) {
+            send_helper_input(s, "T " + base64_encode(text));
+          } else if (!s->cdp_session.empty()) {
+            cdp(s, "Input.insertText",
+                std::string("{\"text\":\"") + json_escape(text) + "\"}", true);
+          }
+          return;
+        }
+
         // ── File upload (hôte → cible), tiles engine only ──
         if (type == "upload-begin") {
           if (!tiles) {
