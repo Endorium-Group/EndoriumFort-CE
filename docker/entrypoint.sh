@@ -84,9 +84,16 @@ if [ -z "$ENDORIUMFORT_RBI_ENGINE" ] && [ -x /app/bin/rbi/endoriumfort-rbi-cef ]
 fi
 echo "[entrypoint] RBI engine: ${ENDORIUMFORT_RBI_ENGINE:-cdp}"
 
-# Start backend in background
-echo "[entrypoint] Starting backend on :8080..."
-/app/bin/endoriumfort_backend &
+# Start backend in background, dropped to the unprivileged endoriumfort user
+# (nginx keeps its root master + non-root workers). gosu re-execs as that user;
+# fall back to running in place only if gosu is unavailable (older images).
+echo "[entrypoint] Starting backend on :8080 (user: endoriumfort)..."
+if command -v gosu >/dev/null 2>&1; then
+  gosu endoriumfort /app/bin/endoriumfort_backend &
+else
+  echo "[entrypoint] WARNING: gosu missing — backend running as root"
+  /app/bin/endoriumfort_backend &
+fi
 BACKEND_PID=$!
 
 # Wait for backend to be ready

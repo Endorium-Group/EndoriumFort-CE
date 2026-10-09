@@ -8,9 +8,11 @@ import {
   createSession,
   deleteResource,
   deleteUser,
+  exportUserData,
   disable2FA,
   fetchBootstrapStatus,
   fetchAudit,
+  verifyAuditChain,
   fetchHealth,
   fetchRecordingCast,
   fetchRecordings,
@@ -354,6 +356,8 @@ export default function App() {
   const [loadingAudit, setLoadingAudit] = useState(false);
   const [auditError, setAuditError] = useState('');
   const [auditFilter, setAuditFilter] = useState(null);
+  const [auditIntegrity, setAuditIntegrity] = useState(null);
+  const [checkingIntegrity, setCheckingIntegrity] = useState(false);
   const [resources, setResources] = useState([]);
   const [loadingResources, setLoadingResources] = useState(false);
   const [savingResource, setSavingResource] = useState(false);
@@ -923,6 +927,19 @@ export default function App() {
     };
     window.addEventListener('endoriumfort:license-required', onLicenseRequired);
     return () => window.removeEventListener('endoriumfort:license-required', onLicenseRequired);
+  }, []);
+
+  // Server MFA gate replies 403 mfa_enrollment_required → force the enrolment UI.
+  useEffect(() => {
+    const onMfaEnrollmentRequired = () => {
+      setBootstrapState((prev) => ({
+        ...prev,
+        required: true,
+        mfaSetupRequired: true
+      }));
+    };
+    window.addEventListener('endoriumfort:mfa-enrollment-required', onMfaEnrollmentRequired);
+    return () => window.removeEventListener('endoriumfort:mfa-enrollment-required', onMfaEnrollmentRequired);
   }, []);
 
   // Dark mode effect
@@ -1687,9 +1704,11 @@ export default function App() {
       setWebauthnEnabled(!!payload.webauthnEnabled);
       setPreferredMfaMethod(String(payload.preferredMfaMethod || 'any'));
       setBootstrapState({
-        required: !!bootstrap.required,
+        // The server MFA gate (ENDORIUMFORT_REQUIRE_MFA) forces enrolment when
+        // payload.mfaEnrollmentRequired is set, even without a bootstrap flag.
+        required: !!bootstrap.required || !!payload.mfaEnrollmentRequired,
         passwordChangeRequired: !!bootstrap.passwordChangeRequired,
-        mfaSetupRequired: !!bootstrap.mfaSetupRequired,
+        mfaSetupRequired: !!bootstrap.mfaSetupRequired || !!payload.mfaEnrollmentRequired,
         totpEnabled: !!payload.totpEnabled,
         webauthnEnabled: !!payload.webauthnEnabled
       });
@@ -1758,9 +1777,11 @@ export default function App() {
       setWebauthnEnabled(!!payload.webauthnEnabled);
       setPreferredMfaMethod(String(payload.preferredMfaMethod || 'any'));
       setBootstrapState({
-        required: !!bootstrap.required,
+        // The server MFA gate (ENDORIUMFORT_REQUIRE_MFA) forces enrolment when
+        // payload.mfaEnrollmentRequired is set, even without a bootstrap flag.
+        required: !!bootstrap.required || !!payload.mfaEnrollmentRequired,
         passwordChangeRequired: !!bootstrap.passwordChangeRequired,
-        mfaSetupRequired: !!bootstrap.mfaSetupRequired,
+        mfaSetupRequired: !!bootstrap.mfaSetupRequired || !!payload.mfaEnrollmentRequired,
         totpEnabled: !!payload.totpEnabled,
         webauthnEnabled: !!payload.webauthnEnabled
       });
@@ -1968,6 +1989,20 @@ export default function App() {
       setAuditError(error.message || t('feedback.unableLoadAudit'));
     } finally {
       setLoadingAudit(false);
+    }
+  };
+
+  const onVerifyAuditIntegrity = async () => {
+    if (!auth.token) return;
+    setCheckingIntegrity(true);
+    setAuditIntegrity(null);
+    try {
+      const result = await verifyAuditChain();
+      setAuditIntegrity(result);
+    } catch (error) {
+      setAuditIntegrity({ error: error.message || 'verify failed' });
+    } finally {
+      setCheckingIntegrity(false);
     }
   };
 
@@ -3073,6 +3108,24 @@ export default function App() {
       setUsers((prev) => prev.filter((item) => item.id !== userId));
     } catch (error) {
       setUserError(error.message || t('feedback.unableDeleteUser'));
+    }
+  };
+
+  // RGPD subject access: download everything held about a user as a JSON file.
+  const onExportUserData = async (user) => {
+    try {
+      const data = await exportUserData(user.id);
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `user-${user.username || user.id}-data-export.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      setUserError(error.message || 'Failed to export user data');
     }
   };
 
@@ -4805,6 +4858,14 @@ export default function App() {
                       <button
                         type="button"
                         className="ghost"
+                        onClick={() => onExportUserData(user)}
+                        title="Export all data held about this user (GDPR)"
+                      >
+                        {t('app.exportData')}
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost"
                         onClick={() => onDeleteUser(user.id)}
                       >
                         {t('common.delete')}
@@ -6021,6 +6082,26 @@ export default function App() {
               >
                 {t('app.exportCsv')}
               </button>
+              <button
+                type="button"
+                className="ghost"
+                onClick={onVerifyAuditIntegrity}
+                disabled={checkingIntegrity}
+                title="Recompute the tamper-evidence hash chain"
+              >
+                {checkingIntegrity ? t('app.integrityChecking') : t('app.verifyIntegrity')}
+              </button>
+              {auditIntegrity && !auditIntegrity.error && (
+                <span className={`pill ${auditIntegrity.intact ? 'ok' : 'danger'}`}>
+                  {auditIntegrity.intact
+                    ? t('app.integrityIntact', { count: auditIntegrity.lines })
+                    : t('app.integrityBroken', { line: auditIntegrity.firstBrokenLine })}
+                  {auditIntegrity.keyed ? ' · HMAC' : ''}
+                </span>
+              )}
+              {auditIntegrity && auditIntegrity.error && (
+                <span className="pill danger">{auditIntegrity.error}</span>
+              )}
               {auditFilter && (
                 <button
                   type="button"

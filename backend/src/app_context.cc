@@ -1,12 +1,17 @@
 // ─── EndoriumFort — AppContext implementation ───────────────────────────
 
 #include "app_context.h"
+#include "auth_mfa.h"
 #include "crypto.h"
 #include "utils.h"
 
+#include <openssl/rand.h>
+
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <random>
 #include <sys/stat.h>
 #ifdef _WIN32
 #include <direct.h>
@@ -27,13 +32,36 @@ std::string build_token_from_bytes(const unsigned char *bytes, size_t len) {
   }
   return token;
 }
+
+// A one-time, high-entropy human-readable password for the bootstrap admin,
+// drawn from the CSPRNG over an unambiguous alphabet (no 0/O/1/l/I). Used so no
+// shared default credential ever ships in the binary (PCI 2.1 / ANSSI / CWE-798).
+std::string random_readable_password(size_t len = 24) {
+  static constexpr char kAlphabet[] =
+      "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+  constexpr size_t kN = sizeof(kAlphabet) - 1;
+  if (len > 64) len = 64;
+  unsigned char buf[64];
+  if (RAND_bytes(buf, static_cast<int>(len)) != 1) return {};
+  std::string out;
+  out.reserve(len);
+  for (size_t i = 0; i < len; ++i) out.push_back(kAlphabet[buf[i] % kN]);
+  return out;
+}
 }  // namespace
 
 // ── Secure token generation (using /dev/urandom on Linux/macOS) ─────────
 
 std::string AppContext::generate_token() {
-#ifndef _WIN32
+  // These tokens back session/auth cookies, OIDC state/nonce/PKCE verifiers,
+  // tunnel tickets and WebAuthn challenges, so they must come from a CSPRNG.
+  // RAND_bytes is seeded from the OS CSPRNG and is portable (Windows included).
   unsigned char bytes[32];
+  if (RAND_bytes(bytes, sizeof(bytes)) == 1) {
+    return build_token_from_bytes(bytes, sizeof(bytes));
+  }
+#ifndef _WIN32
+  // Fallback: read the OS CSPRNG directly if the OpenSSL path somehow failed.
   std::ifstream urandom("/dev/urandom", std::ios::binary);
   if (urandom.good()) {
     urandom.read(reinterpret_cast<char *>(bytes), sizeof(bytes));
@@ -42,14 +70,7 @@ std::string AppContext::generate_token() {
     }
   }
 #endif
-  // Fallback (Windows or /dev/urandom failure)
-  std::random_device rd;
-  unsigned char fbytes[32];
-  for (size_t i = 0; i < sizeof(fbytes); i += 4) {
-    uint32_t val = rd();
-    memcpy(fbytes + i, &val, std::min(sizeof(val), sizeof(fbytes) - i));
-  }
-  return build_token_from_bytes(fbytes, sizeof(fbytes));
+  return {};
 }
 
 // ── Rate limiting ───────────────────────────────────────────────────────
@@ -199,38 +220,198 @@ bool AppContext::is_safe_target(const std::string &host, bool allow_loopback) {
 
 // ── Auth helpers ────────────────────────────────────────────────────────
 
+// Validate a session for one authenticated request: enforce both the absolute
+// expiry and the inactivity (idle) timeout, and on success refresh last-seen so
+// the idle window slides forward. Caller must hold auth_mutex. Returns nullptr
+// (after erasing) if the session is expired/idle-timed-out.
+AuthSession *AppContext::validate_and_touch_session(
+    std::unordered_map<std::string, AuthSession>::iterator it) {
+  if (it == auth_sessions.end()) return nullptr;
+
+  // Absolute lifetime.
+  if (!it->second.expiresAt.empty() && it->second.expiresAt < now_utc()) {
+    auth_sessions.erase(it);
+    return nullptr;
+  }
+
+  const int64_t now = now_epoch_seconds();
+  // Inactivity timeout.
+  if (idle_timeout_seconds > 0 && it->second.lastSeenEpoch > 0 &&
+      now - it->second.lastSeenEpoch > idle_timeout_seconds) {
+    auth_sessions.erase(it);
+    return nullptr;
+  }
+
+  it->second.lastSeenEpoch = now;  // slide the idle window forward
+  return &it->second;
+}
+
 std::optional<AuthSession> AppContext::find_auth(const crow::request &request) {
   auto token = extract_auth_token_from_request(request);
 
   if (!token) return std::nullopt;
   std::lock_guard<std::mutex> lock(auth_mutex);
-  auto it = auth_sessions.find(*token);
-  if (it == auth_sessions.end()) return std::nullopt;
-
-  // Check expiration
-  if (!it->second.expiresAt.empty() && it->second.expiresAt < now_utc()) {
-    auth_sessions.erase(it);
-    return std::nullopt;
-  }
-
-  return it->second;
+  AuthSession *sess = validate_and_touch_session(auth_sessions.find(*token));
+  if (!sess) return std::nullopt;
+  return *sess;
 }
 
 std::optional<AuthSession> AppContext::find_auth_by_token(
     const std::string &token) {
   if (token.empty()) return std::nullopt;
   std::lock_guard<std::mutex> lock(auth_mutex);
-  auto it = auth_sessions.find(token);
-  if (it == auth_sessions.end()) return std::nullopt;
+  AuthSession *sess = validate_and_touch_session(auth_sessions.find(token));
+  if (!sess) return std::nullopt;
+  return *sess;
+}
 
-  // Check expiration
-  if (!it->second.expiresAt.empty() && it->second.expiresAt < now_utc()) {
-    auth_sessions.erase(it);
-    return std::nullopt;
+bool AppContext::mfa_required_for_role(const std::string &role) const {
+  if (mfa_policy == "all") return true;
+  if (mfa_policy == "admins") return is_user_role(role, "admin");
+  return false;  // "none" or unknown → not enforced
+}
+
+bool AppContext::password_was_recently_used(int user_id,
+                                            const std::string &new_plaintext) {
+  if (password_history_count <= 0) return false;
+
+  // Current password counts as "recently used".
+  {
+    std::lock_guard<std::mutex> lock(user_mutex);
+    auto it = users.find(user_id);
+    if (it != users.end() && !it->second.password.empty() &&
+        crypto::verify_password(new_plaintext, it->second.password)) {
+      return true;
+    }
   }
 
-  return it->second;
+  // Snapshot the last N historical hashes, then verify outside the DB lock
+  // (scrypt is deliberately slow — don't hold sqlite.mutex while hashing).
+  std::vector<std::string> hashes;
+  {
+    std::lock_guard<std::mutex> lock(sqlite.mutex);
+    if (!sqlite.db) return false;
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(
+            sqlite.db,
+            "SELECT password_hash FROM password_history WHERE user_id=?1 "
+            "ORDER BY id DESC LIMIT ?2;",
+            -1, &stmt, nullptr) == SQLITE_OK) {
+      sqlite3_bind_int(stmt, 1, user_id);
+      sqlite3_bind_int(stmt, 2, password_history_count);
+      while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const unsigned char *h = sqlite3_column_text(stmt, 0);
+        if (h) hashes.emplace_back(reinterpret_cast<const char *>(h));
+      }
+    }
+    sqlite3_finalize(stmt);
+  }
+  for (const auto &h : hashes) {
+    if (crypto::verify_password(new_plaintext, h)) return true;
+  }
+  return false;
 }
+
+void AppContext::record_password_in_history(int user_id,
+                                            const std::string &password_hash) {
+  if (password_history_count <= 0 || password_hash.empty()) return;
+  std::lock_guard<std::mutex> lock(sqlite.mutex);
+  if (!sqlite.db) return;
+
+  sqlite3_stmt *ins = nullptr;
+  if (sqlite3_prepare_v2(
+          sqlite.db,
+          "INSERT INTO password_history(user_id,password_hash,created_at) "
+          "VALUES(?1,?2,?3);",
+          -1, &ins, nullptr) == SQLITE_OK) {
+    const std::string ts = now_utc();
+    sqlite3_bind_int(ins, 1, user_id);
+    sqlite3_bind_text(ins, 2, password_hash.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(ins, 3, ts.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_step(ins);
+  }
+  sqlite3_finalize(ins);
+
+  // Keep only the most recent N entries per user.
+  sqlite3_stmt *del = nullptr;
+  if (sqlite3_prepare_v2(
+          sqlite.db,
+          "DELETE FROM password_history WHERE user_id=?1 AND id NOT IN "
+          "(SELECT id FROM password_history WHERE user_id=?1 "
+          "ORDER BY id DESC LIMIT ?2);",
+          -1, &del, nullptr) == SQLITE_OK) {
+    sqlite3_bind_int(del, 1, user_id);
+    sqlite3_bind_int(del, 2, password_history_count);
+    sqlite3_step(del);
+  }
+  sqlite3_finalize(del);
+}
+
+namespace {
+// Endpoints that must stay reachable for an authenticated-but-MFA-unenrolled
+// user so they can actually enrol a factor (or get out). Everything else under
+// /api is blocked until a second factor exists.
+bool mfa_gate_path_allowed(const std::string &url) {
+  const std::string path = url.substr(0, url.find('?'));
+  if (path.rfind("/api/", 0) != 0) return true;  // SPA/static assets
+  static const char *kAllow[] = {
+      "/api/health",
+      "/api/auth/login",
+      "/api/auth/logout",
+      "/api/auth/change-password",
+      "/api/auth/bootstrap-status",
+      "/api/auth/setup-2fa",
+      "/api/auth/verify-2fa",
+      "/api/auth/2fa-status",
+      "/api/auth/mfa-preference",
+      "/api/auth/webauthn/register/options",
+      "/api/auth/webauthn/register/verify",
+      "/api/license/status",
+  };
+  for (const char *p : kAllow) {
+    if (path == p) return true;
+  }
+  return false;
+}
+}  // namespace
+
+bool AppContext::mfa_enrollment_gate(const crow::request &req,
+                                     crow::response &res) {
+  if (mfa_policy == "none") return false;  // enforcement disabled
+  if (mfa_gate_path_allowed(req.url)) return false;
+
+  auto token = extract_auth_token_from_request(req);
+  if (!token) return false;  // unauthenticated → the route's own auth answers
+  auto auth = find_auth_by_token(*token);
+  if (!auth) return false;
+  if (!mfa_required_for_role(auth->role)) return false;
+
+  {
+    std::lock_guard<std::mutex> lock(user_mutex);
+    auto it = users.find(auth->userId);
+    if (it == users.end()) return false;  // unknown user → let the route decide
+    if (user_has_any_mfa_enabled(it->second)) return false;  // already enrolled
+  }
+
+  crow::json::wvalue body;
+  body["error"] = "mfa_enrollment_required";
+  body["message"] =
+      "Multi-factor authentication must be enrolled before accessing this "
+      "resource.";
+  res.code = 403;
+  res.set_header("Content-Type", "application/json");
+  res.body = body.dump();
+  return true;
+}
+
+// Defined for the security middleware (which has no AppContext of its own).
+extern AppContext *g_license_ctx;  // set in main.cc, defined in license.cc
+namespace mfa_gate {
+bool before(const crow::request &req, crow::response &res) {
+  if (!g_license_ctx) return false;
+  return g_license_ctx->mfa_enrollment_gate(req, res);
+}
+}  // namespace mfa_gate
 
 // ── Token management ────────────────────────────────────────────────────
 
@@ -262,9 +443,15 @@ void AppContext::invalidate_user_tokens_except(int user_id,
 
 void AppContext::cleanup_expired_tokens() {
   std::string current = now_utc();
+  const int64_t now = now_epoch_seconds();
   std::lock_guard<std::mutex> lock(auth_mutex);
   for (auto it = auth_sessions.begin(); it != auth_sessions.end();) {
-    if (!it->second.expiresAt.empty() && it->second.expiresAt < current)
+    const bool absolute_expired =
+        !it->second.expiresAt.empty() && it->second.expiresAt < current;
+    const bool idle_expired =
+        idle_timeout_seconds > 0 && it->second.lastSeenEpoch > 0 &&
+        now - it->second.lastSeenEpoch > idle_timeout_seconds;
+    if (absolute_expired || idle_expired)
       it = auth_sessions.erase(it);
     else
       ++it;
@@ -312,25 +499,186 @@ void AppContext::run_shutdown_hooks() {
 
 // ── Audit ───────────────────────────────────────────────────────────────
 
+namespace {
+// Keyed when an HMAC key is configured (forgery-resistant), otherwise a plain
+// SHA-256 chain (detects edits/truncation by anyone without the prior state).
+std::string audit_mac(const std::string &key, const std::string &input) {
+  return key.empty() ? crypto::sha256_hex(input)
+                     : crypto::hmac_sha256_hex(key, input);
+}
+constexpr char kAuditPrevMarker[] = ",\"prevHash\":\"";
+constexpr char kAuditHashMarker[] = "\"hash\":\"";
+}  // namespace
+
 void AppContext::append_audit(const AuditEvent &event) {
   std::lock_guard<std::mutex> lock(audit_mutex);
   audit_events.push_back(event);
   if (audit_events.size() > 200) {
     audit_events.erase(audit_events.begin(), audit_events.begin() + 50);
   }
-  std::ofstream out(audit_path, std::ios::app);
-  if (out) {
-    out << '{'
-        << "\"id\":" << event.id << ','
-        << "\"type\":\"" << json_escape(event.type) << "\","
-        << "\"actor\":\"" << json_escape(event.actor) << "\","
-        << "\"role\":\"" << json_escape(event.role) << "\","
-        << "\"createdAt\":\"" << json_escape(event.createdAt) << "\","
-        << "\"payload\":"
-        << (event.payloadIsJson ? event.payloadJson
-                                : "\"" + json_escape(event.payloadJson) + "\"")
-        << "}\n";
+
+  // Canonical entry object: the exact bytes re-hashed on verification.
+  std::ostringstream body;
+  body << '{'
+       << "\"id\":" << event.id << ','
+       << "\"type\":\"" << json_escape(event.type) << "\","
+       << "\"actor\":\"" << json_escape(event.actor) << "\","
+       << "\"role\":\"" << json_escape(event.role) << "\","
+       << "\"createdAt\":\"" << json_escape(event.createdAt) << "\","
+       << "\"payload\":"
+       << (event.payloadIsJson ? event.payloadJson
+                               : "\"" + json_escape(event.payloadJson) + "\"")
+       << '}';
+  const std::string canonical = body.str();
+  const std::string prev = audit_chain_hash;
+  const std::string hash = audit_mac(audit_hmac_key, prev + "|" + canonical);
+
+  {
+    std::ofstream out(audit_path, std::ios::app);
+    if (out) {
+      // Reopen the canonical object (drop its closing brace) and append the
+      // chain fields last, so a verifier recovers `canonical` as a literal
+      // substring.
+      out << canonical.substr(0, canonical.size() - 1) << kAuditPrevMarker
+          << prev << "\"," << kAuditHashMarker << hash << "\"}\n";
+    }
   }
+  audit_chain_hash = hash;
+  maybe_rotate_audit_locked();  // seal + purge per retention policy
+}
+
+void AppContext::maybe_rotate_audit_locked() {
+  if (audit_max_file_bytes <= 0) return;
+  struct stat st {};
+  if (stat(audit_path.c_str(), &st) != 0) return;
+  if (st.st_size < static_cast<off_t>(audit_max_file_bytes)) return;
+
+  // Seal the current log as a timestamped archive. The in-memory chain head
+  // (audit_chain_hash) is unchanged, so the next entry written to the fresh log
+  // links back to this archive's last hash — cross-file tamper-evidence.
+  const std::string archive =
+      audit_path + "." + std::to_string(now_epoch_seconds());
+  std::rename(audit_path.c_str(), archive.c_str());
+
+  if (audit_retention_days <= 0) return;  // keep archives forever
+  namespace fs = std::filesystem;
+  const fs::path logp(audit_path);
+  const fs::path dir = logp.has_parent_path() ? logp.parent_path() : fs::path(".");
+  const std::string prefix = logp.filename().string() + ".";
+  const int64_t cutoff =
+      now_epoch_seconds() - static_cast<int64_t>(audit_retention_days) * 86400;
+  std::error_code ec;
+  for (fs::directory_iterator it(dir, ec), end; it != end && !ec;
+       it.increment(ec)) {
+    const std::string name = it->path().filename().string();
+    if (name.rfind(prefix, 0) != 0) continue;
+    int64_t sealed = 0;
+    try {
+      sealed = std::stoll(name.substr(prefix.size()));
+    } catch (...) {
+      continue;  // not one of our epoch-suffixed archives
+    }
+    if (sealed < cutoff) {
+      std::error_code rm_ec;
+      fs::remove(it->path(), rm_ec);
+    }
+  }
+}
+
+void AppContext::init_audit_chain() {
+  const char *k = std::getenv("ENDORIUMFORT_AUDIT_HMAC_KEY");
+  if (k && *k) {
+    std::string raw;
+    // Accept either a hex-encoded key or a raw passphrase.
+    if (crypto::hex_decode(k, raw) && !raw.empty()) {
+      audit_hmac_key = raw;
+    } else {
+      audit_hmac_key.assign(k);
+    }
+  }
+
+  std::lock_guard<std::mutex> lock(audit_mutex);
+  audit_chain_hash = "GENESIS";
+  std::ifstream in(audit_path, std::ios::binary);
+  if (!in) return;
+  std::string line, last_hash;
+  const std::string marker = kAuditHashMarker;
+  while (std::getline(in, line)) {
+    const size_t p = line.rfind(marker);
+    if (p == std::string::npos) continue;
+    const size_t s = p + marker.size();
+    const size_t e = line.find('"', s);
+    if (e != std::string::npos) last_hash = line.substr(s, e - s);
+  }
+  if (!last_hash.empty()) audit_chain_hash = last_hash;
+}
+
+std::vector<std::string> AppContext::collect_audit_lines_for_actor(
+    const std::string &actor, size_t max_lines) {
+  std::vector<std::string> out;
+  if (actor.empty()) return out;
+  const std::string needle = "\"actor\":\"" + json_escape(actor) + "\"";
+  std::lock_guard<std::mutex> lock(audit_mutex);
+  std::ifstream in(audit_path, std::ios::binary);
+  if (!in) return out;
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.find(needle) != std::string::npos) out.push_back(line);
+  }
+  // Most recent first, capped.
+  std::reverse(out.begin(), out.end());
+  if (out.size() > max_lines) out.resize(max_lines);
+  return out;
+}
+
+AppContext::AuditChainCheck AppContext::verify_audit_chain() {
+  AuditChainCheck res;
+  std::lock_guard<std::mutex> lock(audit_mutex);
+  std::ifstream in(audit_path, std::ios::binary);
+  if (!in) return res;  // no log yet → trivially intact
+
+  std::string prev;
+  bool first = true;
+  std::string line;
+  int64_t n = 0;
+  const std::string pmark = kAuditPrevMarker;
+  const std::string hmark = kAuditHashMarker;
+  while (std::getline(in, line)) {
+    if (line.empty()) continue;
+    ++n;
+    const size_t pp = line.rfind(pmark);
+    const size_t hp = line.rfind(hmark);
+    if (pp == std::string::npos || hp == std::string::npos || hp < pp) {
+      if (res.ok) { res.ok = false; res.firstBrokenLine = n; }
+      continue;
+    }
+    const std::string canonical = line.substr(0, pp) + "}";
+    const size_t pvs = pp + pmark.size();
+    const size_t pve = line.find('"', pvs);
+    const size_t hvs = hp + hmark.size();
+    const size_t hve = line.find('"', hvs);
+    if (pve == std::string::npos || hve == std::string::npos) {
+      if (res.ok) { res.ok = false; res.firstBrokenLine = n; }
+      continue;
+    }
+    const std::string line_prev = line.substr(pvs, pve - pvs);
+    const std::string line_hash = line.substr(hvs, hve - hvs);
+    // The first line's prevHash is the baseline (it links to the previous
+    // archive after a rotation, or is GENESIS on a fresh log); we don't compare
+    // it, only enforce linkage between consecutive lines in this file.
+    if (first) {
+      prev = line_prev;
+      first = false;
+    }
+    const std::string expect =
+        audit_mac(audit_hmac_key, line_prev + "|" + canonical);
+    if (line_prev != prev || line_hash != expect) {
+      if (res.ok) { res.ok = false; res.firstBrokenLine = n; }
+    }
+    prev = line_hash;
+  }
+  res.lines = n;
+  return res;
 }
 
 void AppContext::append_session_event(const std::string &type,
@@ -640,6 +988,25 @@ void AppContext::init_database() {
   if (!sqlite.exec(webauthn_schema, err))
     std::cerr << "SQLite user_webauthn_credentials schema failed: " << err << '\n';
 
+  // Password reuse history (PCI DSS v4 8.3.7 / ANSSI). Stores prior password
+  // hashes per user so a new password can be checked against the last N.
+  const std::string password_history_schema =
+      "CREATE TABLE IF NOT EXISTS password_history ("
+      "id INTEGER PRIMARY KEY,"
+      "user_id INTEGER NOT NULL,"
+      "password_hash TEXT NOT NULL,"
+      "created_at TEXT NOT NULL"
+      ");";
+  if (!sqlite.exec(password_history_schema, err))
+    std::cerr << "SQLite password_history schema failed: " << err << '\n';
+  sqlite.exec(
+      "CREATE INDEX IF NOT EXISTS idx_password_history_user "
+      "ON password_history(user_id);",
+      err);
+
+  // Seed the tamper-evident audit chain head from the existing log tail.
+  init_audit_chain();
+
   // Load data into memory
   load_sessions_from_db();
   load_resources_from_db();
@@ -654,20 +1021,36 @@ void AppContext::seed_default_admin() {
   std::lock_guard<std::mutex> lock(user_mutex);
   if (!users.empty()) return;
 
+  // No shared default password ships in the binary. An operator may inject one
+  // for automated provisioning via ENDORIUMFORT_BOOTSTRAP_ADMIN_PASSWORD;
+  // otherwise a one-time random password is generated and printed once.
+  const char *env_pw = std::getenv("ENDORIUMFORT_BOOTSTRAP_ADMIN_PASSWORD");
+  const bool from_env = env_pw && *env_pw;
+  const std::string bootstrap_pw =
+      from_env ? std::string(env_pw) : random_readable_password(24);
+
   UserAccount admin;
   admin.id = next_user_id.fetch_add(1);
   admin.username = "admin";
-  admin.password = crypto::hash_password("Admin123");
+  admin.password = crypto::hash_password(bootstrap_pw);
   admin.role = "admin";
   admin.createdAt = now_utc();
   admin.updatedAt = admin.createdAt;
   admin.bootstrapPasswordChangeRequired = true;
   admin.bootstrapMfaRequired = true;
   users[admin.id] = admin;
-  if (!insert_user(admin))
+  if (!insert_user(admin)) {
     std::cerr << "Failed to persist default admin user" << '\n';
-  else
-    std::cerr << "[SECURITY] Default admin created — change password immediately!" << '\n';
+  } else if (from_env) {
+    std::cerr << "[SECURITY] Default admin 'admin' created with the password "
+                 "from ENDORIUMFORT_BOOTSTRAP_ADMIN_PASSWORD. Change it right "
+                 "after first login (change + MFA enrollment are enforced).\n";
+  } else {
+    std::cerr << "\n[SECURITY] Default admin 'admin' created with a one-time "
+                 "random password (shown only once):\n\n    "
+              << bootstrap_pw
+              << "\n\nLog in now and change it; MFA enrollment is enforced.\n\n";
+  }
 }
 
 // ── Session CRUD ────────────────────────────────────────────────────────
@@ -1224,6 +1607,16 @@ bool AppContext::delete_user_db(int user_id) {
     sqlite3_step(cleanup_stmt);
   }
   sqlite3_finalize(cleanup_stmt);
+  // RGPD erasure completeness: also drop the user's password history (hashes
+  // derived from their secrets).
+  sqlite3_stmt *ph_stmt = nullptr;
+  if (sqlite3_prepare_v2(sqlite.db,
+                         "DELETE FROM password_history WHERE user_id = ?", -1,
+                         &ph_stmt, nullptr) == SQLITE_OK) {
+    sqlite3_bind_int(ph_stmt, 1, user_id);
+    sqlite3_step(ph_stmt);
+  }
+  sqlite3_finalize(ph_stmt);
   const char *sql = "DELETE FROM users WHERE id = ?";
   sqlite3_stmt *stmt = nullptr;
   if (sqlite3_prepare_v2(sqlite.db, sql, -1, &stmt, nullptr) != SQLITE_OK) {

@@ -25,7 +25,7 @@ FROM debian:trixie-slim AS backend-build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake git ca-certificates \
-    libsqlite3-dev libssh2-1-dev pkg-config \
+    libsqlite3-dev libsqlcipher-dev libssh2-1-dev pkg-config \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
@@ -139,10 +139,12 @@ ARG TARGETARCH=amd64
 ARG RBI_ENGINE=cdp
 
 # chromium powers the default RBI engine (CDP/MJPEG) — a CORE feature, installed
-# for both editions. fonts-liberation gives pages sane default fonts.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-  nginx libsqlite3-0 libssh2-1 ca-certificates curl openssl certbot \
-  chromium fonts-liberation \
+# for both editions. fonts-liberation gives pages sane default fonts. gosu lets the
+# entrypoint drop the backend to the unprivileged endoriumfort user. `apt upgrade`
+# patches base-image OS packages so the shipped image carries current fixes.
+RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
+  nginx libsqlite3-0 libsqlcipher1 libssh2-1 ca-certificates curl openssl certbot \
+  chromium fonts-liberation gosu \
   && rm -rf /var/lib/apt/lists/* \
   && useradd --system --shell /usr/sbin/nologin --home-dir /app endoriumfort
 

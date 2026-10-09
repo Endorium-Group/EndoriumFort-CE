@@ -1,0 +1,51 @@
+name: Security Scan (Trivy)
+
+# Continuous proof for pentests/audits: scans the repo for IaC/Dockerfile
+# misconfigurations and for shipped-dependency CVEs, and fails on fixable
+# HIGH/CRITICAL. The weekly schedule catches newly-disclosed CVEs in code that
+# has not changed. Accepted findings live in .trivyignore (with justifications).
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  schedule:
+    - cron: '30 4 * * 1'   # Mondays 04:30 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  misconfig:
+    name: IaC / Dockerfile misconfig
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Trivy config scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          trivyignores: .trivyignore
+
+  dependencies:
+    name: Shipped dependency CVEs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true          # only fail on CVEs with an available fix
+          exit-code: '1'
+          trivyignores: .trivyignore
+          # Frontend npm packages are build-time only (the image ships static
+          # bundles, not node_modules), so they are out of the runtime scope.
+          skip-files: frontend/package-lock.json
+          skip-dirs: "node_modules,frontend/node_modules,frontend/dist"

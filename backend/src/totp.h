@@ -1,14 +1,16 @@
 #pragma once
 // ─── EndoriumFort — TOTP / 2FA implementation ──────────────────────────
-// Self-contained TOTP (RFC 6238) with built-in SHA1 and HMAC-SHA1.
-// No external crypto dependency required.
+// TOTP (RFC 6238). HMAC-SHA1 (RFC-mandated) and the secret CSPRNG both come
+// from OpenSSL — no hand-rolled crypto primitives.
+
+#include <openssl/evp.h>
+#include <openssl/rand.h>
 
 #include <array>
 #include <cstdint>
 #include <cstring>
 #include <ctime>
 #include <iomanip>
-#include <random>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -21,112 +23,19 @@ namespace totp {
 
 namespace detail {
 
-inline uint32_t left_rotate(uint32_t value, unsigned int count) {
-  return (value << count) | (value >> (32 - count));
-}
-
-inline std::array<uint8_t, 20> sha1(const uint8_t *data, size_t len) {
-  uint32_t h0 = 0x67452301;
-  uint32_t h1 = 0xEFCDAB89;
-  uint32_t h2 = 0x98BADCFE;
-  uint32_t h3 = 0x10325476;
-  uint32_t h4 = 0xC3D2E1F0;
-
-  uint64_t bit_len = static_cast<uint64_t>(len) * 8;
-
-  // Pad message
-  std::vector<uint8_t> msg(data, data + len);
-  msg.push_back(0x80);
-  while ((msg.size() % 64) != 56)
-    msg.push_back(0x00);
-  for (int i = 7; i >= 0; --i)
-    msg.push_back(static_cast<uint8_t>((bit_len >> (i * 8)) & 0xFF));
-
-  // Process blocks
-  for (size_t offset = 0; offset < msg.size(); offset += 64) {
-    uint32_t w[80];
-    for (int i = 0; i < 16; ++i) {
-      w[i] = (static_cast<uint32_t>(msg[offset + i * 4]) << 24) |
-             (static_cast<uint32_t>(msg[offset + i * 4 + 1]) << 16) |
-             (static_cast<uint32_t>(msg[offset + i * 4 + 2]) << 8) |
-             (static_cast<uint32_t>(msg[offset + i * 4 + 3]));
-    }
-    for (int i = 16; i < 80; ++i)
-      w[i] = left_rotate(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
-
-    uint32_t a = h0, b = h1, c = h2, d = h3, e = h4;
-    for (int i = 0; i < 80; ++i) {
-      uint32_t f, k;
-      if (i < 20) {
-        f = (b & c) | ((~b) & d);
-        k = 0x5A827999;
-      } else if (i < 40) {
-        f = b ^ c ^ d;
-        k = 0x6ED9EBA1;
-      } else if (i < 60) {
-        f = (b & c) | (b & d) | (c & d);
-        k = 0x8F1BBCDC;
-      } else {
-        f = b ^ c ^ d;
-        k = 0xCA62C1D6;
-      }
-      uint32_t temp = left_rotate(a, 5) + f + e + k + w[i];
-      e = d;
-      d = c;
-      c = left_rotate(b, 30);
-      b = a;
-      a = temp;
-    }
-    h0 += a;
-    h1 += b;
-    h2 += c;
-    h3 += d;
-    h4 += e;
-  }
-
-  std::array<uint8_t, 20> digest;
-  for (int i = 0; i < 4; ++i) {
-    digest[i] = static_cast<uint8_t>((h0 >> (24 - i * 8)) & 0xFF);
-    digest[i + 4] = static_cast<uint8_t>((h1 >> (24 - i * 8)) & 0xFF);
-    digest[i + 8] = static_cast<uint8_t>((h2 >> (24 - i * 8)) & 0xFF);
-    digest[i + 12] = static_cast<uint8_t>((h3 >> (24 - i * 8)) & 0xFF);
-    digest[i + 16] = static_cast<uint8_t>((h4 >> (24 - i * 8)) & 0xFF);
-  }
-  return digest;
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-//  HMAC-SHA1 (RFC 2104)
-// ═══════════════════════════════════════════════════════════════════════
-
+// HMAC-SHA1 via OpenSSL (RFC 2104). SHA-1 is mandated by RFC 6238 for the
+// default TOTP, so the algorithm is fixed; routing it through OpenSSL keeps the
+// output standard while removing the hand-rolled SHA-1/HMAC implementation.
 inline std::array<uint8_t, 20> hmac_sha1(const uint8_t *key, size_t key_len,
-                                          const uint8_t *msg, size_t msg_len) {
-  const size_t block_size = 64;
-  std::vector<uint8_t> k(block_size, 0);
-
-  if (key_len > block_size) {
-    auto hashed = sha1(key, key_len);
-    std::memcpy(k.data(), hashed.data(), 20);
-  } else {
-    std::memcpy(k.data(), key, key_len);
-  }
-
-  std::vector<uint8_t> i_pad(block_size + msg_len);
-  std::vector<uint8_t> o_pad(block_size + 20);
-
-  for (size_t i = 0; i < block_size; ++i) {
-    i_pad[i] = k[i] ^ 0x36;
-    o_pad[i] = k[i] ^ 0x5C;
-  }
-  std::memcpy(i_pad.data() + block_size, msg, msg_len);
-
-  auto inner = sha1(i_pad.data(), i_pad.size());
-  std::memcpy(o_pad.data() + block_size, inner.data(), 20);
-
-  return sha1(o_pad.data(), o_pad.size());
+                                         const uint8_t *msg, size_t msg_len) {
+  std::array<uint8_t, 20> out{};
+  size_t out_len = 0;
+  EVP_Q_mac(nullptr, "HMAC", nullptr, "SHA1", nullptr, key, key_len, msg,
+            msg_len, out.data(), out.size(), &out_len);
+  return out;
 }
 
-} // namespace detail
+}  // namespace detail
 
 // ═══════════════════════════════════════════════════════════════════════
 //  Base32 encode / decode (RFC 4648)
@@ -187,12 +96,11 @@ inline std::vector<uint8_t> base32_decode(const std::string &input) {
 // ═══════════════════════════════════════════════════════════════════════
 
 inline std::string generate_secret(int byte_count = 20) {
-  std::random_device rd;
-  std::mt19937 gen(rd());
-  std::uniform_int_distribution<int> dist(0, 255);
+  // The TOTP shared secret is a long-lived MFA root key: it MUST come from a
+  // CSPRNG. (mt19937 seeded from a single random_device draw would cap the
+  // secret's entropy at the 32-bit seed, making it brute-forceable.)
   std::vector<uint8_t> secret(byte_count);
-  for (auto &b : secret)
-    b = static_cast<uint8_t>(dist(gen));
+  if (RAND_bytes(secret.data(), byte_count) != 1) return {};
   return base32_encode(secret.data(), secret.size());
 }
 

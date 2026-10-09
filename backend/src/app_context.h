@@ -85,7 +85,33 @@ struct AppContext {
   std::mutex auth_mutex;
   std::unordered_map<std::string, AuthSession> auth_sessions;
   int listen_port = 8080;
-  int token_ttl_seconds = 3600;  // 1 hour default
+  int token_ttl_seconds = 3600;  // 1 hour absolute session lifetime (default)
+  // Inactivity timeout: a session unused for this many seconds is invalidated
+  // (PCI DSS 8.2.8 = 15 min, NIST AC-11, ANSSI). 0 disables idle expiry.
+  int idle_timeout_seconds = 900;  // 15 minutes default
+  // MFA enforcement policy: "all" (every account must have a second factor),
+  // "admins" (admins only), or "none". Compliant default = "all"
+  // (PCI 8.4/8.5, NIST AAL2, ANSSI). Enforced server-side by the MFA gate.
+  std::string mfa_policy = "all";
+  // Password policy (PCI DSS v4 8.3, ANSSI, NIST 800-63B). Configurable with
+  // compliant defaults. history_count = number of previous passwords that may
+  // not be reused (0 disables reuse prevention).
+  int password_min_length = 12;
+  int password_history_count = 5;
+  // True when a second factor is required for `role` under mfa_policy.
+  bool mfa_required_for_role(const std::string &role) const;
+  // Server-side MFA enforcement for one request. Returns true (and fills a 403
+  // body) when the authenticated user must enrol a second factor before the
+  // target route may run; false lets the request proceed.
+  bool mfa_enrollment_gate(const crow::request &req, crow::response &res);
+  // Password reuse prevention: true if `new_plaintext` matches the user's
+  // current password or any of the last `password_history_count` hashes.
+  bool password_was_recently_used(int user_id,
+                                  const std::string &new_plaintext);
+  // Append a password hash to the user's history and trim to the configured
+  // depth. Call with the hash being replaced, after a successful change.
+  void record_password_in_history(int user_id,
+                                  const std::string &password_hash);
 
   // ── Resource state ──
   std::mutex resource_mutex;
@@ -112,6 +138,38 @@ struct AppContext {
   std::vector<AuditEvent> audit_events;
   std::atomic<int> next_audit_id{1};
   std::string audit_path = "audit-log.jsonl";
+  // Tamper-evidence: each persisted audit line carries a hash chaining it to the
+  // previous one (PCI 10.5, ISO A.8.15, NIST AU-9, ANSSI). When an HMAC key is
+  // configured (ENDORIUMFORT_AUDIT_HMAC_KEY) the chain is keyed, so an attacker
+  // who cannot read the key cannot forge a consistent chain; without a key it
+  // falls back to a plain SHA-256 chain (detects edits/truncation only).
+  std::string audit_chain_hash = "GENESIS";  // head of the chain (under mutex)
+  std::string audit_hmac_key;                // raw key bytes; empty = SHA-256
+  // Retention/rotation (PCI 10.7 keep ≥12mo vs RGPD storage-limitation — left
+  // configurable so operators set their own policy). max_file_bytes>0 seals the
+  // active log into a timestamped archive once it grows past the threshold (the
+  // in-memory chain head carries over, so archives stay cross-linked);
+  // retention_days>0 purges archives older than that. 0 = disabled (grow/keep).
+  int audit_max_file_bytes = 0;
+  int audit_retention_days = 0;
+  // Seed the chain head (and key) from the environment + existing log tail.
+  void init_audit_chain();
+  // Re-read the on-disk log and recompute the chain. Returns {ok, lines,
+  // firstBrokenLine} where firstBrokenLine is 0 when intact.
+  struct AuditChainCheck {
+    bool ok = true;
+    int64_t lines = 0;
+    int64_t firstBrokenLine = 0;
+  };
+  AuditChainCheck verify_audit_chain();
+  // RGPD access/portability (art.15/20): return persisted audit log lines whose
+  // actor matches `actor`, most recent first, capped at `max_lines`. Each string
+  // is the raw JSON object as stored.
+  std::vector<std::string> collect_audit_lines_for_actor(const std::string &actor,
+                                                         size_t max_lines);
+  // Seal the active log into an archive when it exceeds audit_max_file_bytes and
+  // purge archives older than audit_retention_days. Caller holds audit_mutex.
+  void maybe_rotate_audit_locked();
 
   // ── Session recordings ──
   std::mutex recording_mutex;
@@ -326,6 +384,11 @@ struct AppContext {
   std::string generate_token();
   std::optional<AuthSession> find_auth(const crow::request &req);
   std::optional<AuthSession> find_auth_by_token(const std::string &token);
+  // Enforce absolute + idle expiry and refresh last-seen. Caller holds
+  // auth_mutex; returns nullptr (after erasing) when the session is no longer
+  // valid. Internal helper for find_auth*/the MFA gate.
+  AuthSession *validate_and_touch_session(
+      std::unordered_map<std::string, AuthSession>::iterator it);
   void append_audit(const AuditEvent &event);
   void append_session_event(const std::string &type, const Session &session);
   bool invalidate_token(const std::string &token);

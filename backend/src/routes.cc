@@ -822,6 +822,7 @@ void register_auth_routes(CrowApp &app, AppContext &ctx) {
         auth.issuedAt = now_utc();
         auth.expiresAt = ctx.compute_expiry();
         auth.token = ctx.generate_token();
+        auth.lastSeenEpoch = now_epoch_seconds();
 
         {
           std::lock_guard<std::mutex> lock(ctx.auth_mutex);
@@ -873,6 +874,11 @@ void register_auth_routes(CrowApp &app, AppContext &ctx) {
         }
         payload["issuedAt"] = auth.issuedAt;
         payload["expiresAt"] = auth.expiresAt;
+        // Tell the client whether a second factor must be enrolled before the
+        // session can be used (server enforces this via the MFA gate).
+        payload["mfaEnrollmentRequired"] =
+            ctx.mfa_required_for_role(matched->role) &&
+            !user_has_any_mfa_enabled(*matched);
         payload["authSource"] = ldap_authenticated ? "ldap" : "local";
         if (ldap_authenticated) {
           payload["directoryRole"] = ldap_role_resolution.role;
@@ -988,15 +994,22 @@ void register_auth_routes(CrowApp &app, AppContext &ctx) {
         if (!crypto::verify_password(current_password, stored))
           return crow::response(401, "Current password is incorrect");
 
-        // Validate new password
-        auto policy = crypto::validate_password(new_password);
+        // Validate new password (configurable min length + common-password deny).
+        auto policy =
+            crypto::validate_password(new_password, ctx.password_min_length);
         if (!policy.valid)
           return crow::response(400, policy.message);
 
-        // Hash and store
+        // Reuse prevention (PCI DSS v4 8.3.7 / ANSSI).
+        if (ctx.password_was_recently_used(auth->userId, new_password))
+          return crow::response(
+              400, "This password was used recently; choose a different one");
+
+        // Hash and store, then record the replaced hash in history.
         std::string hashed = crypto::hash_password(new_password);
         if (!ctx.update_user_password_hash(auth->userId, hashed))
           return crow::response(500, "Failed to update password");
+        ctx.record_password_in_history(auth->userId, stored);
         bool mfa_required = false;
         {
           std::lock_guard<std::mutex> lock(ctx.user_mutex);
@@ -1122,7 +1135,7 @@ void register_user_routes(CrowApp &app, AppContext &ctx) {
           return crow::response(400, "Invalid role");
 
         // Validate password policy
-        auto policy = crypto::validate_password(password);
+        auto policy = crypto::validate_password(password, ctx.password_min_length);
         if (!policy.valid)
           return crow::response(400, policy.message);
 
@@ -1189,7 +1202,7 @@ void register_user_routes(CrowApp &app, AppContext &ctx) {
               return crow::response(400, "Invalid role");
 
             // Validate password policy
-            auto policy = crypto::validate_password(password);
+            auto policy = crypto::validate_password(password, ctx.password_min_length);
             if (!policy.valid)
               return crow::response(400, policy.message);
 
@@ -1260,6 +1273,72 @@ void register_user_routes(CrowApp &app, AppContext &ctx) {
             crow::json::wvalue payload;
             payload["status"] = "deleted";
             payload["id"] = user_id;
+            return crow::response{payload};
+          });
+
+  // GET /api/users/<int>/data-export — RGPD subject access / portability
+  // (art.15/20): everything held about one user. Admin (users.read) or self.
+  CROW_ROUTE(app, "/api/users/<int>/data-export")
+      .methods(crow::HTTPMethod::Get)(
+          [&ctx](const crow::request &request, int user_id) {
+            auto auth = ctx.find_auth(request);
+            if (!auth) return crow::response(401, "Unauthorized");
+            const bool is_self = auth->userId == user_id;
+            if (!is_self && !has_permission(ctx, *auth, "users.read"))
+              return crow::response(403, "Forbidden");
+
+            UserAccount user;
+            {
+              std::lock_guard<std::mutex> lock(ctx.user_mutex);
+              auto it = ctx.users.find(user_id);
+              if (it == ctx.users.end())
+                return crow::response(404, "User not found");
+              user = it->second;
+            }
+
+            crow::json::wvalue payload;
+            payload["status"] = "ok";
+            payload["generatedAt"] = now_utc();
+            payload["account"]["id"] = user.id;
+            payload["account"]["username"] = user.username;
+            payload["account"]["role"] = user.role;
+            payload["account"]["createdAt"] = user.createdAt;
+            payload["account"]["updatedAt"] = user.updatedAt;
+            payload["account"]["totpEnabled"] = user.totpEnabled;
+            payload["account"]["webauthnEnabled"] =
+                user_has_webauthn_enabled(user);
+
+            payload["webauthnCredentials"] = crow::json::wvalue::list();
+            {
+              const auto creds = ctx.get_user_webauthn_credentials(user_id);
+              int i = 0;
+              for (const auto &c : creds) {
+                payload["webauthnCredentials"][i]["id"] = c.id;
+                payload["webauthnCredentials"][i]["label"] = c.label;
+                payload["webauthnCredentials"][i]["createdAt"] = c.createdAt;
+                payload["webauthnCredentials"][i]["lastUsedAt"] = c.lastUsedAt;
+                ++i;
+              }
+            }
+
+            // Audit entries referencing this user (raw JSON objects, as stored).
+            const auto lines =
+                ctx.collect_audit_lines_for_actor(user.username, 5000);
+            payload["auditEntries"] = crow::json::wvalue::list();
+            for (size_t i = 0; i < lines.size(); ++i)
+              payload["auditEntries"][i] = lines[i];
+            payload["auditEntryCount"] = static_cast<int>(lines.size());
+
+            AuditEvent evt;
+            evt.id = ctx.next_audit_id.fetch_add(1);
+            evt.type = "user.data.export";
+            evt.actor = auth->user;
+            evt.role = auth->role;
+            evt.createdAt = now_utc();
+            evt.payloadJson = "{\"subjectUserId\":" + std::to_string(user_id) +
+                              ",\"self\":" + (is_self ? "true" : "false") + "}";
+            evt.payloadIsJson = true;
+            ctx.append_audit(evt);
             return crow::response{payload};
           });
 
@@ -2487,6 +2566,24 @@ void register_audit_routes(CrowApp &app, AppContext &ctx) {
         ++index;
       }
     }
+    return crow::response{payload};
+  });
+
+  // GET /api/audit/verify — recompute the tamper-evidence chain over the
+  // on-disk audit log and report whether it is intact (PCI 10.5 / NIST AU-9).
+  CROW_ROUTE(app, "/api/audit/verify")([&ctx](const crow::request &request) {
+    auto auth = ctx.find_auth(request);
+    if (!auth) return crow::response(401, "Unauthorized");
+    if (!has_permission(ctx, *auth, "audit.read"))
+      return crow::response(403, "Forbidden");
+
+    const auto check = ctx.verify_audit_chain();
+    crow::json::wvalue payload;
+    payload["status"] = "ok";
+    payload["intact"] = check.ok;
+    payload["lines"] = check.lines;
+    payload["firstBrokenLine"] = check.firstBrokenLine;
+    payload["keyed"] = !ctx.audit_hmac_key.empty();
     return crow::response{payload};
   });
 }

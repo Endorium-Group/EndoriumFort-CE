@@ -991,6 +991,10 @@ crow::response handle_proxy_request(
       rewritten += "; " + parts[i];
     }
     if (!has_path) rewritten += "; " + scoped_path;
+    // The bastion→browser leg is HTTPS (nginx TLS); re-assert Secure so the
+    // rewritten cookie isn't sent over a downgraded/plaintext connection. The
+    // target's own Secure flag was skipped above to avoid duplication.
+    if (request_uses_https(request)) rewritten += "; Secure";
     return rewritten;
   };
 
@@ -1038,6 +1042,7 @@ crow::response handle_proxy_request(
     std::string cookie_value = "endoriumfort_token=" + token +
                                "; Path=/proxy/" + std::to_string(resource_id) +
                                "/; HttpOnly; SameSite=Lax";
+    if (request_uses_https(request)) cookie_value += "; Secure";
     resp.add_header("Set-Cookie", cookie_value);
   }
 

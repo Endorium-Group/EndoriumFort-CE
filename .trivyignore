@@ -1,0 +1,9 @@
+# Trivy ignore file — accepted findings, each with justification.
+
+# AVD-DS-0002: "Specify a USER instruction (non-root)".
+# The entrypoint must start as root so nginx can bind 80/443 and certbot can write
+# /etc/letsencrypt. It immediately drops the backend — the main attack surface
+# (auth, HTTP proxy, RBI) — to the unprivileged 'endoriumfort' user via gosu, and
+# nginx runs its workers non-root. Full non-root would require moving nginx to
+# high ports and reworking deployments; tracked separately.
+AVD-DS-0002

@@ -85,6 +85,13 @@ namespace license {
 bool gate_before(const crow::request &req, crow::response &res);
 }
 
+// Defined in app_context.cc. Returns true if the authenticated user must enrol
+// a second factor before the target route may run, in which case it has set a
+// 403 response and the handler must be skipped.
+namespace mfa_gate {
+bool before(const crow::request &req, crow::response &res);
+}
+
 struct SecurityHeadersMiddleware {
   struct context {};
 
@@ -92,6 +99,10 @@ struct SecurityHeadersMiddleware {
                      context & /*ctx*/) {
     if (license::gate_before(req, res)) {
       res.end();  // short-circuit: premium feature not licensed
+      return;
+    }
+    if (mfa_gate::before(req, res)) {
+      res.end();  // short-circuit: second factor not yet enrolled
     }
   }
 

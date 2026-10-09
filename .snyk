@@ -1,0 +1,104 @@
+# Snyk (https://snyk.io) policy file — triage of static-analysis (Snyk Code) findings.
+# Each ignore records WHY the finding is a false positive or an accepted risk, after
+# manual review. Real issues are fixed in code, not ignored here.
+version: v1.25.0
+
+# Never scan third-party / generated trees. node_modules is gitignored but gets
+# scanned when present in the workspace — e.g. @novnc/novnc's internal RFB RA2
+# crypto (AES, hashes) is dictated by the VNC protocol, not our code.
+exclude:
+  global:
+    - "**/node_modules/**"
+    - "frontend/dist/**"
+
+ignore:
+  # ── Go agent: accepted-by-design (tunnel/relay client) ──
+  go/TooPermissiveTrustManager:
+    - "agent/**":
+        reason: >-
+          The agent pins the bastion's certificate (agent/tlspin.go): it dials with
+          InsecureSkipVerify only to READ the server cert and compare it to the
+          configured pin — trust is enforced by the pin, not the CA chain.
+        expires: 2027-10-06T00:00:00.000Z
+  go/Ssrf:
+    - "agent/**":
+        reason: >-
+          The agent connects to operator-designated targets (its job as a tunnel/
+          relay). Destinations come from authenticated bastion tickets, not from
+          unauthenticated external input.
+        expires: 2027-10-06T00:00:00.000Z
+
+  # ── Backend (C++): reviewed false positives / defense-in-depth ──
+  cpp/WebCookieSecureDisabledByDefault:
+    - "backend/**":
+        reason: >-
+          Auth/SSO/proxy cookies set `Secure` conditionally on request_uses_https()
+          (build_auth_cookie, http_proxy.cc). Setting it unconditionally would break
+          plaintext/dev access and the cookie would not be sent at all over HTTP.
+        expires: 2027-10-06T00:00:00.000Z
+  cpp/WeakGuard:
+    - "backend/**":
+        reason: >-
+          Hostname/loopback string checks are a first pass; real SSRF enforcement is
+          the numeric inet_pton range check in AppContext::is_safe_target (blocks
+          127/8, 169.254/16, 0/8, cloud metadata). Defense-in-depth, not the sole guard.
+        expires: 2027-10-06T00:00:00.000Z
+  cpp/IntegerOverflow:
+    - "backend/**":
+        reason: >-
+          Low-severity size/offset arithmetic on bounded inputs (lengths already
+          validated upstream). No exploitable overflow found in review; tracked for a
+          dedicated arithmetic-hardening pass rather than piecemeal suppression.
+        expires: 2027-10-06T00:00:00.000Z
+  cpp/InsecureStorage:
+    - "backend/src/database.h":
+        reason: >-
+          SQLite handle. Sensitive values (vault secrets) are AES-256-GCM encrypted at
+          the application layer BEFORE being written, so the at-rest store holds
+          ciphertext, not plaintext credentials.
+        expires: 2027-10-06T00:00:00.000Z
+  cpp/UserControlledPointer:
+    - "backend/**":
+        reason: >-
+          All three sinks are crypto::sha256(str.data(), str.size()) reaching the
+          std::vector<uint8_t>(data, data + len) range-construction idiom, where the
+          pointer and length come from the SAME std::string — so `data + len` is a
+          valid one-past-the-end iterator and can never be out of bounds regardless of
+          the string's content. There is no independent user-controlled length or
+          pointer value. The hashed input is the server-stored challenge rpId (webauthn
+          login/register) or the WebAuthn clientDataJSON the protocol requires hashing;
+          hashing arbitrary bytes is inherently safe. Verified data flow 2026-10-07.
+        expires: 2027-10-06T00:00:00.000Z
+
+  # ── Frontend (JS): reviewed false positives ──
+  javascript/InsufficientPostmessageValidation:
+    - "frontend/**":
+        reason: >-
+          These are WebSocket `message` events (socket.addEventListener('message')),
+          not cross-origin window.postMessage. The WS is same-origin + token-authed and
+          payloads are validated in the handlers (JSON.parse guarded, binary framing).
+        expires: 2027-10-06T00:00:00.000Z
+  javascript/DOMXSS:
+    - "frontend/**":
+        reason: >-
+          The flagged sink is an app-constructed `endoriumfort://` deep link assigned to
+          location.href (and window.open with fixed args) — no HTML injection sink
+          (no innerHTML/dangerouslySetInnerHTML anywhere in the app).
+        expires: 2027-10-06T00:00:00.000Z
+  javascript/NoHardcodedPasswords:
+    - "frontend/src/i18n.jsx":
+        reason: >-
+          i18n.jsx is the UI translation catalog; the flagged strings are display
+          labels ("Password", "Current password"…), not credentials.
+        expires: 2027-10-06T00:00:00.000Z
+  javascript/HardcodedNonCryptoSecret:
+    - "frontend/src/i18n.jsx":
+        reason: >-
+          UI translation labels (e.g. "Manual secret" for the TOTP setup screen), not
+          secrets.
+        expires: 2027-10-06T00:00:00.000Z
+  javascript/HardcodedSecret:
+    - "frontend/**":
+        reason: >-
+          No first-party hardcoded secret; the only match was in excluded node_modules.
+        expires: 2027-10-06T00:00:00.000Z

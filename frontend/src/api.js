@@ -40,18 +40,42 @@ function notifyLicenseRequired(detail) {
   } catch (_) {}
 }
 
+let lastMfaEnrollRequiredAt = 0;
+
+// The server-side MFA gate replies 403 `{error:"mfa_enrollment_required"}` when
+// the authenticated user must enrol a second factor before any protected route
+// may run (ENDORIUMFORT_REQUIRE_MFA). Surface it so the SPA routes to enrolment.
+function notifyMfaEnrollmentRequired(detail) {
+  const now = Date.now();
+  if (now - lastMfaEnrollRequiredAt < 1000) return;
+  lastMfaEnrollRequiredAt = now;
+  try {
+    window.dispatchEvent(new CustomEvent('endoriumfort:mfa-enrollment-required', { detail }));
+  } catch (_) {}
+}
+
 async function ensureResponseOk(response, fallbackMessage) {
   if (response.status === 401) {
     notifyUnauthorized();
     throw new Error('Session expired. Please login again.');
   }
-  if (response.status === 403 && response.headers.get('X-EndoriumFort-License-Required') === '1') {
-    let detail = {};
+  if (response.status === 403) {
+    if (response.headers.get('X-EndoriumFort-License-Required') === '1') {
+      let detail = {};
+      try {
+        detail = await response.clone().json();
+      } catch (_) {}
+      notifyLicenseRequired(detail);
+      throw new Error(detail.feature ? `License required for ${detail.feature}` : 'License required');
+    }
+    let body = null;
     try {
-      detail = await response.clone().json();
+      body = await response.clone().json();
     } catch (_) {}
-    notifyLicenseRequired(detail);
-    throw new Error(detail.feature ? `License required for ${detail.feature}` : 'License required');
+    if (body && body.error === 'mfa_enrollment_required') {
+      notifyMfaEnrollmentRequired(body);
+      throw new Error(body.message || 'Multi-factor authentication enrollment required');
+    }
   }
   if (!response.ok) {
     const message = await response.text();
@@ -382,6 +406,15 @@ export async function fetchAudit() {
   return response.json();
 }
 
+// Recompute the tamper-evidence hash chain over the on-disk audit log.
+export async function verifyAuditChain() {
+  const response = await fetch('/api/audit/verify', {
+    headers: withAuthHeaders()
+  });
+  await ensureResponseOk(response, 'Failed to verify audit integrity');
+  return response.json();
+}
+
 // Download a graphical RBI recording (.efr) as an ArrayBuffer (EE feature).
 export async function fetchRbiRecording(recId) {
   const response = await fetch(`/api/recordings/${recId}/rbi`, {
@@ -558,6 +591,15 @@ export async function getUserResourcePermissions(userId) {
     headers: withAuthHeaders()
   });
   await ensureResponseOk(response, 'Failed to fetch permissions');
+  return response.json();
+}
+
+// RGPD subject access / portability: all personal data held about one user.
+export async function exportUserData(userId) {
+  const response = await fetch(`/api/users/${userId}/data-export`, {
+    headers: withAuthHeaders()
+  });
+  await ensureResponseOk(response, 'Failed to export user data');
   return response.json();
 }
 

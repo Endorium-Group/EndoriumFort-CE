@@ -178,6 +178,9 @@ struct AuthSession {
   std::string token;
   std::string issuedAt;
   std::string expiresAt;
+  // Epoch seconds of the last authenticated request on this session; drives the
+  // inactivity timeout. 0 means "not yet touched" (treated as just-issued).
+  int64_t lastSeenEpoch = 0;
 };
 
 struct AuditEvent {

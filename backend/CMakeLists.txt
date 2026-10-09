@@ -34,6 +34,24 @@ if (NOT LibSSH2_FOUND)
   endif()
 endif()
 
+# Database-at-rest encryption: prefer SQLCipher (a drop-in SQLite fork with
+# transparent AES-256) when available, so setting ENDORIUMFORT_DB_ENCRYPTION_KEY
+# encrypts the SQLite file (PCI 3.5 / RGPD art.32 / HDS). The sqlite3_* API is
+# identical, so the only code difference is a PRAGMA key at open time. Falls
+# back to plain SQLite3 when SQLCipher is absent (encryption then unavailable,
+# and the binary refuses to start if a key is set — see database.h).
+find_package(PkgConfig QUIET)
+set(EF_DB_LIB SQLite::SQLite3)
+if (PkgConfig_FOUND)
+  pkg_check_modules(SQLCIPHER QUIET IMPORTED_TARGET sqlcipher)
+  if (TARGET PkgConfig::SQLCIPHER)
+    set(EF_DB_LIB PkgConfig::SQLCIPHER)
+    message(STATUS "EndoriumFort: using SQLCipher for database-at-rest encryption")
+  else()
+    message(STATUS "EndoriumFort: SQLCipher not found; DB encryption unavailable (plain SQLite3)")
+  endif()
+endif()
+
 # Version is now managed by build-all.sh/ps1 (change-detection based).
 # Manual fallback: increment on every build if version.h is missing.
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/version.h")
@@ -131,7 +149,7 @@ else()
   target_sources(endoriumfort_backend PRIVATE src/pro_stub.cc)
 endif()
 
-target_link_libraries(endoriumfort_backend PRIVATE SQLite::SQLite3 OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(endoriumfort_backend PRIVATE ${EF_DB_LIB} OpenSSL::SSL OpenSSL::Crypto)
 
 if (LibSSH2_FOUND)
   target_link_libraries(endoriumfort_backend PRIVATE LibSSH2::LibSSH2)
@@ -309,11 +327,12 @@ if (BUILD_TESTING)
 
   target_link_libraries(endoriumfort_backend_tests PRIVATE OpenSSL::Crypto)
   target_link_libraries(endoriumfort_backend_auth_mfa_tests PRIVATE OpenSSL::Crypto)
-  target_link_libraries(endoriumfort_backend_runtime_config_tests PRIVATE OpenSSL::Crypto SQLite::SQLite3)
+  target_link_libraries(endoriumfort_backend_runtime_config_tests PRIVATE OpenSSL::Crypto ${EF_DB_LIB})
   target_link_libraries(endoriumfort_backend_scim_query_tests PRIVATE OpenSSL::Crypto)
   if (ENDORIUMFORT_PRO)  # pro test libs
-  target_link_libraries(endoriumfort_backend_scim_routes_tests PRIVATE SQLite::SQLite3 OpenSSL::SSL OpenSSL::Crypto)
-  target_link_libraries(endoriumfort_backend_security_alerts_tests PRIVATE SQLite::SQLite3 OpenSSL::SSL OpenSSL::Crypto)
+  target_link_libraries(endoriumfort_backend_scim_routes_tests PRIVATE ${EF_DB_LIB} OpenSSL::SSL OpenSSL::Crypto)
+  target_link_libraries(endoriumfort_backend_security_alerts_tests PRIVATE ${EF_DB_LIB} OpenSSL::SSL OpenSSL::Crypto)
+  target_link_libraries(endoriumfort_backend_vault_gen_tests PRIVATE OpenSSL::Crypto)
   endif()
   target_link_libraries(endoriumfort_backend_license_tests PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 
