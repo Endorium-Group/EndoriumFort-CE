@@ -21,7 +21,7 @@ jobs:
     name: IaC / Dockerfile misconfig
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Trivy config scan
         uses: aquasecurity/trivy-action@0.28.0
         with:
@@ -35,7 +35,7 @@ jobs:
     name: Shipped dependency CVEs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Trivy filesystem scan
         uses: aquasecurity/trivy-action@0.28.0
         with:
