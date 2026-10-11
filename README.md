@@ -27,44 +27,44 @@ SSH in the browser · isolated web access · credential vault · MFA & passkeys 
 
 <br><br>
 
-[**Quick start**](#-quick-start) ·
-[**Features**](#-features) ·
-[**Editions**](#-community-vs-enterprise) ·
-[**Configuration**](#%EF%B8%8F-configuration) ·
-[**Development**](#%EF%B8%8F-development) ·
-[**API**](#-api-overview) ·
+[**Quick start**](#quick-start) ·
+[**Features**](#features) ·
+[**Editions**](#community-vs-enterprise) ·
+[**Configuration**](#configuration) ·
+[**Development**](#development) ·
+[**API**](#api-overview) ·
 [**Docs**](docs/index.md)
 
 </div>
 
 ---
 
-## 🛡️ What is EndoriumFort?
+## What is EndoriumFort?
 
 EndoriumFort is a **sovereign, self-hosted PAM bastion**. Operators sign in once,
 then reach their servers and internal web applications **through** the bastion.
 Credentials stay on the server side and every action is recorded in the audit trail.
 
-- 🏰 **Single-tenant and self-hosted.** Runs on your own hardware and works air-gapped.
-- 🔑 **Credentials never reach the operator.** Secrets are injected server-side and encrypted at rest.
-- 🧾 **Tamper-evident audit.** Audit lines are hash-chained (optionally HMAC-keyed) and can be verified through the API.
-- ⚡ **Lightweight.** One C++ binary, one SQLite file and an Nginx front end.
+- **Single-tenant and self-hosted.** Runs on your own hardware and works air-gapped.
+- **Credentials never reach the operator.** Secrets are injected server-side and encrypted at rest.
+- **Tamper-evident audit.** Audit lines are hash-chained (optionally HMAC-keyed) and can be verified through the API.
+- **Lightweight.** One C++ binary, one SQLite file and an Nginx front end.
 
 > [!NOTE]
 > This repository is the **Community Edition (CE)**. EndoriumFort follows an
 > [open-core model](docs/OPEN-CORE.md): Enterprise features are **not present in
 > this code base**, and their routes return `404` in CE builds.
-> See [Community vs Enterprise](#-community-vs-enterprise).
+> See [Community vs Enterprise](#community-vs-enterprise).
 
 ---
 
-## ✨ Features
+## Features
 
 <table>
 <tr>
 <td width="50%" valign="top">
 
-### 🔐 Access
+### Access
 - **Web SSH terminal**: full xterm.js terminal over WebSocket, with credentials injected server-side
 - **HTTP/HTTPS reverse proxy**: open internal web apps through `/proxy/<id>` with cookie-based auth and no tokens in URLs
 - **Remote Browser Isolation (RBI)**: a throwaway headless Chromium runs server-side and only pixels are streamed to the operator (Linux)
@@ -74,7 +74,7 @@ Credentials stay on the server side and every action is recorded in the audit tr
 </td>
 <td width="50%" valign="top">
 
-### 🪪 Identity & authentication
+### Identity & authentication
 - **scrypt** password hashing, with transparent migration of legacy hashes
 - **TOTP 2FA** (RFC 6238) with QR code enrolment
 - **WebAuthn / passkeys**
@@ -87,7 +87,7 @@ Credentials stay on the server side and every action is recorded in the audit tr
 <tr>
 <td valign="top">
 
-### 🗝️ Secrets & data protection
+### Secrets & data protection
 - **Credential vault**: AES-256-GCM encryption at rest, with key rotation through `ENDORIUMFORT_VAULT_KEY_OLD`
 - **Ephemeral credentials**: one-time credential leases per resource
 - **Database encryption**: the whole SQLite file is encrypted when the binary is built against **SQLCipher**
@@ -96,7 +96,7 @@ Credentials stay on the server side and every action is recorded in the audit tr
 </td>
 <td valign="top">
 
-### 📜 Governance & audit
+### Governance & audit
 - Role baseline + per-user **resource scope** + per-resource **access policy**
 - **Session risk preview** before access is opened
 - **Hash-chained audit log** (`/api/audit/verify`), with configurable rotation and retention
@@ -109,7 +109,7 @@ Credentials stay on the server side and every action is recorded in the audit tr
 
 ---
 
-## 🧭 Community vs Enterprise
+## Community vs Enterprise
 
 | Capability | CE | EE |
 |---|:---:|:---:|
@@ -132,17 +132,17 @@ In CE the premium code is **absent at build time**: `backend/src/pro_stub.cc` an
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```mermaid
 flowchart LR
-    U["🧑‍💻 Operator<br/>browser"] -- "HTTPS / WSS" --> N["Nginx<br/>:80 → :443 (TLS, ACME)"]
+    U["Operator<br/>browser"] -- "HTTPS / WSS" --> N["Nginx<br/>:80 → :443 (TLS, ACME)"]
     N -- "/api, /api/ws, /proxy" --> B["EndoriumFort backend<br/>C++17 · Crow · :8080"]
     N -- "static SPA" --> F["React 19 frontend"]
     B --> DB[("SQLite / SQLCipher<br/>/app/data")]
     B --> A[["Audit log<br/>hash-chained JSONL"]]
-    B -- "SSH (libssh2)" --> T1["🖥️ Linux servers"]
-    B -- "HTTP/HTTPS proxy" --> T2["🌐 Internal web apps"]
+    B -- "SSH (libssh2)" --> T1["Linux servers"]
+    B -- "HTTP/HTTPS proxy" --> T2["Internal web apps"]
     B -- "Headless Chromium (RBI)" --> T2
 ```
 
@@ -164,9 +164,9 @@ EndoriumFort-CE/
 
 ---
 
-## 🚀 Quick start
+## Quick start
 
-### 🐳 Option 1: Docker (recommended)
+### Option 1: Docker (recommended)
 
 The Community image is published to GHCR (and Docker Hub) with the `community`
 tag and versioned `<version>-ce` tags.
@@ -212,7 +212,7 @@ docker build --build-arg EDITION=community -t endoriumfort-ce .
 
 </details>
 
-### 📦 Option 2: Debian / Ubuntu package
+### Option 2: Debian / Ubuntu package
 
 ```bash
 curl -fsSL https://endorium-group.github.io/EndoriumFort-CE/endoriumfort-archive-keyring.asc \
@@ -226,7 +226,7 @@ This installs a hardened `endoriumfort` systemd service, configured through
 `/etc/endoriumfort/endoriumfort.env`, plus an Nginx site. The `.deb` is also
 attached to every [GitHub release](https://github.com/Endorium-Group/EndoriumFort-CE/releases).
 
-### ☸️ Option 3: Kubernetes (Helm)
+### Option 3: Kubernetes (Helm)
 
 ```bash
 helm install ef oci://ghcr.io/endorium-group/charts/endoriumfort \
@@ -242,7 +242,7 @@ helm install ef oci://ghcr.io/endorium-group/charts/endoriumfort \
 The chart deploys a single replica on purpose, because SQLite has one writer.
 k3s and Traefik examples are in [deploy/helm/endoriumfort](deploy/helm/endoriumfort/README.md).
 
-### 🔑 First login
+### First login
 
 The repository contains **no default password**. On first start, the backend creates an
 `admin` account with a **random one-time password** and prints it once to the logs.
@@ -253,7 +253,7 @@ At the first sign-in, the `admin` account must **change its password** and
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
 The backend is configured entirely through environment variables. When it starts, it
 logs the effective configuration without printing secrets.
@@ -322,7 +322,7 @@ logs the effective configuration without printing secrets.
 
 ---
 
-## 🛠️ Development
+## Development
 
 ### Prerequisites
 
@@ -397,7 +397,7 @@ cosign verify ghcr.io/endorium-group/endoriumfort:<version>-ce \
 
 ---
 
-## 📡 API overview
+## API overview
 
 All endpoints sit under `/api`. Authentication uses a Bearer token or a secure cookie.
 The admin console guide is in [docs/admin-console.md](docs/admin-console.md).
@@ -423,7 +423,7 @@ The admin console guide is in [docs/admin-console.md](docs/admin-console.md).
 
 ---
 
-## 🔒 Security
+## Security
 
 - Please report vulnerabilities **privately**, as described in [SECURITY.md](SECURITY.md). Do not open public issues for them.
 - Security fixes are only provided for the **latest tagged release**.
@@ -435,20 +435,20 @@ and do a login/session smoke test → if something fails, roll back to the previ
 
 ---
 
-## 📄 License
+## License
 
 EndoriumFort CE is released under the **EndoriumFort Community Edition Source-Available
 License v1.1** ([LICENSE](LICENSE)):
 
-- ✅ **Free** for personal, educational, research, evaluation and internal non-production use.
-- 💼 **Commercial or production use** requires an **Enterprise licence**.
-- 🔁 Modified versions may only be distributed as pull requests to the original repository.
+- **Free** for personal, educational, research, evaluation and internal non-production use.
+- **Commercial or production use** requires an **Enterprise licence**.
+- Modified versions may only be distributed as pull requests to the original repository.
 
 > This is a source-available licence, **not** an OSI-approved open-source licence.
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome through pull requests. Please follow the
 [PR template](.github/pull_request_template.md), keep changes focused, and make sure
