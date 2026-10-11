@@ -9,10 +9,12 @@
 
 services:
   endoriumfort:
-    image: ${DOCKER_IMAGE:-nergyr/endoriumfort}:${DOCKER_TAG:-latest}
+    image: ${DOCKER_IMAGE:-ghcr.io/endorium-group/endoriumfort}:${DOCKER_TAG:-community}
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        EDITION: community
     container_name: endoriumfort
     restart: unless-stopped
     ports:

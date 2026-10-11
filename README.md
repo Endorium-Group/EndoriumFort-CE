@@ -191,19 +191,18 @@ Then open **https://localhost**. The bundled certificate is self-signed; set
 git clone https://github.com/Endorium-Group/EndoriumFort-CE.git
 cd EndoriumFort-CE
 
-# Simple profile
-DOCKER_IMAGE=ghcr.io/endorium-group/endoriumfort DOCKER_TAG=community \
-  docker compose up -d
+# Simple profile (defaults to ghcr.io/endorium-group/endoriumfort:community)
+docker compose up -d
 
 # Hardened production profile (no-new-privileges, resource limits, log rotation)
-cp .env.prod.example .env.prod      # set DOCKER_IMAGE/DOCKER_TAG, domain, WebAuthn, ACME
+cp .env.prod.example .env.prod      # pin DOCKER_TAG (<version>-ce), set domain, WebAuthn, ACME
 ./run-prod.sh start                 # start | stop | restart | logs | status | pull | update | config
 ```
 
 > `docker-compose.prod.yml` joins an external `edge` network. Create it once with
 > `docker network create edge`.
 
-To build the Community image locally:
+To build the Community image locally (`docker compose build` already passes `EDITION=community`):
 
 ```bash
 docker build --build-arg EDITION=community -t endoriumfort-ce .
