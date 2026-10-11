@@ -41,7 +41,7 @@ test('bootstrap admin can rotate password and enable TOTP MFA', async ({ page })
   await page.goto('/');
   await page.getByLabel('User').fill(username);
   await page.getByLabel('Password').fill(password);
-  await page.getByRole('button', { name: /Sign in/i }).click();
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
 
   const bootstrapHeading = page.getByRole('heading', {
     name: 'Secure the default admin account'
@@ -81,7 +81,7 @@ test('bootstrap admin exposes passkey option when MFA is pending', async ({ page
   await page.goto('/');
   await page.getByLabel('User').fill(username);
   await page.getByLabel('Password').fill(password);
-  await page.getByRole('button', { name: /Sign in/i }).click();
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
 
   const bootstrapHeading = page.getByRole('heading', {
     name: 'Secure the default admin account'
