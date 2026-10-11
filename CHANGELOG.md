@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Community Edition login
+
+- Hide the "Sign in with SSO (OIDC)" button in the Community build: SSO is Enterprise-only and its routes are absent from the CE backend (the button led to a 404). The edition is resolved at build time from the `@pro` overlay (`__EF_EDITION__` in `vite.config.js`).
+
+### E2E tests
+
+- The bootstrap admin spec now exercises the whole first-login flow (password rotation, passkey option, TOTP enrolment, then a re-login that asks for the authenticator code) instead of skipping itself. The specs run in order on one worker, the bootstrap one after the login one, and its fallback new password meets the 12-character minimum.
+
 ## 1.2.3 - 2026-09-24
 
 ### Security
