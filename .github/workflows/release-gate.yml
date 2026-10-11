@@ -141,6 +141,10 @@ jobs:
 
       - name: Start backend
         working-directory: backend/build
+        # No default password ships in the binary: inject the bootstrap admin
+        # password the e2e specs log in with.
+        env:
+          ENDORIUMFORT_BOOTSTRAP_ADMIN_PASSWORD: Admin123
         run: ./endoriumfort_backend > ../../backend-e2e.log 2>&1 &
 
       - name: Start frontend dev server
@@ -193,16 +197,21 @@ jobs:
   agent-gate:
     name: Agent Gate
     runs-on: ubuntu-latest
+    # The Go agent is Enterprise-only: the Community repo has no agent/ tree,
+    # so every Go step is skipped there (hashFiles() is only valid per step).
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
+        if: hashFiles('agent/go.mod') != ''
         with:
           go-version: "1.25.13"
           cache-dependency-path: agent/go.sum
       - name: Agent tests
+        if: hashFiles('agent/go.mod') != ''
         working-directory: agent
         run: go test ./...
       - name: Agent build
+        if: hashFiles('agent/go.mod') != ''
         working-directory: agent
         run: go build ./...
 
@@ -225,13 +234,16 @@ jobs:
           npm ci
           npm audit --omit=dev --audit-level=high
 
+      # Go steps only apply when the (Enterprise-only) agent/ tree is present.
       - name: Setup Go
+        if: hashFiles('agent/go.mod') != ''
         uses: actions/setup-go@v6
         with:
           go-version: "1.25.13"
           cache-dependency-path: agent/go.sum
 
       - name: Go vulnerability check
+        if: hashFiles('agent/go.mod') != ''
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           cd agent
