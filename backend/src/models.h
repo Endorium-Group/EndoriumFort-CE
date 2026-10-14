@@ -178,9 +178,6 @@ struct AuthSession {
   std::string token;
   std::string issuedAt;
   std::string expiresAt;
-  // Epoch seconds of the last authenticated request on this session; drives the
-  // inactivity timeout. 0 means "not yet touched" (treated as just-issued).
-  int64_t lastSeenEpoch = 0;
 };
 
 struct AuditEvent {
@@ -191,6 +188,20 @@ struct AuditEvent {
   std::string createdAt;
   std::string payloadJson;
   bool payloadIsJson = false;
+};
+
+// A registered mobile device for push notifications (approvals/MFA) and, when a
+// public key is provided, signed approvals. One user may register several.
+struct UserDevice {
+  int id = 0;
+  int userId = 0;
+  std::string platform;      // "ios" | "android"
+  std::string label;         // user-friendly name ("Alice's iPhone")
+  std::string pushProvider;  // "fcm" | "apns" | "unifiedpush" | "none"
+  std::string pushToken;     // provider token, or UnifiedPush endpoint URL
+  std::string publicKey;     // device public key (SPKI, base64url) for signed approvals
+  std::string createdAt;
+  std::string lastSeenAt;
 };
 
 struct SessionEvent {
@@ -233,14 +244,25 @@ class SessionRecorder;
 #ifdef ENDORIUMFORT_SSH_ENABLED
 #ifndef _WIN32
 #include <libssh2.h>
+namespace crow { namespace websocket { struct connection; } }
 struct SshConnection {
   int socket_fd = -1;
+  // Browser terminal currently attached. Null while detached: the page was
+  // reloaded or closed and the shell waits a grace period to be resumed.
+  // Output produced meanwhile is kept (last 64 KB) and replayed on resume.
+  std::mutex client_mutex;
+  crow::websocket::connection *client = nullptr;
+  std::string backlog;
   LIBSSH2_SESSION *session = nullptr;
   LIBSSH2_CHANNEL *channel = nullptr;
   std::thread reader;
   std::atomic<bool> running{false};
   std::mutex write_mutex;
   int session_id = 0;
+  // Who opened this websocket (set when it is accepted).
+  int auth_user_id = 0;
+  std::string auth_user;
+  std::string auth_role;
   bool command_guard_enabled = false;
   // Session recording
   std::shared_ptr<SessionRecorder> recorder;

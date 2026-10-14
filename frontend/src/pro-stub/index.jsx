@@ -5,35 +5,52 @@
 // components keep imports valid. Premium tabs/sections are already gated in
 // App.jsx (locked → upsell modal), so in CE these never actually render — and
 // their heavy dependencies (e.g. @novnc) never enter the CE bundle.
-export function RecordingsPanel() {
-  return null;
-}
+import React from 'react';
+import { useI18n } from '../i18n.jsx';
 
 export function VncViewerModal() {
   return null;
 }
 
-export function EnterpriseIamPanel() {
+// Evidence & replay page: the Community build only explains what the section is.
+export function EvidencePage({ onUnlock }) {
+  const { t } = useI18n();
+  return (
+    <div className="ef ef-page ef-reqpage">
+      <section className="ef-card ef-soon">
+        <h1>{t('shell.evidence')}</h1>
+        <p>{t('evidence.locked')}</p>
+        <button type="button" className="ef-btn" onClick={() => onUnlock?.(t('shell.evidence'), 'pro')}>{t('req.unlock')}</button>
+      </section>
+    </div>
+  );
+}
+
+export function JitPage() {
   return null;
 }
 
-export function RelayControlPanel() {
+export function RelaysPage() {
   return null;
 }
 
-export function JitGovernancePanel() {
+export function VaultPage() {
   return null;
 }
 
-export function VaultPanel() {
+export function ThreatsPage() {
   return null;
 }
 
-export function ItdrPanel() {
+export function IntegrationsPage() {
   return null;
 }
 
-export function K8sPanel() {
+export function AppearancePage() {
+  return null;
+}
+
+export function KubernetesPage() {
   return null;
 }
 

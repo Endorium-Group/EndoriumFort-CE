@@ -6,10 +6,19 @@
 #   docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
 #   docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f
 #   docker compose --env-file .env.prod -f docker-compose.prod.yml down
+#
+# Storage. Two supported modes:
+#   * SQLite (default) — embedded file on the ef-data volume. Single node.
+#   * PostgreSQL       — set ENDORIUMFORT_DB_DSN and start the bundled server
+#                        with the "postgres" profile:
+#       docker compose --env-file .env.prod -f docker-compose.prod.yml \
+#         --profile postgres up -d
+#     Point ENDORIUMFORT_DB_DSN at an external cluster instead and the bundled
+#     service stays stopped (omit the profile).
 
 services:
   endoriumfort:
-    image: ${DOCKER_IMAGE:-ghcr.io/endorium-group/endoriumfort}:${DOCKER_TAG:-0.6.18-ce}
+    image: ${DOCKER_IMAGE:-nergyr/endoriumfort}:${DOCKER_TAG:-1.0.3}
     container_name: endoriumfort
     restart: unless-stopped
 
@@ -43,6 +52,21 @@ services:
       - ENDORIUMFORT_RELAY_ENROLL_TOKEN_TTL_SECONDS=${ENDORIUMFORT_RELAY_ENROLL_TOKEN_TTL_SECONDS:-600}
       - ENDORIUMFORT_RELAY_TOKEN_TTL_SECONDS=${ENDORIUMFORT_RELAY_TOKEN_TTL_SECONDS:-86400}
       - ENDORIUMFORT_RELAY_HEARTBEAT_STALE_SECONDS=${ENDORIUMFORT_RELAY_HEARTBEAT_STALE_SECONDS:-90}
+      # Empty → the embedded SQLite file. A "postgresql://..." URI switches the
+      # store at runtime; no image change is needed.
+      - ENDORIUMFORT_DB_DSN=${ENDORIUMFORT_DB_DSN:-}
+      # Audit-event export to a SIEM / log platform (Enterprise licence).
+      # Unset means no export and no background worker. The full variable set
+      # is in docs/siem-logging.md; these are the ones a syslog collector needs.
+      - ENDORIUMFORT_SIEM_HOSTNAME=${ENDORIUMFORT_SIEM_HOSTNAME:-}
+      - ENDORIUMFORT_SIEM_SYSLOG_ENABLED=${ENDORIUMFORT_SIEM_SYSLOG_ENABLED:-0}
+      - ENDORIUMFORT_SIEM_SYSLOG_HOST=${ENDORIUMFORT_SIEM_SYSLOG_HOST:-}
+      - ENDORIUMFORT_SIEM_SYSLOG_PORT=${ENDORIUMFORT_SIEM_SYSLOG_PORT:-514}
+      - ENDORIUMFORT_SIEM_SYSLOG_PROTOCOL=${ENDORIUMFORT_SIEM_SYSLOG_PROTOCOL:-udp}
+      - ENDORIUMFORT_SIEM_WEBHOOK_ENABLED=${ENDORIUMFORT_SIEM_WEBHOOK_ENABLED:-0}
+      - ENDORIUMFORT_SIEM_WEBHOOK_URL=${ENDORIUMFORT_SIEM_WEBHOOK_URL:-}
+      - ENDORIUMFORT_SIEM_WEBHOOK_TOKEN=${ENDORIUMFORT_SIEM_WEBHOOK_TOKEN:-}
+      - ENDORIUMFORT_SIEM_WEBHOOK_NDJSON=${ENDORIUMFORT_SIEM_WEBHOOK_NDJSON:-0}
 
     security_opt:
       - no-new-privileges:true
@@ -70,8 +94,54 @@ services:
       start_period: 20s
       retries: 5
 
+  # Bundled PostgreSQL. Only started with `--profile postgres`; an external
+  # cluster is the better choice when you already run one.
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:17-alpine}
+    container_name: endoriumfort-postgres
+    restart: unless-stopped
+    profiles: ["postgres"]
+
+    networks:
+      - default
+
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-endoriumfort}
+      - POSTGRES_USER=${POSTGRES_USER:-endoriumfort}
+      # No default: the stack must not come up with a guessable password.
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}
+      # Keeps indexes deterministic across base-image upgrades.
+      - POSTGRES_INITDB_ARGS=--data-checksums
+
+    volumes:
+      - ef-postgres:/var/lib/postgresql/data
+
+    # Not published: only the bastion talks to it, over the compose network.
+    expose:
+      - "5432"
+
+    security_opt:
+      - no-new-privileges:true
+
+    stop_grace_period: 30s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-endoriumfort} -d ${POSTGRES_DB:-endoriumfort}"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 10
+
 volumes:
   ef-data:
+    driver: local
+  ef-postgres:
     driver: local
   ef-recordings:
     driver: local

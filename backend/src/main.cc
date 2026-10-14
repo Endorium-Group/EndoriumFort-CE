@@ -5,9 +5,14 @@
 #include "app_context.h"
 #include "http_proxy.h"
 #include "runtime_config.h"
+#include "settings.h"
 #include "routes.h"
 #include "security_middleware.h"
 #include "ssh.h"
+
+#ifndef _WIN32
+#include <csignal>
+#endif
 
 #ifdef ENDORIUMFORT_SSH_ENABLED
 #ifndef _WIN32
@@ -16,6 +21,16 @@
 #endif
 
 int main() {
+#ifndef _WIN32
+  // Writing to a socket whose peer has gone raises SIGPIPE, whose default
+  // action terminates the process. Every outbound TLS write does it: the HTTPS
+  // proxy, the OIDC token exchange, the ITSM lookups and the SIEM channels all
+  // write through OpenSSL, which (unlike the raw send() calls) cannot pass
+  // MSG_NOSIGNAL. Ignoring it turns the condition back into an EPIPE return
+  // value, which those call sites already treat as a transport error.
+  std::signal(SIGPIPE, SIG_IGN);
+#endif
+
   CrowApp app;
   AppContext ctx;
   const RuntimeConfig runtime_config = load_runtime_config(ctx);
@@ -25,6 +40,9 @@ int main() {
   ctx.init_database();
   ctx.seed_default_admin();
   ctx.init_recordings_dir();
+  // Integration configuration set from the admin console, loaded before any
+  // route group reads its settings.
+  settings::init(ctx);
   log_runtime_config(runtime_config);
 
   // ── License (freemium open-core): load + verify offline, then expose to gate ──
@@ -43,12 +61,14 @@ int main() {
   register_health_routes(app, ctx);
   register_auth_routes(app, ctx);
   register_totp_routes(app, ctx);
+  register_device_routes(app, ctx);
   register_user_routes(app, ctx);
   register_resource_routes(app, ctx);
   register_session_routes(app, ctx);
   register_audit_routes(app, ctx);
   register_stats_routes(app, ctx);
   register_license_routes(app, ctx);
+  register_settings_routes(app, ctx);
   register_proxy_routes(app, ctx);
   register_web_resource_routes(app, ctx);
   register_ssh_routes(app, ctx);

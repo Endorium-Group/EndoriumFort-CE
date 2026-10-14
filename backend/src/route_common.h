@@ -48,3 +48,17 @@ int next_table_numeric_id(AppContext &ctx, const char *table_name);
 std::vector<AccessPolicy> query_access_policies(AppContext &ctx);
 std::optional<AccessPolicy> query_access_policy_by_id(AppContext &ctx, int policy_id);
 std::vector<AccessProfile> query_access_profiles(AppContext &ctx);
+
+// ── URL parsing ────────────────────────────────────────────────────────────
+// Split an absolute http(s) URL into the parts the raw HTTP client needs.
+// Shared by the outbound integrations (SSO, ITSM, SIEM), which all accept a
+// full URL from the environment rather than host/port/path triplets.
+struct ParsedEndpointUrl {
+  std::string scheme;
+  std::string host;
+  int port = 0;
+  std::string target;
+};
+
+// std::nullopt when the URL is not an absolute http:// or https:// URL.
+std::optional<ParsedEndpointUrl> parse_endpoint_url(const std::string &raw_url);

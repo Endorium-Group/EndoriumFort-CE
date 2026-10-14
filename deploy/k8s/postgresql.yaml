@@ -1,0 +1,118 @@
+# ─── EndoriumFort — reference PostgreSQL for Kubernetes / k3s ────────────────
+# The application chart deliberately does not bundle a database: tying a
+# stateful dependency's lifecycle to the app chart means `helm uninstall` can
+# take the data with it. This manifest is managed separately, on purpose.
+#
+# Single instance, which matches the availability of today's single-pod bastion
+# (in-memory caches and in-process id counters still rule out several bastion
+# replicas). For a highly available database, replace this with an operator
+# such as CloudNativePG — the bastion only needs its DSN to change.
+#
+# Create the password secret first, then apply:
+#   kubectl -n endoriumfort create secret generic endoriumfort-postgres \
+#     --from-literal=POSTGRES_PASSWORD="<password>"
+#   kubectl -n endoriumfort apply -f deploy/k8s/postgresql.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: endoriumfort-postgres
+  labels:
+    app.kubernetes.io/name: endoriumfort-postgres
+    app.kubernetes.io/component: database
+spec:
+  # Headless: a single stateful pod, reached by name from the bastion.
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: endoriumfort-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: endoriumfort-postgres
+  labels:
+    app.kubernetes.io/name: endoriumfort-postgres
+    app.kubernetes.io/component: database
+spec:
+  serviceName: endoriumfort-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: endoriumfort-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: endoriumfort-postgres
+    spec:
+      securityContext:
+        # postgres:17-alpine ships uid/gid 70. Running as that user from the
+        # start means the entrypoint never needs to chown or drop privileges,
+        # which is what lets every capability below be dropped.
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: endoriumfort
+            - name: POSTGRES_USER
+              value: endoriumfort
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: endoriumfort-postgres
+                  key: POSTGRES_PASSWORD
+            # Some storage classes put lost+found at the root of the volume,
+            # and initdb refuses a directory that is not empty.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            # Lets PostgreSQL detect silent disk corruption rather than serve it.
+            - name: POSTGRES_INITDB_ARGS
+              value: --data-checksums
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "endoriumfort", "-d", "endoriumfort"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "endoriumfort", "-d", "endoriumfort"]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # k3s default is local-path; set storageClassName to override.
+        resources:
+          requests:
+            storage: 10Gi

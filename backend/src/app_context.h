@@ -42,6 +42,23 @@ struct TunnelTicket {
   std::string expiresAt;
 };
 
+// Long-lived, narrowly-scoped credential an agent exchanges its short-lived
+// bootstrap token for. It can ONLY mint tunnel tickets, and only for the one
+// resource / source IP / agent it was issued to, so a leaked credential cannot
+// be replayed as a user session the way a bearer token could.
+struct TunnelCredential {
+  std::string credential;
+  int userId = 0;
+  std::string user;
+  std::string role;
+  int resourceId = 0;
+  std::string issuedForIp;
+  std::string issuedForUserAgent;
+  std::string issuedAt;
+  std::string expiresAt;
+  int64_t lastUsedEpoch = 0;
+};
+
 struct RelayEnrollmentToken {
   std::string token;
   std::string createdAt;
@@ -85,33 +102,7 @@ struct AppContext {
   std::mutex auth_mutex;
   std::unordered_map<std::string, AuthSession> auth_sessions;
   int listen_port = 8080;
-  int token_ttl_seconds = 3600;  // 1 hour absolute session lifetime (default)
-  // Inactivity timeout: a session unused for this many seconds is invalidated
-  // (PCI DSS 8.2.8 = 15 min, NIST AC-11, ANSSI). 0 disables idle expiry.
-  int idle_timeout_seconds = 900;  // 15 minutes default
-  // MFA enforcement policy: "all" (every account must have a second factor),
-  // "admins" (admins only), or "none". Compliant default = "all"
-  // (PCI 8.4/8.5, NIST AAL2, ANSSI). Enforced server-side by the MFA gate.
-  std::string mfa_policy = "all";
-  // Password policy (PCI DSS v4 8.3, ANSSI, NIST 800-63B). Configurable with
-  // compliant defaults. history_count = number of previous passwords that may
-  // not be reused (0 disables reuse prevention).
-  int password_min_length = 12;
-  int password_history_count = 5;
-  // True when a second factor is required for `role` under mfa_policy.
-  bool mfa_required_for_role(const std::string &role) const;
-  // Server-side MFA enforcement for one request. Returns true (and fills a 403
-  // body) when the authenticated user must enrol a second factor before the
-  // target route may run; false lets the request proceed.
-  bool mfa_enrollment_gate(const crow::request &req, crow::response &res);
-  // Password reuse prevention: true if `new_plaintext` matches the user's
-  // current password or any of the last `password_history_count` hashes.
-  bool password_was_recently_used(int user_id,
-                                  const std::string &new_plaintext);
-  // Append a password hash to the user's history and trim to the configured
-  // depth. Call with the hash being replaced, after a successful change.
-  void record_password_in_history(int user_id,
-                                  const std::string &password_hash);
+  int token_ttl_seconds = 3600;  // 1 hour default
 
   // ── Resource state ──
   std::mutex resource_mutex;
@@ -160,6 +151,9 @@ struct AppContext {
     bool ok = true;
     int64_t lines = 0;
     int64_t firstBrokenLine = 0;
+    // Lines written before the chain existed (an upgraded install): the
+    // leading run of lines without hashes. Reported, not verifiable.
+    int64_t legacyLines = 0;
   };
   AuditChainCheck verify_audit_chain();
   // RGPD access/portability (art.15/20): return persisted audit log lines whose
@@ -167,6 +161,19 @@ struct AppContext {
   // is the raw JSON object as stored.
   std::vector<std::string> collect_audit_lines_for_actor(const std::string &actor,
                                                          size_t max_lines);
+  // ── Mobile device registration (push / signed approvals) ──
+  // Register (or upsert by user+pushToken) a device; returns its id, or -1 on
+  // error. list_user_devices/delete_user_device are scoped to the owning user.
+  int register_user_device(const UserDevice &device);
+  std::vector<UserDevice> list_user_devices(int user_id);
+  bool delete_user_device(int user_id, int device_id);
+  // Verify that `signature_b64url` over `message` was produced by the private
+  // key of device `device_id` owned by `user_id` (public key stored at
+  // registration, SPKI base64url). ES256 (EC P-256) or Ed25519. Used for
+  // non-repudiable mobile approvals. Returns false on any mismatch.
+  bool verify_device_signature(int user_id, int device_id,
+                               const std::string &message,
+                               const std::string &signature_b64url);
   // Seal the active log into an archive when it exceeds audit_max_file_bytes and
   // purge archives older than audit_retention_days. Caller holds audit_mutex.
   void maybe_rotate_audit_locked();
@@ -207,6 +214,10 @@ struct AppContext {
   std::mutex access_request_mutex;
   std::unordered_map<int, AccessRequest> access_requests;
   std::atomic<int> next_access_request_id{1};
+  // Fires after an access request is created. The EE push module fills this to
+  // notify approvers' mobile devices; unset in CE (and EE without the module) =
+  // no-op. Invoked from the request-create handler.
+  std::function<void(const AccessRequest &request)> on_access_request_created;
 
   // ── Runtime session behavior counters ──
   std::mutex behavior_mutex;
@@ -284,6 +295,15 @@ struct AppContext {
                      const std::string & /*name*/, int64_t /*size*/)>
       rbi_transfer_check;
 
+  // ── Integration seams (premium; set by pro/enterprise.cc, unset in CE) ──
+  // itsm_ticket_check: called when a session is opened with a ticket id. Returns
+  // true to let the session open; false (reason in `detail`) to refuse it.
+  // siem_forward: receives each audit event once it is persisted. It must not
+  // block (the pro module queues events and sends them from a worker thread).
+  std::function<bool(const std::string & /*ticket_id*/, std::string & /*detail*/)>
+      itsm_ticket_check;
+  std::function<void(const AuditEvent &)> siem_forward;
+
   // ── Tunnel state ──
   std::mutex tunnel_mutex;
   std::unordered_map<crow::websocket::connection *,
@@ -323,6 +343,12 @@ struct AppContext {
   std::unordered_map<std::string, RateLimitEntry> tunnel_ticket_issue_by_subject;
   int tunnel_ticket_issue_max_attempts = 120;
   std::chrono::seconds tunnel_ticket_issue_window{60};
+
+  // ── Tunnel credentials (resource-scoped, survive the bootstrap token) ──
+  std::mutex tunnel_credential_mutex;
+  std::unordered_map<std::string, TunnelCredential> tunnel_credentials;
+  int tunnel_credential_ttl_seconds = 43200;  // 12h default
+  int tunnel_credential_max_per_user = 32;
 
   // ── Relay control-plane state ──
   std::mutex relay_mutex;
@@ -384,15 +410,11 @@ struct AppContext {
   std::string generate_token();
   std::optional<AuthSession> find_auth(const crow::request &req);
   std::optional<AuthSession> find_auth_by_token(const std::string &token);
-  // Enforce absolute + idle expiry and refresh last-seen. Caller holds
-  // auth_mutex; returns nullptr (after erasing) when the session is no longer
-  // valid. Internal helper for find_auth*/the MFA gate.
-  AuthSession *validate_and_touch_session(
-      std::unordered_map<std::string, AuthSession>::iterator it);
   void append_audit(const AuditEvent &event);
   void append_session_event(const std::string &type, const Session &session);
   bool invalidate_token(const std::string &token);
   void invalidate_user_tokens(int user_id);
+  void invalidate_user_tunnel_credentials(int user_id);
   void invalidate_user_tokens_except(int user_id, const std::string &token);
   void cleanup_expired_tokens();
   std::string compute_expiry();
@@ -504,6 +526,19 @@ struct AppContext {
       int user_id, const std::string &role);
   bool has_permission(int user_id, const std::string &role,
                       const std::string &permission);
+
+  // ── Session ownership ──
+  // The person who opened a session is the subject of its access grant;
+  // Session::user is the account on the target, not that person. "" if unknown.
+  std::string session_owner(const Session &session);
+  // Subjects of all access grants, keyed by grant id (one query for a list).
+  std::unordered_map<int, std::string> access_grant_subjects();
+  // Journal readers (admins, auditors) see every session; others only theirs.
+  bool may_see_session(int user_id, const std::string &user,
+                       const std::string &role, const std::string &owner);
+  // Resource managers (admins) may act on any session; others only on theirs.
+  bool may_operate_session(int user_id, const std::string &user,
+                           const std::string &role, const std::string &owner);
 
   // ── License / entitlement (defined in license.cc) ──
   void load_license_watermark();                  // read watermark from DB

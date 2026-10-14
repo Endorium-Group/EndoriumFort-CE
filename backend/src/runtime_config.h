@@ -12,15 +12,10 @@
 struct RuntimeConfig {
   int port = 8080;
   int tokenTtlSeconds = 3600;
-  int idleTimeoutSeconds = 900;      // 15 min inactivity timeout (0 = disabled)
-  std::string mfaPolicy = "all";     // all | admins | none
-  int passwordMinLength = 12;        // PCI/ANSSI compliant default
-  int passwordHistoryCount = 5;      // reuse prevention depth (0 = disabled)
-  int auditMaxFileMb = 0;            // rotate active audit log past this (0=off)
-  int auditRetentionDays = 0;        // purge archives older than this (0=keep)
   int webauthnChallengeTtlSeconds = 180;
   int tunnelTicketIssueMaxAttempts = 120;
   int tunnelTicketIssueWindowSeconds = 60;
+  int tunnelCredentialTtlSeconds = 43200;
   std::string webauthnRpIdOverride;
   std::string webauthnOriginOverride;
   bool relayEnrollmentEnabled = false;
@@ -68,29 +63,9 @@ inline bool parse_bool_env(const char *name, bool default_value) {
   return default_value;
 }
 
-// Like parse_positive_int_env but permits 0 (used where 0 means "disabled").
-inline int parse_nonneg_int_env(const char *name, int default_value) {
-  const char *raw = std::getenv(name);
-  if (!raw || *raw == '\0') return default_value;
-  try {
-    const int value = std::stoi(raw);
-    return value >= 0 ? value : default_value;
-  } catch (...) {
-    return default_value;
-  }
-}
-
 inline std::string parse_string_env(const char *name) {
   const char *raw = std::getenv(name);
   return (raw && *raw != '\0') ? std::string(raw) : std::string();
-}
-
-inline std::string normalize_mfa_policy(std::string value) {
-  for (char &ch : value) {
-    ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-  }
-  if (value == "all" || value == "admins" || value == "none") return value;
-  return "all";  // compliant default for any unrecognized value
 }
 
 inline std::string normalize_cluster_role(std::string role) {
@@ -108,21 +83,6 @@ inline RuntimeConfig load_runtime_config(const AppContext &ctx) {
   config.port = parse_positive_int_env("ENDORIUMFORT_PORT", config.port);
   config.tokenTtlSeconds =
       parse_positive_int_env("ENDORIUMFORT_TOKEN_TTL_SECONDS", ctx.token_ttl_seconds);
-  config.idleTimeoutSeconds = parse_nonneg_int_env(
-      "ENDORIUMFORT_IDLE_TIMEOUT_SECONDS", ctx.idle_timeout_seconds);
-  {
-    const std::string raw = parse_string_env("ENDORIUMFORT_REQUIRE_MFA");
-    config.mfaPolicy = raw.empty() ? ctx.mfa_policy : normalize_mfa_policy(raw);
-  }
-  config.passwordMinLength = parse_positive_int_env(
-      "ENDORIUMFORT_PASSWORD_MIN_LENGTH", ctx.password_min_length);
-  if (config.passwordMinLength < 8) config.passwordMinLength = 8;  // floor
-  config.passwordHistoryCount = parse_nonneg_int_env(
-      "ENDORIUMFORT_PASSWORD_HISTORY", ctx.password_history_count);
-  config.auditMaxFileMb = parse_nonneg_int_env(
-      "ENDORIUMFORT_AUDIT_MAX_FILE_MB", ctx.audit_max_file_bytes / (1024 * 1024));
-  config.auditRetentionDays = parse_nonneg_int_env(
-      "ENDORIUMFORT_AUDIT_RETENTION_DAYS", ctx.audit_retention_days);
   config.webauthnChallengeTtlSeconds = parse_positive_int_env(
       "ENDORIUMFORT_WEBAUTHN_CHALLENGE_TTL_SECONDS",
       ctx.webauthn_challenge_ttl_seconds);
@@ -132,6 +92,9 @@ inline RuntimeConfig load_runtime_config(const AppContext &ctx) {
   config.tunnelTicketIssueWindowSeconds = parse_positive_int_env(
       "ENDORIUMFORT_TUNNEL_TICKET_RATE_LIMIT_WINDOW_SECONDS",
       static_cast<int>(ctx.tunnel_ticket_issue_window.count()));
+  config.tunnelCredentialTtlSeconds = parse_positive_int_env(
+      "ENDORIUMFORT_TUNNEL_CREDENTIAL_TTL_SECONDS",
+      ctx.tunnel_credential_ttl_seconds);
   config.webauthnRpIdOverride = parse_string_env("ENDORIUMFORT_WEBAUTHN_RP_ID");
   config.webauthnOriginOverride = parse_string_env("ENDORIUMFORT_WEBAUTHN_ORIGIN");
   config.relayCertificateRequired = parse_bool_env(
@@ -180,16 +143,11 @@ inline RuntimeConfig load_runtime_config(const AppContext &ctx) {
 inline void apply_runtime_config(AppContext &ctx, const RuntimeConfig &config) {
   ctx.listen_port = config.port;
   ctx.token_ttl_seconds = config.tokenTtlSeconds;
-  ctx.idle_timeout_seconds = config.idleTimeoutSeconds;
-  ctx.mfa_policy = config.mfaPolicy;
-  ctx.password_min_length = config.passwordMinLength;
-  ctx.password_history_count = config.passwordHistoryCount;
-  ctx.audit_max_file_bytes = config.auditMaxFileMb * 1024 * 1024;
-  ctx.audit_retention_days = config.auditRetentionDays;
   ctx.webauthn_challenge_ttl_seconds = config.webauthnChallengeTtlSeconds;
   ctx.tunnel_ticket_issue_max_attempts = config.tunnelTicketIssueMaxAttempts;
   ctx.tunnel_ticket_issue_window =
       std::chrono::seconds(config.tunnelTicketIssueWindowSeconds);
+  ctx.tunnel_credential_ttl_seconds = config.tunnelCredentialTtlSeconds;
   ctx.webauthn_rp_id_override = config.webauthnRpIdOverride;
   ctx.webauthn_origin_override = config.webauthnOriginOverride;
   ctx.relay_certificate_required = config.relayCertificateRequired;
@@ -230,17 +188,13 @@ inline void log_runtime_config(const RuntimeConfig &config) {
   std::ostringstream summary;
   summary << "[config] port=" << config.port
           << " token_ttl_seconds=" << config.tokenTtlSeconds
-          << " idle_timeout_seconds=" << config.idleTimeoutSeconds
-          << " require_mfa=" << config.mfaPolicy
-          << " password_min_length=" << config.passwordMinLength
-          << " password_history=" << config.passwordHistoryCount
-          << " audit_max_file_mb=" << config.auditMaxFileMb
-          << " audit_retention_days=" << config.auditRetentionDays
           << " webauthn_challenge_ttl_seconds=" << config.webauthnChallengeTtlSeconds
           << " tunnel_ticket_rate_limit_max_attempts="
           << config.tunnelTicketIssueMaxAttempts
           << " tunnel_ticket_rate_limit_window_seconds="
           << config.tunnelTicketIssueWindowSeconds
+          << " tunnel_credential_ttl_seconds="
+          << config.tunnelCredentialTtlSeconds
           << " relay_enrollment=" << (config.relayEnrollmentEnabled ? "enabled" : "disabled")
           << " relay_cert_required=" << (config.relayCertificateRequired ? "true" : "false")
           << " relay_cert_ttl_seconds=" << config.relayCertificateTtlSeconds

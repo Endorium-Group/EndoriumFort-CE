@@ -40,42 +40,18 @@ function notifyLicenseRequired(detail) {
   } catch (_) {}
 }
 
-let lastMfaEnrollRequiredAt = 0;
-
-// The server-side MFA gate replies 403 `{error:"mfa_enrollment_required"}` when
-// the authenticated user must enrol a second factor before any protected route
-// may run (ENDORIUMFORT_REQUIRE_MFA). Surface it so the SPA routes to enrolment.
-function notifyMfaEnrollmentRequired(detail) {
-  const now = Date.now();
-  if (now - lastMfaEnrollRequiredAt < 1000) return;
-  lastMfaEnrollRequiredAt = now;
-  try {
-    window.dispatchEvent(new CustomEvent('endoriumfort:mfa-enrollment-required', { detail }));
-  } catch (_) {}
-}
-
 async function ensureResponseOk(response, fallbackMessage) {
   if (response.status === 401) {
     notifyUnauthorized();
     throw new Error('Session expired. Please login again.');
   }
-  if (response.status === 403) {
-    if (response.headers.get('X-EndoriumFort-License-Required') === '1') {
-      let detail = {};
-      try {
-        detail = await response.clone().json();
-      } catch (_) {}
-      notifyLicenseRequired(detail);
-      throw new Error(detail.feature ? `License required for ${detail.feature}` : 'License required');
-    }
-    let body = null;
+  if (response.status === 403 && response.headers.get('X-EndoriumFort-License-Required') === '1') {
+    let detail = {};
     try {
-      body = await response.clone().json();
+      detail = await response.clone().json();
     } catch (_) {}
-    if (body && body.error === 'mfa_enrollment_required') {
-      notifyMfaEnrollmentRequired(body);
-      throw new Error(body.message || 'Multi-factor authentication enrollment required');
-    }
+    notifyLicenseRequired(detail);
+    throw new Error(detail.feature ? `License required for ${detail.feature}` : 'License required');
   }
   if (!response.ok) {
     const message = await response.text();
@@ -300,6 +276,44 @@ export async function fetchHealth() {
   return response.json();
 }
 
+// Appearance (Pro): public read used before sign-in. Community builds have no
+// such route, so any failure means "stock look".
+export async function fetchBranding() {
+  const response = await fetch('/api/branding');
+  if (!response.ok) return null;
+  return response.json();
+}
+
+export async function saveBranding(settings) {
+  const response = await fetch('/api/branding', {
+    method: 'PUT',
+    headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(settings)
+  });
+  await ensureResponseOk(response, 'Failed to save the appearance');
+  return response.json();
+}
+
+// kind: 'favicon' | 'background'; file: a File/Blob sent as the raw body.
+export async function uploadBrandingImage(kind, file) {
+  const response = await fetch(`/api/branding/${kind}`, {
+    method: 'PUT',
+    headers: withAuthHeaders({ 'Content-Type': file.type || 'application/octet-stream' }),
+    body: file
+  });
+  await ensureResponseOk(response, 'Failed to upload the image');
+  return response.json();
+}
+
+export async function deleteBrandingImage(kind) {
+  const response = await fetch(`/api/branding/${kind}`, {
+    method: 'DELETE',
+    headers: withAuthHeaders()
+  });
+  await ensureResponseOk(response, 'Failed to remove the image');
+  return response.json();
+}
+
 export async function fetchSessions() {
   const response = await fetch('/api/sessions', {
     headers: withAuthHeaders()
@@ -406,12 +420,34 @@ export async function fetchAudit() {
   return response.json();
 }
 
-// Recompute the tamper-evidence hash chain over the on-disk audit log.
+// Search the whole audit log (archives included), newest first. params: limit,
+// cursor (previous page's `next`), actor, family, category (failure|admin),
+// from, to (YYYY-MM-DD), q, session, facets (true on the first page).
+// Returns { items, next, facets }. A cursor too old to resume (its archive was
+// purged) throws an error whose `expired` is true.
+export async function fetchAuditPage(params = {}) {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '' || value === false) return;
+    query.set(key, value === true ? '1' : String(value));
+  });
+  const response = await fetch(`/api/audit?${query}`, { headers: withAuthHeaders() });
+  if (response.status === 410) {
+    const error = new Error(await response.text());
+    error.expired = true;
+    throw error;
+  }
+  await ensureResponseOk(response, 'Failed to search the audit log');
+  return response.json();
+}
+
+// Tamper-evidence check of the whole audit log file (audit.read):
+// { intact, lines, legacyLines, firstBrokenLine, keyed }.
 export async function verifyAuditChain() {
   const response = await fetch('/api/audit/verify', {
     headers: withAuthHeaders()
   });
-  await ensureResponseOk(response, 'Failed to verify audit integrity');
+  await ensureResponseOk(response, 'Failed to verify the audit log');
   return response.json();
 }
 
@@ -591,15 +627,6 @@ export async function getUserResourcePermissions(userId) {
     headers: withAuthHeaders()
   });
   await ensureResponseOk(response, 'Failed to fetch permissions');
-  return response.json();
-}
-
-// RGPD subject access / portability: all personal data held about one user.
-export async function exportUserData(userId) {
-  const response = await fetch(`/api/users/${userId}/data-export`, {
-    headers: withAuthHeaders()
-  });
-  await ensureResponseOk(response, 'Failed to export user data');
   return response.json();
 }
 
@@ -1054,6 +1081,19 @@ export function startOidcSso(options = {}) {
   window.location.assign(`/api/auth/sso/oidc/start${query ? `?${query}` : ''}`);
 }
 
+// Public (pre-login). Any failure — community build (404), no SSO license (403),
+// network — means SSO is not offered.
+export async function fetchSsoLoginOptions() {
+  try {
+    const response = await fetch('/api/auth/sso/login-options');
+    if (!response.ok) return { available: false };
+    const payload = await response.json();
+    return { available: payload?.available === true, provider: payload?.provider || '' };
+  } catch {
+    return { available: false };
+  }
+}
+
 export async function fetchSsoProviders() {
   const response = await fetch('/api/auth/sso/providers', {
     headers: withAuthHeaders()
@@ -1095,6 +1135,17 @@ export async function testLdapBind(payload) {
     },
     body: JSON.stringify(payload || {})
   });
+  // A refused test account comes back as 401 (or 503 if the directory is down)
+  // with the test result in the body. That is not our session expiring: return
+  // the result instead of signing the administrator out.
+  if (response.status === 401 || response.status === 503) {
+    try {
+      const result = await response.clone().json();
+      if (result && Object.prototype.hasOwnProperty.call(result, 'authenticated')) return result;
+    } catch (_) {
+      // Not a test result: fall through to the usual handling.
+    }
+  }
   await ensureResponseOk(response, 'Failed to test LDAP bind');
   return response.json();
 }
@@ -1217,6 +1268,35 @@ export async function verifyItsmTicket(payload) {
     body: JSON.stringify(payload || {})
   });
   await ensureResponseOk(response, 'Failed to verify ITSM ticket');
+  return response.json();
+}
+
+// ── Integration settings (admin-console configuration) ─────────────────────
+
+export async function fetchIntegrationSettings() {
+  const response = await fetch('/api/settings/integrations', {
+    headers: withAuthHeaders()
+  });
+  await ensureResponseOk(response, 'Failed to fetch integration settings');
+  return response.json();
+}
+
+// A refused form comes back as 400 with a per-key reason, which the form needs
+// to show next to the offending field — so that case is returned, not thrown.
+export async function saveIntegrationSettings(values) {
+  const response = await fetch('/api/settings/integrations', {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      ...withAuthHeaders()
+    },
+    body: JSON.stringify({ values: values || {} })
+  });
+  if (response.status === 400 || response.status === 500) {
+    const body = await response.clone().json().catch(() => null);
+    if (body && Array.isArray(body.rejected)) return body;
+  }
+  await ensureResponseOk(response, 'Failed to save integration settings');
   return response.json();
 }
 

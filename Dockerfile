@@ -11,7 +11,13 @@
 #   cef            → build + bundle the CEF-OSR "tiles" helper (homemade dirty-rect
 #                    transport). Requires CEF_VERSION. The runtime engine is still
 #                    chosen via ENDORIUMFORT_RBI_ENGINE at deploy time.
+#   cef-prebuilt   → same helper, copied from the prebuilt image RBI_CEF_IMAGE
+#                    (built once with `--target rbi-cef` and pushed). Skips the CEF
+#                    download + compile entirely — used by CI (docker-publish.yml).
 ARG RBI_ENGINE=cdp
+# Only used when RBI_ENGINE=cef-prebuilt: an image whose /rbi-out holds the
+# helper + CEF runtime (i.e. the `rbi-cef` target below).
+ARG RBI_CEF_IMAGE=scratch
 # Validated CEF build (chromium 154); override to pin another. Only used when
 # RBI_ENGINE=cef. main.cc compiles clean against these headers (needs C++20).
 ARG CEF_VERSION=154.0.32+g682c378+chromium-154.0.8037.58
@@ -25,7 +31,7 @@ FROM debian:trixie-slim AS backend-build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake git ca-certificates \
-    libsqlite3-dev libsqlcipher-dev libssh2-1-dev pkg-config \
+    libsqlite3-dev libpq-dev libssh2-1-dev pkg-config \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
@@ -57,6 +63,7 @@ RUN if [ "$EDITION" = "community" ]; then PRO_FLAG=OFF; else PRO_FLAG=ON; fi \
       -DBUILD_TESTING=OFF \
       -DENDORIUMFORT_PRO=$PRO_FLAG \
       -DENDORIUMFORT_LICENSE_PROD_KEY=$PROD_ISSUER \
+      -DENDORIUMFORT_POSTGRES=ON \
       -DCMAKE_CXX_FLAGS="-O2" \
   && cmake --build backend/build -j"$(nproc)"
 
@@ -90,7 +97,7 @@ RUN mkdir -p /rbi-out
 FROM debian:trixie-slim AS rbi-cef-build
 ARG CEF_VERSION
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential cmake ninja-build git ca-certificates curl python3 bzip2 \
+      build-essential cmake ninja-build git ca-certificates curl python3 bzip2 lbzip2 \
       libjpeg62-turbo-dev libx11-dev \
       libasound2 libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 libcairo2 libcups2 \
       libdbus-1-3 libexpat1 libgbm1 libglib2.0-0 libnss3 libnspr4 libpango-1.0-0 \
@@ -101,16 +108,17 @@ RUN test -n "$CEF_VERSION" || (echo "CEF_VERSION build-arg is required for RBI_E
 WORKDIR /opt
 # CEF version strings contain '+' → URL-encode as %2B for the download. The CDN
 # can drop large transfers, so resume (-C -) with retries until the archive is
-# valid (bzip2 -t), then extract.
+# valid (lbzip2 -t), then extract. lbzip2 is a multi-threaded bzip2: with plain
+# bzip2 the test + extract of this large archive took minutes on one core.
 RUN CEF_ENC="$(printf '%s' "$CEF_VERSION" | sed 's/+/%2B/g')" \
   && URL="https://cef-builds.spotifycdn.com/cef_binary_${CEF_ENC}_linux64_minimal.tar.bz2" \
   && n=0 \
-  && until bzip2 -t cef.tar.bz2 2>/dev/null; do \
+  && until lbzip2 -t cef.tar.bz2 2>/dev/null; do \
        n=$((n+1)); [ "$n" -gt 60 ] && { echo "CEF download failed after $n tries" >&2; exit 1; }; \
        curl -sS --connect-timeout 20 --max-time 180 -C - "$URL" -o cef.tar.bz2 || true; \
      done \
   && mkdir -p /opt/cef \
-  && tar -xjf cef.tar.bz2 -C /opt/cef --strip-components=1 \
+  && tar -I lbzip2 -xf cef.tar.bz2 -C /opt/cef --strip-components=1 \
   && rm cef.tar.bz2
 COPY backend/tools/rbi-cef /src/rbi-cef
 RUN cmake -S /src/rbi-cef -B /build -G Ninja -DCEF_ROOT=/opt/cef -DCMAKE_BUILD_TYPE=Release \
@@ -121,10 +129,16 @@ RUN mkdir -p /rbi-out \
   && find /build -maxdepth 1 -type f \( -name '*.so' -o -name '*.bin' -o -name '*.dat' -o -name '*.pak' -o -name 'chrome-sandbox' \) -exec cp -a {} /rbi-out/ \; \
   && if [ -d /build/locales ]; then cp -a /build/locales /rbi-out/; fi
 
-FROM rbi-cef-build AS rbi-cef
-RUN echo "cef helper staged"
+# Slim artifact: only the helper + CEF runtime. This is also the image CI pushes
+# (`--target rbi-cef`) and reuses through RBI_ENGINE=cef-prebuilt.
+FROM scratch AS rbi-cef
+COPY --from=rbi-cef-build /rbi-out/ /rbi-out/
 
-# Select which RBI stage feeds the production image (rbi-cdp = empty, rbi-cef = helper).
+# Prebuilt helper: no CEF download/compile (RBI_CEF_IMAGE must be set).
+FROM ${RBI_CEF_IMAGE} AS rbi-cef-prebuilt
+
+# Select which RBI stage feeds the production image (rbi-cdp = empty,
+# rbi-cef / rbi-cef-prebuilt = helper).
 FROM rbi-${RBI_ENGINE} AS rbi-selected
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -139,18 +153,16 @@ ARG TARGETARCH=amd64
 ARG RBI_ENGINE=cdp
 
 # chromium powers the default RBI engine (CDP/MJPEG) — a CORE feature, installed
-# for both editions. fonts-liberation gives pages sane default fonts. gosu lets the
-# entrypoint drop the backend to the unprivileged endoriumfort user. `apt upgrade`
-# patches base-image OS packages so the shipped image carries current fixes.
-RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
-  nginx libsqlite3-0 libsqlcipher1 libssh2-1 ca-certificates curl openssl certbot \
-  chromium fonts-liberation gosu \
+# for both editions. fonts-liberation gives pages sane default fonts.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  nginx libsqlite3-0 libpq5 libssh2-1 ca-certificates curl openssl certbot \
+  chromium fonts-liberation \
   && rm -rf /var/lib/apt/lists/* \
   && useradd --system --shell /usr/sbin/nologin --home-dir /app endoriumfort
 
 # When the CEF "tiles" helper is bundled it needs libjpeg + the usual Chromium
 # runtime shared libraries present in the image.
-RUN if [ "$RBI_ENGINE" = "cef" ]; then \
+RUN if [ "$RBI_ENGINE" != "cdp" ]; then \
       apt-get update && apt-get install -y --no-install-recommends \
         libjpeg62-turbo libx11-6 libxcb1 libxext6 libexpat1 libudev1 libdbus-1-3 \
         libglib2.0-0 libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \

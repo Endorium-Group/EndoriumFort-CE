@@ -1,197 +1,213 @@
 #pragma once
-// ─── EndoriumFort — SQLite database wrapper ─────────────────────────────
-// When built against SQLCipher (a drop-in SQLite fork with transparent
-// AES-256), setting ENDORIUMFORT_DB_ENCRYPTION_KEY encrypts the database file
-// at rest (PCI DSS 3.5 / RGPD art.32 / HDS). The sqlite3_* API is unchanged;
-// the key is applied with a PRAGMA right after open. Without a key the file is
-// plaintext exactly as before. If a key is set but the binary lacks SQLCipher,
-// open() refuses to run rather than silently storing cleartext.
+// ─── EndoriumFort — database access seam ────────────────────────────────
+//
+// Backend-agnostic wrapper over the SQL store. Call sites talk to
+// db::Connection / db::Statement and never touch a driver type, so the store
+// can be swapped without rewriting every query.
+//
+// The backend is chosen at RUNTIME from the DSN, so one binary serves both:
+//   * "postgresql://..." or "postgres://..."  → PostgreSQL (production, HA)
+//   * anything else                           → SQLite file path (default)
+//
+// Conventions that keep the SQL portable — follow them in new queries:
+//   * Parameters are 1-based and the SQL uses NUMBERED placeholders
+//     (?1, ?2, ...). The PostgreSQL backend rewrites those to $1, $2, ...
+//   * Prefer `ON CONFLICT ... DO NOTHING/DO UPDATE`, which both engines accept.
+//     `INSERT OR IGNORE` / `INSERT OR REPLACE` are SQLite-only.
+//   * A Statement owns its driver handle and releases it. Call sites must never
+//     free anything, and an early `return` cannot leak a statement.
 
-#include <sqlite3.h>
-
-#include <cctype>
-#include <cstdio>
-#include <cstdlib>
-#include <fstream>
-#include <iostream>
+#include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
-struct SqliteDb {
-  sqlite3 *db = nullptr;
-  std::mutex mutex;
+namespace db {
 
-  bool open(const std::string &path, std::string &error) {
-    if (sqlite3_open(path.c_str(), &db) != SQLITE_OK) {
-      error = sqlite3_errmsg(db ? db : nullptr);
-      return false;
+// Which engine a Connection is talking to. Schema code uses this for the few
+// spots where the DDL genuinely differs (BLOB vs BYTEA).
+enum class Backend { None, Sqlite, Postgres };
+
+namespace detail {
+
+// Driver-side statement. Implemented once per backend; no driver type appears
+// in this header, so including it does not drag in sqlite3.h or libpq-fe.h.
+class StatementImpl {
+ public:
+  virtual ~StatementImpl() = default;
+
+  virtual void bind_int(int index, int value) = 0;
+  virtual void bind_int64(int index, int64_t value) = 0;
+  virtual void bind_text(int index, const std::string &value) = 0;
+  virtual void bind_null(int index) = 0;
+  virtual void bind_blob(int index, const void *data, int size) = 0;
+
+  virtual bool step() = 0;
+  virtual bool execute() = 0;
+  virtual void reset() = 0;
+
+  virtual int column_int(int index) const = 0;
+  virtual int64_t column_int64(int index) const = 0;
+  virtual std::string column_text(int index) const = 0;
+  virtual std::vector<unsigned char> column_blob(int index) const = 0;
+  virtual bool column_is_null(int index) const = 0;
+};
+
+class ConnectionImpl {
+ public:
+  virtual ~ConnectionImpl() = default;
+  virtual bool exec(const std::string &sql, std::string &error) = 0;
+  virtual std::unique_ptr<StatementImpl> prepare(const std::string &sql) = 0;
+  virtual int changes() const = 0;
+  virtual std::string last_error() const = 0;
+  virtual Backend backend() const = 0;
+};
+
+}  // namespace detail
+
+// A prepared statement. Falsy when preparation failed, so the usual shape is:
+//   auto stmt = conn.prepare(sql);
+//   if (!stmt) return false;
+// Every accessor is null-safe, so a falsy statement degrades to no-ops and
+// default values rather than crashing.
+class Statement {
+ public:
+  Statement() = default;
+  explicit Statement(std::unique_ptr<detail::StatementImpl> impl)
+      : impl_(std::move(impl)) {}
+
+  Statement(const Statement &) = delete;
+  Statement &operator=(const Statement &) = delete;
+  Statement(Statement &&) noexcept = default;
+  Statement &operator=(Statement &&) noexcept = default;
+
+  explicit operator bool() const { return impl_ != nullptr; }
+
+  // ── Binding ──────────────────────────────────────────────────────────────
+  void bind_int(int index, int value) {
+    if (impl_) impl_->bind_int(index, value);
+  }
+  void bind_int64(int index, int64_t value) {
+    if (impl_) impl_->bind_int64(index, value);
+  }
+  void bind_text(int index, const std::string &value) {
+    if (impl_) impl_->bind_text(index, value);
+  }
+  // Binds SQL NULL for an empty string. Several tables distinguish "absent"
+  // (NULL) from "set but blank", and the call sites expressed that with a
+  // ternary around bind_null.
+  void bind_text_or_null(int index, const std::string &value) {
+    if (value.empty()) {
+      bind_null(index);
+    } else {
+      bind_text(index, value);
     }
-    return apply_encryption(path, error);
+  }
+  void bind_null(int index) {
+    if (impl_) impl_->bind_null(index);
+  }
+  void bind_blob(int index, const void *data, int size) {
+    if (impl_) impl_->bind_blob(index, data, size);
   }
 
-  bool exec(const std::string &sql, std::string &error) {
-    char *errmsg = nullptr;
-    if (sqlite3_exec(db, sql.c_str(), nullptr, nullptr, &errmsg) != SQLITE_OK) {
-      if (errmsg) {
-        error = errmsg;
-        sqlite3_free(errmsg);
-      } else {
-        error = "SQLite exec failed";
-      }
-      return false;
-    }
-    return true;
+  // ── Execution ────────────────────────────────────────────────────────────
+  // step() is for queries: true while a row is available.
+  bool step() { return impl_ && impl_->step(); }
+  // execute() is for statements returning no rows: true when it completed.
+  bool execute() { return impl_ && impl_->execute(); }
+  // Re-run the same statement with fresh parameters.
+  void reset() {
+    if (impl_) impl_->reset();
   }
 
-  ~SqliteDb() {
-    if (db) sqlite3_close(db);
+  // ── Column access (0-based, as in SQL result order) ──────────────────────
+  int column_int(int index) const { return impl_ ? impl_->column_int(index) : 0; }
+  int64_t column_int64(int index) const {
+    return impl_ ? impl_->column_int64(index) : 0;
+  }
+  // Returns "" for SQL NULL, matching how call sites already treat it.
+  std::string column_text(int index) const {
+    return impl_ ? impl_->column_text(index) : std::string();
+  }
+  std::vector<unsigned char> column_blob(int index) const {
+    return impl_ ? impl_->column_blob(index) : std::vector<unsigned char>();
+  }
+  bool column_is_null(int index) const {
+    return !impl_ || impl_->column_is_null(index);
+  }
+  // Assigns only when the column is not NULL, so a NULL leaves whatever the
+  // destination already held. Several structs rely on this: AccessPolicy
+  // defaults riskLevel/mfaRequirement/timeWindow to "any" and approvalMode to
+  // "inherit", and overwriting those with "" would change access decisions.
+  void column_text_into(int index, std::string &out) const {
+    if (!column_is_null(index)) out = column_text(index);
   }
 
  private:
-  // ── Encryption helpers (no-ops unless a key is configured) ──────────────
-
-  static bool env_truthy(const char *name) {
-    const char *v = std::getenv(name);
-    if (!v || !*v) return false;
-    std::string s(v);
-    for (char &c : s) c = static_cast<char>(std::tolower((unsigned char)c));
-    return s == "1" || s == "true" || s == "yes" || s == "on";
-  }
-
-  // True when linked against SQLCipher (PRAGMA cipher_version returns a value).
-  bool has_cipher_support() {
-    bool supported = false;
-    sqlite3_exec(
-        db, "PRAGMA cipher_version;",
-        [](void *out, int cols, char **vals, char **) -> int {
-          if (cols > 0 && vals && vals[0] && vals[0][0] != '\0')
-            *static_cast<bool *>(out) = true;
-          return 0;
-        },
-        &supported, nullptr);
-    return supported;
-  }
-
-  // The SQL literal for the key: a raw 32-byte key when given 64 hex chars
-  // (no KDF, strongest), otherwise a passphrase (SQLCipher runs its KDF).
-  static std::string key_literal(const std::string &raw) {
-    bool is_hex64 = raw.size() == 64;
-    for (char c : raw)
-      if (!std::isxdigit((unsigned char)c)) { is_hex64 = false; break; }
-    if (is_hex64) return "\"x'" + raw + "'\"";
-    std::string escaped;
-    escaped.reserve(raw.size());
-    for (char c : raw) {
-      if (c == '\'') escaped += "''";
-      else escaped += c;
-    }
-    return "'" + escaped + "'";
-  }
-
-  bool key_works() {
-    return sqlite3_exec(db, "SELECT count(*) FROM sqlite_master;", nullptr,
-                        nullptr, nullptr) == SQLITE_OK;
-  }
-
-  static bool looks_like_plaintext_sqlite(const std::string &path) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) return false;  // no file → fresh DB, not a plaintext one to migrate
-    char hdr[16] = {0};
-    f.read(hdr, sizeof(hdr));
-    if (f.gcount() < 16) return false;
-    static const char kMagic[16] = {'S', 'Q', 'L', 'i', 't', 'e', ' ', 'f',
-                                     'o', 'r', 'm', 'a', 't', ' ', '3', '\0'};
-    for (int i = 0; i < 16; ++i)
-      if (hdr[i] != kMagic[i]) return false;
-    return true;
-  }
-
-  bool apply_encryption(const std::string &path, std::string &error) {
-    const char *raw_env = std::getenv("ENDORIUMFORT_DB_ENCRYPTION_KEY");
-    if (!raw_env || !*raw_env) return true;  // encryption not requested
-    const std::string key_sql = key_literal(std::string(raw_env));
-
-    if (!has_cipher_support()) {
-      error =
-          "ENDORIUMFORT_DB_ENCRYPTION_KEY is set but this build has no "
-          "SQLCipher; refusing to run with an unencrypted database.";
-      return false;
-    }
-
-    if (sqlite3_exec(db, ("PRAGMA key = " + key_sql + ";").c_str(), nullptr,
-                     nullptr, nullptr) != SQLITE_OK) {
-      error = "Failed to apply database encryption key.";
-      return false;
-    }
-
-    if (key_works()) return true;  // fresh or already-encrypted DB → good
-
-    // Key set but the DB is unreadable: most likely an existing plaintext file.
-    if (looks_like_plaintext_sqlite(path)) {
-      if (env_truthy("ENDORIUMFORT_DB_ENCRYPTION_MIGRATE")) {
-        return migrate_plaintext_to_encrypted(path, key_sql, error);
-      }
-      error = "Database '" + path +
-              "' is unencrypted but ENDORIUMFORT_DB_ENCRYPTION_KEY is set. Set "
-              "ENDORIUMFORT_DB_ENCRYPTION_MIGRATE=1 to encrypt it in place on "
-              "next start (a plaintext backup is kept), or migrate manually.";
-      return false;
-    }
-    error =
-        "Could not open the encrypted database — wrong "
-        "ENDORIUMFORT_DB_ENCRYPTION_KEY?";
-    return false;
-  }
-
-  // Encrypt an existing plaintext DB in place using SQLCipher's sqlcipher_export
-  // and swap it in, keeping a <path>.plaintext.bak backup.
-  bool migrate_plaintext_to_encrypted(const std::string &path,
-                                      const std::string &key_sql,
-                                      std::string &error) {
-    std::cerr << "[SECURITY] Encrypting existing plaintext database '" << path
-              << "' (ENDORIUMFORT_DB_ENCRYPTION_MIGRATE=1)…\n";
-    if (db) { sqlite3_close(db); db = nullptr; }
-
-    if (sqlite3_open(path.c_str(), &db) != SQLITE_OK) {
-      error = "Migration: cannot reopen plaintext database.";
-      return false;
-    }
-    std::string path_esc;  // single-quote-escape for the SQL string literal
-    for (char c : path) { path_esc += c; if (c == '\'') path_esc += '\''; }
-    const std::string enc = path + ".enc-tmp";
-    std::remove(enc.c_str());
-
-    std::string enc_esc;
-    for (char c : enc) { enc_esc += c; if (c == '\'') enc_esc += '\''; }
-
-    std::string e;
-    if (!exec("ATTACH DATABASE '" + enc_esc + "' AS encrypted KEY " + key_sql + ";", e) ||
-        !exec("SELECT sqlcipher_export('encrypted');", e) ||
-        !exec("DETACH DATABASE encrypted;", e)) {
-      error = "Migration export failed: " + e;
-      return false;
-    }
-    sqlite3_close(db);
-    db = nullptr;
-
-    if (std::rename(path.c_str(), (path + ".plaintext.bak").c_str()) != 0 ||
-        std::rename(enc.c_str(), path.c_str()) != 0) {
-      error = "Migration: failed to swap in the encrypted database.";
-      return false;
-    }
-
-    if (sqlite3_open(path.c_str(), &db) != SQLITE_OK) {
-      error = "Migration: cannot open the newly encrypted database.";
-      return false;
-    }
-    if (sqlite3_exec(db, ("PRAGMA key = " + key_sql + ";").c_str(), nullptr,
-                     nullptr, nullptr) != SQLITE_OK ||
-        !key_works()) {
-      error = "Migration: encrypted database failed verification.";
-      return false;
-    }
-    std::cerr << "[SECURITY] Database encrypted. Plaintext backup kept at '"
-              << path << ".plaintext.bak' — delete it once verified.\n";
-    return true;
-  }
+  std::unique_ptr<detail::StatementImpl> impl_;
 };
+
+class Connection {
+ public:
+  // Guards work that must be atomic across several statements. Call sites lock
+  // it directly, as they did with the original wrapper.
+  std::mutex mutex;
+
+  Connection() = default;
+  Connection(const Connection &) = delete;
+  Connection &operator=(const Connection &) = delete;
+  ~Connection() = default;
+
+  // Opens the store described by `dsn` (see the header comment for the scheme
+  // rules). Returns false and fills `error` when the backend is unavailable or
+  // the connection cannot be established.
+  bool open(const std::string &dsn, std::string &error);
+
+  void close() { impl_.reset(); }
+  bool is_open() const { return impl_ != nullptr; }
+  Backend backend() const {
+    return impl_ ? impl_->backend() : Backend::None;
+  }
+
+  // DDL fragment for an auto-assigning integer primary key.
+  // SQLite's "INTEGER PRIMARY KEY" aliases rowid and fills itself in, so rows
+  // can omit the column; a plain INTEGER PRIMARY KEY in PostgreSQL generates
+  // nothing and such an insert fails on NOT NULL. BY DEFAULT (rather than
+  // ALWAYS) keeps the tables whose ids come from AppContext's counters working,
+  // since those inserts do supply an explicit id.
+  std::string autoinc_pk() const {
+    return backend() == Backend::Postgres
+               ? "INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY"
+               : "INTEGER PRIMARY KEY";
+  }
+
+  // Multi-statement DDL / scripts. Not for parameterised queries.
+  bool exec(const std::string &sql, std::string &error) {
+    if (!impl_) {
+      error = "no database connection";
+      return false;
+    }
+    return impl_->exec(sql, error);
+  }
+
+  Statement prepare(const std::string &sql) {
+    if (!impl_) return Statement();
+    return Statement(impl_->prepare(sql));
+  }
+
+  // Rows touched by the last statement.
+  int changes() const { return impl_ ? impl_->changes() : 0; }
+
+  std::string last_error() const {
+    return impl_ ? impl_->last_error() : std::string("no database connection");
+  }
+
+ private:
+  std::unique_ptr<detail::ConnectionImpl> impl_;
+};
+
+}  // namespace db
+
+// Transitional alias kept for the existing AppContext member declaration.
+using SqliteDb = db::Connection;

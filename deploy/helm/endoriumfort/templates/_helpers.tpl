@@ -53,7 +53,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{/* True when at least one inline secret value is set (render a Secret). */}}
 {{- define "endoriumfort.renderSecret" -}}
 {{- if .Values.secrets.existingSecret -}}
-{{- else if or .Values.secrets.vaultKey .Values.secrets.license .Values.secrets.relayEnrollSecret .Values.secrets.clusterSharedSecret -}}
+{{- else if or .Values.secrets.vaultKey .Values.secrets.license .Values.secrets.relayEnrollSecret .Values.secrets.clusterSharedSecret .Values.secrets.siemWebhookToken .Values.secrets.siemSplunkToken .Values.database.postgresql.dsn -}}
 true
 {{- end -}}
 {{- end -}}

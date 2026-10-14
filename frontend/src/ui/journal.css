@@ -1,0 +1,82 @@
+/* ---- Journal page ---- */
+.ef-journal__bar { padding: 12px 14px; border-bottom: 1px solid var(--ef-line); }
+.ef .ef-journal__select { width: auto; max-width: 200px; height: 32px; }
+.ef-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 4px 0 10px;
+  border: 1px solid var(--ef-accent);
+  border-radius: 13px;
+  background: var(--ef-accent-bg);
+  color: var(--ef-accent);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.ef .ef-chip button {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.ef .ef-chip button:hover { background: var(--ef-panel); }
+.ef .ef-expander {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ef-muted);
+  cursor: pointer;
+}
+.ef .ef-expander:hover { background: var(--ef-sub); color: var(--ef-text); }
+.ef-journal td:first-child { padding-right: 0; }
+.ef-journal__detail { max-width: 420px; overflow: hidden; text-overflow: ellipsis; }
+.ef-table tr.is-open td { background: var(--ef-accent-bg); border-bottom: 0; }
+.ef-table tr.ef-journal__open td { background: var(--ef-panel-2); white-space: normal; cursor: default; padding-top: 4px; padding-bottom: 16px; }
+.ef-table tr.ef-journal__open:hover td { background: var(--ef-panel-2); }
+.ef-journal__more { display: flex; flex-wrap: wrap; gap: 20px; }
+.ef-json {
+  flex: 1 1 380px;
+  min-width: 0;
+  max-height: 320px;
+  margin: 0;
+  padding: 12px 14px;
+  overflow: auto;
+  border: 1px solid var(--ef-line);
+  border-radius: 6px;
+  background: var(--ef-panel);
+  color: var(--ef-text-2);
+  font: 12px/1.55 var(--ef-mono);
+  white-space: pre;
+}
+.ef-journal__links { flex: 1 1 220px; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; font-size: 12.5px; }
+.ef-journal__links .ef-kv { grid-template-columns: 80px minmax(0, 1fr); margin-bottom: 4px; }
+.ef .ef-journal__links .ef-btn--link { color: var(--ef-accent); }
+
+/* Audit chain integrity strip */
+.ef-integrity { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; margin-bottom: 14px; padding: 10px 14px; border: 1px solid var(--ef-line); border-radius: 8px; background: var(--ef-panel); font-size: 13px; }
+.ef-integrity > .ef-icon { flex: none; width: 18px; height: 18px; color: var(--ef-muted); }
+.ef-integrity__text { flex: 1 1 260px; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
+.ef-integrity__text span { color: var(--ef-text-2); font-size: 12.5px; }
+.ef-integrity__time { color: var(--ef-muted); font-size: 12px; }
+.ef-integrity.is-intact { border-color: var(--ef-ok); background: var(--ef-ok-bg); }
+.ef-integrity.is-intact > .ef-icon, .ef-integrity.is-intact strong { color: var(--ef-ok); }
+.ef-integrity.is-broken { border-color: var(--ef-danger-line); background: var(--ef-danger-bg); }
+.ef-integrity.is-broken > .ef-icon, .ef-integrity.is-broken strong { color: var(--ef-danger); }
+.ef-integrity.is-error { border-color: var(--ef-warn-line); background: var(--ef-warn-bg); }
+
+/* Date range of the search */
+.ef-journal__date { display: inline-flex; align-items: center; gap: 6px; color: var(--ef-text-2); font-size: 12.5px; }
+.ef .ef-journal__date .ef-input { width: auto; height: 32px; padding: 0 8px; }

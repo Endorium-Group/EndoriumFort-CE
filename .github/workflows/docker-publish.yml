@@ -23,6 +23,9 @@ env:
   # only publish packages under this repo's org (Endorium-Group). Pushing to another
   # account's namespace fails with "permission_denied: installation does not exist".
   GHCR_REPO: ghcr.io/endorium-group/endoriumfort
+  # Pinned CEF for the RBI "tiles" helper (see the Dockerfile rbi-cef stages).
+  CEF_VERSION: 154.0.32+g682c378+chromium-154.0.8037.58
+  RBI_CEF_REV: "1"
 
 jobs:
   # Detect the edition: the public core repo has no pro/ overlay (Community),
@@ -88,8 +91,6 @@ jobs:
         id: meta
         env:
           HAS_DOCKERHUB: ${{ steps.dockerhub.outputs.enabled }}
-          # Via env (not inline ${{ }}) so the free-text dispatch tag can't inject shell.
-          IN_TAG: ${{ github.event.inputs.tag }}
         run: |
           # ── Edition detection ──
           # pro/ present (private repo) → publish the FREEMIUM image: premium code
@@ -118,7 +119,7 @@ jobs:
             echo "${{ env.GHCR_REPO }}:${MOVING}" >> "$GITHUB_OUTPUT"
             echo "EOF" >> "$GITHUB_OUTPUT"
           else
-            TAG="${IN_TAG:-latest}"
+            TAG="${{ github.event.inputs.tag || 'latest' }}"
             echo "version=$TAG" >> "$GITHUB_OUTPUT"
             echo "tags<<EOF" >> "$GITHUB_OUTPUT"
             if [[ "$HAS_DOCKERHUB" == "true" ]]; then
@@ -148,6 +149,38 @@ jobs:
           username: ${{ vars.GHCR_USER || github.actor }}
           password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
 
+      # The RBI CEF helper (CEF download + extract + libcef_dll_wrapper compile)
+      # was most of the image build time, yet it only changes with CEF_VERSION or
+      # backend/tools/rbi-cef. Build it once into a small image tagged by a hash of
+      # both and reuse it on every later release. Bump RBI_CEF_REV to force a
+      # rebuild (e.g. after editing the rbi-cef-build stage of the Dockerfile).
+      - name: Resolve RBI CEF helper image
+        id: rbi
+        env:
+          SRC_HASH: ${{ hashFiles('backend/tools/rbi-cef/**') }}
+        run: |
+          TAG="$(printf '%s|%s|%s' "$CEF_VERSION" "$SRC_HASH" "$RBI_CEF_REV" | sha256sum | cut -c1-16)"
+          IMAGE="${{ env.GHCR_REPO }}-rbi-cef:${TAG}"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          if docker buildx imagetools inspect "$IMAGE" >/dev/null 2>&1; then
+            echo "Reusing prebuilt RBI CEF helper $IMAGE"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "RBI CEF helper $IMAGE not found, it will be built"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push RBI CEF helper image (only when missing)
+        if: ${{ steps.rbi.outputs.exists != 'true' }}
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: rbi-cef
+          push: true
+          build-args: |
+            CEF_VERSION=${{ env.CEF_VERSION }}
+          tags: ${{ steps.rbi.outputs.image }}
+
       - name: Build and push
         id: build_push
         uses: docker/build-push-action@v7
@@ -162,8 +195,8 @@ jobs:
           build-args: |
             EDITION=${{ steps.meta.outputs.edition }}
             PROD_ISSUER=${{ steps.meta.outputs.prod_issuer }}
-            RBI_ENGINE=cef
-            CEF_VERSION=154.0.32+g682c378+chromium-154.0.8037.58
+            RBI_ENGINE=cef-prebuilt
+            RBI_CEF_IMAGE=${{ steps.rbi.outputs.image }}
           tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

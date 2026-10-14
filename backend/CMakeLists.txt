@@ -34,24 +34,6 @@ if (NOT LibSSH2_FOUND)
   endif()
 endif()
 
-# Database-at-rest encryption: prefer SQLCipher (a drop-in SQLite fork with
-# transparent AES-256) when available, so setting ENDORIUMFORT_DB_ENCRYPTION_KEY
-# encrypts the SQLite file (PCI 3.5 / RGPD art.32 / HDS). The sqlite3_* API is
-# identical, so the only code difference is a PRAGMA key at open time. Falls
-# back to plain SQLite3 when SQLCipher is absent (encryption then unavailable,
-# and the binary refuses to start if a key is set — see database.h).
-find_package(PkgConfig QUIET)
-set(EF_DB_LIB SQLite::SQLite3)
-if (PkgConfig_FOUND)
-  pkg_check_modules(SQLCIPHER QUIET IMPORTED_TARGET sqlcipher)
-  if (TARGET PkgConfig::SQLCIPHER)
-    set(EF_DB_LIB PkgConfig::SQLCIPHER)
-    message(STATUS "EndoriumFort: using SQLCipher for database-at-rest encryption")
-  else()
-    message(STATUS "EndoriumFort: SQLCipher not found; DB encryption unavailable (plain SQLite3)")
-  endif()
-endif()
-
 # Version is now managed by build-all.sh/ps1 (change-detection based).
 # Manual fallback: increment on every build if version.h is missing.
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/version.h")
@@ -65,14 +47,40 @@ else()
   )
 endif()
 
+# ── Database seam ───────────────────────────────────────────────────────────
+# One small library so every target shares the same backend selection, and so
+# adding a backend never means editing five source lists. SQLite is always
+# built in (default store, air-gap friendly); PostgreSQL is opt-in for
+# production deployments and is selected at RUNTIME from the DSN.
+option(ENDORIUMFORT_POSTGRES "Build the PostgreSQL database backend" OFF)
+
+set(EF_DB_SOURCES src/database.cc src/db_sqlite.cc)
+if (ENDORIUMFORT_POSTGRES)
+  list(APPEND EF_DB_SOURCES src/db_postgres.cc)
+endif()
+
+add_library(endoriumfort_db STATIC ${EF_DB_SOURCES})
+target_include_directories(endoriumfort_db PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(endoriumfort_db PUBLIC SQLite::SQLite3)
+
+if (ENDORIUMFORT_POSTGRES)
+  find_package(PostgreSQL REQUIRED)
+  target_link_libraries(endoriumfort_db PUBLIC PostgreSQL::PostgreSQL)
+  target_compile_definitions(endoriumfort_db PUBLIC ENDORIUMFORT_POSTGRES)
+  message(STATUS "EndoriumFort: PostgreSQL backend enabled")
+endif()
+
 # ── Core (Community edition) sources — no premium code ──
 add_executable(endoriumfort_backend
   src/main.cc
   src/app_context.cc
   src/http_proxy.cc
   src/scim_query.cc
+  src/audit_query.cc
   src/routes.cc
   src/route_common.cc
+  src/settings.cc
+  src/settings_routes.cc
   src/iam_common.cc
   src/license.cc
   src/ssh.cc
@@ -98,6 +106,18 @@ target_compile_definitions(endoriumfort_backend
 option(ENDORIUMFORT_LICENSE_DEV_KEY "Embed the dev license issuer public key" OFF)
 if (ENDORIUMFORT_LICENSE_DEV_KEY)
   target_compile_definitions(endoriumfort_backend PRIVATE ENDORIUMFORT_LICENSE_DEV_KEY)
+endif()
+
+# A developer machine may embed its own test issuer (see backend/build-wsl.sh):
+# set the kid and both public keys (base64url SPKI DER). NEVER for release images.
+set(ENDORIUMFORT_LICENSE_LOCAL_KID "" CACHE STRING "Machine-local test license issuer kid")
+set(ENDORIUMFORT_LICENSE_LOCAL_ED25519 "" CACHE STRING "Its Ed25519 public key (base64url SPKI DER)")
+set(ENDORIUMFORT_LICENSE_LOCAL_MLDSA "" CACHE STRING "Its ML-DSA-65 public key (base64url SPKI DER)")
+if (ENDORIUMFORT_LICENSE_LOCAL_KID)
+  target_compile_definitions(endoriumfort_backend PRIVATE
+    ENDORIUMFORT_LICENSE_LOCAL_KID="${ENDORIUMFORT_LICENSE_LOCAL_KID}"
+    ENDORIUMFORT_LICENSE_LOCAL_ED25519="${ENDORIUMFORT_LICENSE_LOCAL_ED25519}"
+    ENDORIUMFORT_LICENSE_LOCAL_MLDSA="${ENDORIUMFORT_LICENSE_LOCAL_MLDSA}")
 endif()
 
 # Production release builds embed the prod issuer public key (once populated in
@@ -129,6 +149,7 @@ if (ENDORIUMFORT_PRO)
     src/pro/recording.cc
     src/pro/access_governance.cc
     src/pro/enterprise.cc
+    src/pro/siem.cc
     src/pro/security_center.cc
     src/pro/governance.cc
     src/pro/session_premium.cc
@@ -137,8 +158,10 @@ if (ENDORIUMFORT_PRO)
     src/pro/vault_dynamic.cc
     src/pro/itdr.cc
     src/pro/k8s.cc
+    src/pro/branding.cc
     src/pro/rbi_recording.cc
     src/pro/rbi_transfer.cc
+    src/pro/push.cc
   )
   target_compile_definitions(endoriumfort_backend PRIVATE ENDORIUMFORT_PRO)
   # forkpty(3) for the Kubernetes exec PTY bridge (Linux: libutil).
@@ -149,7 +172,7 @@ else()
   target_sources(endoriumfort_backend PRIVATE src/pro_stub.cc)
 endif()
 
-target_link_libraries(endoriumfort_backend PRIVATE ${EF_DB_LIB} OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(endoriumfort_backend PRIVATE endoriumfort_db OpenSSL::SSL OpenSSL::Crypto)
 
 if (LibSSH2_FOUND)
   target_link_libraries(endoriumfort_backend PRIVATE LibSSH2::LibSSH2)
@@ -194,19 +217,50 @@ if (BUILD_TESTING)
     src/scim_query.cc
   )
 
+  add_executable(endoriumfort_backend_audit_query_tests
+    tests/audit_query_test.cc
+    src/audit_query.cc
+  )
+
+  add_executable(endoriumfort_backend_settings_tests
+    tests/settings_test.cc
+    src/settings.cc
+    src/app_context.cc
+    src/http_proxy.cc
+    src/scim_query.cc
+    src/audit_query.cc
+    src/route_common.cc
+    src/iam_common.cc
+    src/license.cc
+  )
+
+  add_executable(endoriumfort_backend_device_tests
+    tests/device_test.cc
+    src/app_context.cc
+    src/http_proxy.cc
+    src/scim_query.cc
+    src/route_common.cc
+    src/settings.cc
+    src/iam_common.cc
+    src/license.cc
+  )
+
   if (ENDORIUMFORT_PRO)  # premium-dependent test targets (need src/pro/)
   add_executable(endoriumfort_backend_scim_routes_tests
     tests/scim_routes_test.cc
     src/app_context.cc
     src/http_proxy.cc
     src/scim_query.cc
+    src/audit_query.cc
     src/routes.cc
     src/route_common.cc
+    src/settings.cc
     src/iam_common.cc
     src/license.cc
     src/pro/cluster.cc
     src/pro/vnc.cc
     src/pro/enterprise.cc
+    src/pro/siem.cc
   )
 
   add_executable(endoriumfort_backend_security_alerts_tests
@@ -214,11 +268,26 @@ if (BUILD_TESTING)
     src/app_context.cc
     src/http_proxy.cc
     src/scim_query.cc
+    src/audit_query.cc
     src/routes.cc
     src/route_common.cc
+    src/settings.cc
     src/iam_common.cc
     src/license.cc
     src/pro/security_center.cc
+  )
+
+  add_executable(endoriumfort_backend_siem_tests
+    tests/siem_test.cc
+    src/app_context.cc
+    src/http_proxy.cc
+    src/scim_query.cc
+    src/audit_query.cc
+    src/route_common.cc
+    src/settings.cc
+    src/iam_common.cc
+    src/license.cc
+    src/pro/siem.cc
   )
 
   add_executable(endoriumfort_backend_vault_gen_tests
@@ -262,8 +331,29 @@ if (BUILD_TESTING)
       ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
+  target_include_directories(endoriumfort_backend_settings_tests
+    PRIVATE
+      ${crow_SOURCE_DIR}/include
+      ${asio_SOURCE_DIR}/asio/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  target_include_directories(endoriumfort_backend_device_tests
+    PRIVATE
+      ${crow_SOURCE_DIR}/include
+      ${asio_SOURCE_DIR}/asio/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
   if (ENDORIUMFORT_PRO)  # pro test include dirs
   target_include_directories(endoriumfort_backend_scim_routes_tests
+    PRIVATE
+      ${crow_SOURCE_DIR}/include
+      ${asio_SOURCE_DIR}/asio/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  target_include_directories(endoriumfort_backend_siem_tests
     PRIVATE
       ${crow_SOURCE_DIR}/include
       ${asio_SOURCE_DIR}/asio/include
@@ -311,12 +401,35 @@ if (BUILD_TESTING)
     PRIVATE ASIO_STANDALONE
   )
 
+  target_include_directories(endoriumfort_backend_audit_query_tests
+    PRIVATE
+      ${crow_SOURCE_DIR}/include
+      ${asio_SOURCE_DIR}/asio/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  target_compile_definitions(endoriumfort_backend_audit_query_tests
+    PRIVATE ASIO_STANDALONE
+  )
+
+  target_compile_definitions(endoriumfort_backend_device_tests
+    PRIVATE ASIO_STANDALONE
+  )
+
+  target_compile_definitions(endoriumfort_backend_settings_tests
+    PRIVATE ASIO_STANDALONE
+  )
+
   if (ENDORIUMFORT_PRO)  # pro test defs
   target_compile_definitions(endoriumfort_backend_scim_routes_tests
     PRIVATE ASIO_STANDALONE
   )
 
   target_compile_definitions(endoriumfort_backend_security_alerts_tests
+    PRIVATE ASIO_STANDALONE
+  )
+
+  target_compile_definitions(endoriumfort_backend_siem_tests
     PRIVATE ASIO_STANDALONE
   )
   endif()
@@ -327,12 +440,15 @@ if (BUILD_TESTING)
 
   target_link_libraries(endoriumfort_backend_tests PRIVATE OpenSSL::Crypto)
   target_link_libraries(endoriumfort_backend_auth_mfa_tests PRIVATE OpenSSL::Crypto)
-  target_link_libraries(endoriumfort_backend_runtime_config_tests PRIVATE OpenSSL::Crypto ${EF_DB_LIB})
+  target_link_libraries(endoriumfort_backend_runtime_config_tests PRIVATE OpenSSL::Crypto endoriumfort_db)
   target_link_libraries(endoriumfort_backend_scim_query_tests PRIVATE OpenSSL::Crypto)
+  target_link_libraries(endoriumfort_backend_audit_query_tests PRIVATE OpenSSL::Crypto Threads::Threads)
+  target_link_libraries(endoriumfort_backend_device_tests PRIVATE endoriumfort_db OpenSSL::SSL OpenSSL::Crypto)
+  target_link_libraries(endoriumfort_backend_settings_tests PRIVATE endoriumfort_db OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
   if (ENDORIUMFORT_PRO)  # pro test libs
-  target_link_libraries(endoriumfort_backend_scim_routes_tests PRIVATE ${EF_DB_LIB} OpenSSL::SSL OpenSSL::Crypto)
-  target_link_libraries(endoriumfort_backend_security_alerts_tests PRIVATE ${EF_DB_LIB} OpenSSL::SSL OpenSSL::Crypto)
-  target_link_libraries(endoriumfort_backend_vault_gen_tests PRIVATE OpenSSL::Crypto)
+  target_link_libraries(endoriumfort_backend_scim_routes_tests PRIVATE endoriumfort_db OpenSSL::SSL OpenSSL::Crypto)
+  target_link_libraries(endoriumfort_backend_security_alerts_tests PRIVATE endoriumfort_db OpenSSL::SSL OpenSSL::Crypto)
+  target_link_libraries(endoriumfort_backend_siem_tests PRIVATE endoriumfort_db OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
   endif()
   target_link_libraries(endoriumfort_backend_license_tests PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 
@@ -357,9 +473,13 @@ if (BUILD_TESTING)
   add_test(NAME backend_auth_mfa_test COMMAND endoriumfort_backend_auth_mfa_tests)
   add_test(NAME backend_runtime_config_test COMMAND endoriumfort_backend_runtime_config_tests)
   add_test(NAME backend_scim_query_test COMMAND endoriumfort_backend_scim_query_tests)
+  add_test(NAME backend_audit_query_test COMMAND endoriumfort_backend_audit_query_tests)
+  add_test(NAME backend_device_test COMMAND endoriumfort_backend_device_tests)
+  add_test(NAME backend_settings_test COMMAND endoriumfort_backend_settings_tests)
   if (ENDORIUMFORT_PRO)  # pro tests
   add_test(NAME backend_scim_routes_test COMMAND endoriumfort_backend_scim_routes_tests)
   add_test(NAME backend_security_alerts_test COMMAND endoriumfort_backend_security_alerts_tests)
+  add_test(NAME backend_siem_test COMMAND endoriumfort_backend_siem_tests)
   add_test(NAME backend_vault_gen_test COMMAND endoriumfort_backend_vault_gen_tests)
   add_test(NAME backend_itdr_geo_test COMMAND endoriumfort_backend_itdr_geo_tests)
   endif()

@@ -6,6 +6,15 @@ import { terminateSession } from './api.js';
 import { I18nProvider } from './i18n.jsx';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
+import './ui/theme.css';
+import './ui/map.css';
+import './ui/sessions.css';
+import './ui/requests.css';
+import './ui/journal.css';
+import './ui/evidence.css';
+import './ui/zones.css';
+import './ui/admin.css';
+import './ui/dialogs.css';
 
 const root = document.getElementById('root');
 

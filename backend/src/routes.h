@@ -9,6 +9,7 @@ struct AppContext;
 void register_health_routes(CrowApp &app, AppContext &ctx);
 void register_auth_routes(CrowApp &app, AppContext &ctx);
 void register_totp_routes(CrowApp &app, AppContext &ctx);
+void register_device_routes(CrowApp &app, AppContext &ctx);
 void register_user_routes(CrowApp &app, AppContext &ctx);
 void register_resource_routes(CrowApp &app, AppContext &ctx);
 void register_access_request_routes(CrowApp &app, AppContext &ctx);
@@ -19,6 +20,9 @@ void register_stats_routes(CrowApp &app, AppContext &ctx);
 void register_relay_routes(CrowApp &app, AppContext &ctx);
 void register_enterprise_routes(CrowApp &app, AppContext &ctx);
 void register_license_routes(CrowApp &app, AppContext &ctx);
+// Integration configuration from the admin console (settings.h). Core, so the
+// Community build can configure LDAP and the RBI transfer policy too.
+void register_settings_routes(CrowApp &app, AppContext &ctx);
 // Remote Browser Isolation (core / CE): server-side headless Chromium streamed
 // to the operator over a WebSocket (CDP screencast). Not license-gated.
 void register_rbi_routes(CrowApp &app, AppContext &ctx);

@@ -1,3 +1,8 @@
+{{- if eq .Values.database.type "postgresql" }}
+  {{- if and (not .Values.database.postgresql.dsn) (not .Values.database.postgresql.existingSecret) }}
+    {{- fail "database.type is \"postgresql\" but no DSN was given: set database.postgresql.dsn or database.postgresql.existingSecret. Without one the pod would silently fall back to the embedded SQLite file." }}
+  {{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -6,9 +11,12 @@ metadata:
     {{- include "endoriumfort.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
-  # SQLite is a single-writer store on a RWO volume — never roll two pods at once.
+  # Recreate by default: the backend keeps its state in memory and persists to a
+  # single-writer SQLite DB on a ReadWriteOnce volume, so two pods must never
+  # overlap. Read the warning above `updateStrategy` in values.yaml before
+  # switching this to RollingUpdate.
   strategy:
-    type: Recreate
+    {{- toYaml .Values.updateStrategy | nindent 4 }}
   selector:
     matchLabels:
       {{- include "endoriumfort.selectorLabels" . | nindent 6 }}
@@ -27,6 +35,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       serviceAccountName: {{ include "endoriumfort.serviceAccountName" . }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -91,6 +100,79 @@ spec:
             - name: ACME_EMAIL
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.config.siem }}
+            {{- with .hostname }}
+            - name: ENDORIUMFORT_SIEM_HOSTNAME
+              value: {{ . | quote }}
+            {{- end }}
+            - name: ENDORIUMFORT_SIEM_HEARTBEAT_SECONDS
+              value: {{ .heartbeatSeconds | default 300 | quote }}
+            {{- if gt (int .queueLimit) 0 }}
+            - name: ENDORIUMFORT_SIEM_QUEUE_LIMIT
+              value: {{ .queueLimit | quote }}
+            {{- end }}
+            {{- if gt (int .retryAttempts) 0 }}
+            - name: ENDORIUMFORT_SIEM_RETRY_ATTEMPTS
+              value: {{ .retryAttempts | quote }}
+            {{- end }}
+            {{- if .syslog.enabled }}
+            - name: ENDORIUMFORT_SIEM_SYSLOG_ENABLED
+              value: "1"
+            - name: ENDORIUMFORT_SIEM_SYSLOG_HOST
+              value: {{ required "config.siem.syslog.host is required when the syslog channel is enabled" .syslog.host | quote }}
+            - name: ENDORIUMFORT_SIEM_SYSLOG_PORT
+              value: {{ .syslog.port | default 514 | quote }}
+            - name: ENDORIUMFORT_SIEM_SYSLOG_PROTOCOL
+              value: {{ .syslog.protocol | default "udp" | quote }}
+            - name: ENDORIUMFORT_SIEM_SYSLOG_FORMAT
+              value: {{ .syslog.format | default "rfc5424" | quote }}
+            - name: ENDORIUMFORT_SIEM_SYSLOG_MESSAGE
+              value: {{ .syslog.message | default "cee" | quote }}
+            - name: ENDORIUMFORT_SIEM_SYSLOG_FRAMING
+              value: {{ .syslog.framing | default "octet" | quote }}
+            - name: ENDORIUMFORT_SIEM_SYSLOG_FACILITY
+              value: {{ .syslog.facility | default 13 | quote }}
+            {{- with .syslog.appName }}
+            - name: ENDORIUMFORT_SIEM_SYSLOG_APP_NAME
+              value: {{ . | quote }}
+            {{- end }}
+            - name: ENDORIUMFORT_SIEM_SYSLOG_TLS_VERIFY
+              value: {{ ternary "1" "0" .syslog.tlsVerify | quote }}
+            {{- with .syslog.caFile }}
+            - name: ENDORIUMFORT_SIEM_SYSLOG_CA_FILE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .syslog.serverName }}
+            - name: ENDORIUMFORT_SIEM_SYSLOG_SERVER_NAME
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .webhook.enabled }}
+            - name: ENDORIUMFORT_SIEM_WEBHOOK_ENABLED
+              value: "1"
+            - name: ENDORIUMFORT_SIEM_WEBHOOK_URL
+              value: {{ required "config.siem.webhook.url is required when the webhook channel is enabled" .webhook.url | quote }}
+            - name: ENDORIUMFORT_SIEM_WEBHOOK_NDJSON
+              value: {{ ternary "1" "0" .webhook.ndjson | quote }}
+            {{- end }}
+            {{- if .splunk.enabled }}
+            - name: ENDORIUMFORT_SIEM_SPLUNK_ENABLED
+              value: "1"
+            - name: ENDORIUMFORT_SIEM_SPLUNK_URL
+              value: {{ required "config.siem.splunk.url is required when the Splunk channel is enabled" .splunk.url | quote }}
+            {{- with .splunk.index }}
+            - name: ENDORIUMFORT_SIEM_SPLUNK_INDEX
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- if and (eq .Values.database.type "postgresql") .Values.database.postgresql.existingSecret }}
+            - name: ENDORIUMFORT_DB_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.postgresql.existingSecret }}
+                  key: {{ .Values.database.postgresql.existingSecretKey }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -98,6 +180,10 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ include "endoriumfort.secretName" . }}
+          {{- end }}
+          {{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
           {{- end }}
           {{- with .Values.livenessProbe }}
           livenessProbe:

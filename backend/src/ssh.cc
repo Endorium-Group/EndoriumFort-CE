@@ -5,7 +5,11 @@
 #include "session_recording.h"
 #include "utils.h"
 
+#include <algorithm>
+#include <chrono>
+#include <cstdlib>
 #include <iostream>
+#include <unordered_map>
 #include <regex>
 #include <thread>
 #include <vector>
@@ -18,6 +22,15 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <libssh2.h>
+
+namespace {
+// Identity of the websocket's user, handed from onaccept to onopen.
+struct SshAccept {
+  int user_id = 0;
+  std::string user;
+  std::string role;
+};
+}  // namespace
 #endif
 #endif
 
@@ -129,6 +142,54 @@ void ssh_disconnect(SshConnection &connection) {
   }
 }
 
+namespace {
+
+// Shells whose browser terminal went away (page reloaded, tab closed, network
+// blip) but which are kept for a grace period so the same person can resume
+// them. Keyed by session id. Recording and command logging go on meanwhile.
+std::mutex g_detached_mutex;
+std::unordered_map<int, std::shared_ptr<SshConnection>> g_detached;
+
+// Output kept while detached and replayed on resume (the end of it).
+constexpr size_t kBacklogMax = 64 * 1024;
+
+// ENDORIUMFORT_SSH_RESUME_GRACE_SECONDS: how long a detached shell waits
+// (default 120 s, max 3600). 0 ends the session as soon as the page goes away.
+int resume_grace_seconds() {
+  const char *value = std::getenv("ENDORIUMFORT_SSH_RESUME_GRACE_SECONDS");
+  if (!value || !*value) return 120;
+  return std::clamp(std::atoi(value), 0, 3600);
+}
+
+void audit_ssh_attach(AppContext &ctx, const std::string &type,
+                      const std::string &actor, const std::string &role,
+                      int session_id, int grace_seconds) {
+  AuditEvent event;
+  event.id = ctx.next_audit_id.fetch_add(1);
+  event.type = type;
+  event.actor = actor;
+  event.role = role;
+  event.createdAt = now_utc();
+  event.payloadJson = "{\"sessionId\":" + std::to_string(session_id) +
+                      (grace_seconds > 0 ? ",\"graceSeconds\":" + std::to_string(grace_seconds) : "") + "}";
+  event.payloadIsJson = true;
+  ctx.append_audit(event);
+}
+
+// Send to the attached browser terminal, or keep for a later resume.
+void deliver_output(SshConnection &connection, const std::string &output) {
+  std::lock_guard<std::mutex> lock(connection.client_mutex);
+  if (connection.client) {
+    connection.client->send_binary(output);
+    return;
+  }
+  connection.backlog += output;
+  if (connection.backlog.size() > kBacklogMax)
+    connection.backlog.erase(0, connection.backlog.size() - kBacklogMax);
+}
+
+}  // namespace
+
 #endif
 #endif
 
@@ -158,9 +219,23 @@ void register_ssh_routes(CrowApp &app, AppContext &ctx) {
       }
     }
     for (const auto &entry : to_close) {
+      if (entry.second) {
+        std::lock_guard<std::mutex> clock(entry.second->client_mutex);
+        entry.second->client = nullptr;
+      }
       if (entry.second) ssh_disconnect(*entry.second);
       if (entry.first) entry.first->close("terminated");
     }
+    std::shared_ptr<SshConnection> detached;
+    {
+      std::lock_guard<std::mutex> lock(g_detached_mutex);
+      auto it = g_detached.find(session_id);
+      if (it != g_detached.end()) {
+        detached = it->second;
+        g_detached.erase(it);
+      }
+    }
+    if (detached) ssh_disconnect(*detached);
   };
 
   CROW_WEBSOCKET_ROUTE(app, "/api/ws/ssh")
@@ -184,11 +259,20 @@ void register_ssh_routes(CrowApp &app, AppContext &ctx) {
                   << " role=" << auth->role << std::endl;
         bool allowed = ctx.has_permission(auth->userId, auth->role, "ssh.connect");
         std::cerr << "[WS] onaccept: allowed=" << allowed << std::endl;
+        if (allowed && userdata)
+          *userdata = new SshAccept{auth->userId, auth->user, auth->role};
         return allowed;
       })
       .onopen([&ctx](crow::websocket::connection &conn) {
         std::cerr << "[WS] onopen: connection opened" << std::endl;
         auto connection = std::make_shared<SshConnection>();
+        if (auto *accepted = static_cast<SshAccept *>(conn.userdata())) {
+          connection->auth_user_id = accepted->user_id;
+          connection->auth_user = accepted->user;
+          connection->auth_role = accepted->role;
+          delete accepted;
+          conn.userdata(nullptr);
+        }
         {
           std::lock_guard<std::mutex> lock(ctx.ws_mutex);
           ctx.ws_connections[&conn] = connection;
@@ -206,6 +290,38 @@ void register_ssh_routes(CrowApp &app, AppContext &ctx) {
           }
         }
         if (connection) {
+          {
+            std::lock_guard<std::mutex> clock(connection->client_mutex);
+            connection->client = nullptr;
+          }
+          // A reload or a closed tab should not end the shell: keep it for a
+          // grace period so its owner can resume it (Sessions › Resume).
+          const int grace = resume_grace_seconds();
+          if (connection->session_id > 0 && connection->running && grace > 0) {
+            const int session_id = connection->session_id;
+            {
+              std::lock_guard<std::mutex> lock(g_detached_mutex);
+              g_detached[session_id] = connection;
+            }
+            audit_ssh_attach(ctx, "session.detached", connection->auth_user,
+                             connection->auth_role, session_id, grace);
+            std::thread([&ctx, connection, session_id, grace]() {
+              std::this_thread::sleep_for(std::chrono::seconds(grace));
+              bool expired = false;
+              {
+                std::lock_guard<std::mutex> lock(g_detached_mutex);
+                auto it = g_detached.find(session_id);
+                if (it != g_detached.end() && it->second == connection) {
+                  g_detached.erase(it);
+                  expired = true;
+                }
+              }
+              if (!expired) return;  // resumed or ended meanwhile
+              ctx.terminate_session(session_id, "system", "system", "session.close");
+              ssh_disconnect(*connection);
+            }).detach();
+            return;
+          }
           if (connection->session_id > 0) {
             ctx.terminate_session(connection->session_id, "system",
                                   "system", "session.close");
@@ -273,6 +389,50 @@ void register_ssh_routes(CrowApp &app, AppContext &ctx) {
               return;
             }
             target_session = it->second;
+          }
+          // Only the person who opened the session (or an admin) may drive it:
+          // the vaulted credential is injected for whoever starts the shell.
+          if (!ctx.may_operate_session(connection->auth_user_id,
+                                       connection->auth_user,
+                                       connection->auth_role,
+                                       ctx.session_owner(target_session))) {
+            conn.send_text(
+                "{\"type\":\"error\",\"message\":\"Session not found\"}");
+            return;
+          }
+
+          // The page was reloaded while this shell kept running: attach this
+          // terminal to it instead of opening a second SSH connection.
+          std::shared_ptr<SshConnection> detached;
+          {
+            std::lock_guard<std::mutex> lock(g_detached_mutex);
+            auto it = g_detached.find(session_id);
+            if (it != g_detached.end() && it->second->running) {
+              detached = it->second;
+              g_detached.erase(it);
+            }
+          }
+          if (detached) {
+            {
+              std::lock_guard<std::mutex> lock(ctx.ws_mutex);
+              ctx.ws_connections[&conn] = detached;
+            }
+            if (detached->channel)
+              libssh2_channel_request_pty_size(detached->channel, cols, rows);
+            conn.send_text("{\"type\":\"status\",\"message\":\"Session resumed\"}");
+            {
+              // Replay what was missed, then go live (same lock as the reader,
+              // so nothing is lost or reordered in between).
+              std::lock_guard<std::mutex> clock(detached->client_mutex);
+              if (!detached->backlog.empty()) {
+                conn.send_binary(detached->backlog);
+                detached->backlog.clear();
+              }
+              detached->client = &conn;
+            }
+            audit_ssh_attach(ctx, "session.resumed", connection->auth_user,
+                             connection->auth_role, session_id, 0);
+            return;
           }
 
           Resource session_resource;
@@ -344,6 +504,10 @@ void register_ssh_routes(CrowApp &app, AppContext &ctx) {
           }
 
           connection->session_id = session_id;
+          {
+            std::lock_guard<std::mutex> clock(connection->client_mutex);
+            connection->client = &conn;
+          }
           connection->command_guard_enabled = false;
           {
             std::lock_guard<std::mutex> rlock(ctx.resource_mutex);
@@ -386,7 +550,7 @@ void register_ssh_routes(CrowApp &app, AppContext &ctx) {
           }
 
           connection->reader =
-              std::thread([&conn, connection, &ctx]() {
+              std::thread([connection, &ctx]() {
                 std::vector<char> buffer(4096);
                 while (connection->running) {
                   ssize_t rc = libssh2_channel_read(
@@ -402,7 +566,7 @@ void register_ssh_routes(CrowApp &app, AppContext &ctx) {
                     connection->recorder->append_output(
                         output.data(), output.size());
                   }
-                  conn.send_binary(output);
+                  deliver_output(*connection, output);
                   // Broadcast to shadow watchers
                   {
                     std::lock_guard<std::mutex> slock(ctx.shadow_mutex);
@@ -449,16 +613,26 @@ void register_ssh_routes(CrowApp &app, AppContext &ctx) {
                     }
                   }
                 }
-                if (connection->running) {
-                  conn.send_text(
-                      "{\"type\":\"status\",\"message\":\"SSH closed\"}");
-                }
+                const bool was_running = connection->running;
                 connection->running = false;
+                if (connection->session_id > 0) {
+                  // The shell ended on its own (exit, network) while detached.
+                  std::lock_guard<std::mutex> lock(g_detached_mutex);
+                  auto it = g_detached.find(connection->session_id);
+                  if (it != g_detached.end() && it->second == connection) g_detached.erase(it);
+                }
                 if (connection->session_id > 0) {
                   ctx.terminate_session(connection->session_id, "system",
                                         "system", "session.close");
                 }
-                conn.close("ssh-closed");
+                std::lock_guard<std::mutex> clock(connection->client_mutex);
+                if (connection->client) {
+                  if (was_running)
+                    connection->client->send_text(
+                        "{\"type\":\"status\",\"message\":\"SSH closed\"}");
+                  connection->client->close("ssh-closed");
+                  connection->client = nullptr;
+                }
               });
           return;
         }

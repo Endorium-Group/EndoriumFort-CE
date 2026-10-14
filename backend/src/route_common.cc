@@ -2,11 +2,12 @@
 #include "route_common.h"
 
 #include "app_context.h"
+#include "settings.h"
 
-#include <sqlite3.h>
 #include "utils.h"  // to_lower, trim_copy
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <string>
 
@@ -15,9 +16,20 @@ bool has_permission(AppContext &ctx, const AuthSession &auth,
   return ctx.has_permission(auth.userId, auth.role, permission);
 }
 
+// The three helpers below are the single seam through which every integration
+// reads its configuration, so consulting the settings store here is what makes
+// the admin console able to configure them. A stored value wins over the
+// environment; clearing it falls back to the environment, then to the default.
 bool env_flag_enabled(const char *name, bool fallback) {
   if (!name || !*name) return fallback;
-  const char *raw = std::getenv(name);
+  std::string stored_text;
+  const char *raw = nullptr;
+  if (const auto stored = settings::stored_value(name)) {
+    stored_text = *stored;
+    raw = stored_text.c_str();
+  } else {
+    raw = std::getenv(name);
+  }
   if (!raw) return fallback;
   const std::string normalized = to_lower(trim_copy(raw));
   if (normalized == "1" || normalized == "true" || normalized == "yes" ||
@@ -33,6 +45,10 @@ bool env_flag_enabled(const char *name, bool fallback) {
 
 std::string env_string_value(const char *name, const std::string &fallback) {
   if (!name || !*name) return fallback;
+  if (const auto stored = settings::stored_value(name)) {
+    const std::string value = trim_copy(*stored);
+    if (!value.empty()) return value;
+  }
   const char *raw = std::getenv(name);
   if (!raw) return fallback;
   const std::string value = trim_copy(raw);
@@ -42,10 +58,17 @@ std::string env_string_value(const char *name, const std::string &fallback) {
 int env_int_value(const char *name, int fallback, int min_value,
                   int max_value) {
   if (!name || !*name) return fallback;
-  const char *raw = std::getenv(name);
-  if (!raw) return fallback;
+  std::string text;
+  if (const auto stored = settings::stored_value(name)) {
+    text = trim_copy(*stored);
+  } else {
+    const char *raw = std::getenv(name);
+    if (!raw) return fallback;
+    text = trim_copy(raw);
+  }
+  if (text.empty()) return fallback;
   try {
-    const int parsed = std::stoi(trim_copy(raw));
+    const int parsed = std::stoi(text);
     return std::clamp(parsed, min_value, max_value);
   } catch (...) {
     return fallback;
@@ -114,73 +137,48 @@ void append_behavior_anomaly_event(AppContext &ctx, const std::string &event_typ
 
 // ── Access policy/profile read helpers (shared: core session + pro) ──
 int next_table_numeric_id(AppContext &ctx, const char *table_name) {
-  if (!ctx.sqlite.db || !table_name || !*table_name) return 1;
+  if (!ctx.sqlite.is_open() || !table_name || !*table_name) return 1;
   std::lock_guard<std::mutex> lock(ctx.sqlite.mutex);
-  const std::string sql =
-      std::string("SELECT COALESCE(MAX(id), 0) + 1 FROM ") + table_name;
-  sqlite3_stmt *stmt = nullptr;
-  if (sqlite3_prepare_v2(ctx.sqlite.db, sql.c_str(), -1, &stmt, nullptr) !=
-      SQLITE_OK) {
-    return 1;
-  }
-  int next_id = 1;
-  if (sqlite3_step(stmt) == SQLITE_ROW) {
-    next_id = std::max(1, sqlite3_column_int(stmt, 0));
-  }
-  sqlite3_finalize(stmt);
-  return next_id;
+  auto stmt = ctx.sqlite.prepare(
+      std::string("SELECT COALESCE(MAX(id), 0) + 1 FROM ") + table_name);
+  if (!stmt) return 1;
+  if (!stmt.step()) return 1;
+  return std::max(1, stmt.column_int(0));
 }
 
 std::vector<AccessPolicy> query_access_policies(AppContext &ctx) {
   std::vector<AccessPolicy> items;
-  if (!ctx.sqlite.db) return items;
+  if (!ctx.sqlite.is_open()) return items;
   std::lock_guard<std::mutex> lock(ctx.sqlite.mutex);
-  const char *sql =
+  auto stmt = ctx.sqlite.prepare(
       "SELECT id, name, description, identity_pattern, group_name, role, "
       "resource_tags_csv, risk_level, ticket_required, "
       "require_justification, approval_mode, mfa_requirement, time_window, "
       "max_duration_seconds, routing_constraint, enabled, created_at, "
-      "updated_at FROM access_policies ORDER BY id ASC";
-  sqlite3_stmt *stmt = nullptr;
-  if (sqlite3_prepare_v2(ctx.sqlite.db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-    return items;
-  }
-  while (sqlite3_step(stmt) == SQLITE_ROW) {
+      "updated_at FROM access_policies ORDER BY id ASC");
+  if (!stmt) return items;
+  while (stmt.step()) {
     AccessPolicy policy;
-    policy.id = sqlite3_column_int(stmt, 0);
-    if (auto value = sqlite3_column_text(stmt, 1))
-      policy.name = reinterpret_cast<const char *>(value);
-    if (auto value = sqlite3_column_text(stmt, 2))
-      policy.description = reinterpret_cast<const char *>(value);
-    if (auto value = sqlite3_column_text(stmt, 3))
-      policy.identityPattern = reinterpret_cast<const char *>(value);
-    if (auto value = sqlite3_column_text(stmt, 4))
-      policy.groupName = reinterpret_cast<const char *>(value);
-    if (auto value = sqlite3_column_text(stmt, 5))
-      policy.role = reinterpret_cast<const char *>(value);
-    if (auto value = sqlite3_column_text(stmt, 6))
-      policy.resourceTagsCsv = reinterpret_cast<const char *>(value);
-    if (auto value = sqlite3_column_text(stmt, 7))
-      policy.riskLevel = reinterpret_cast<const char *>(value);
-    policy.ticketRequired = sqlite3_column_int(stmt, 8) != 0;
-    policy.requireJustification = sqlite3_column_int(stmt, 9) != 0;
-    if (auto value = sqlite3_column_text(stmt, 10))
-      policy.approvalMode = reinterpret_cast<const char *>(value);
-    if (auto value = sqlite3_column_text(stmt, 11))
-      policy.mfaRequirement = reinterpret_cast<const char *>(value);
-    if (auto value = sqlite3_column_text(stmt, 12))
-      policy.timeWindow = reinterpret_cast<const char *>(value);
-    policy.maxDurationSeconds = sqlite3_column_int(stmt, 13);
-    if (auto value = sqlite3_column_text(stmt, 14))
-      policy.routingConstraint = reinterpret_cast<const char *>(value);
-    policy.enabled = sqlite3_column_int(stmt, 15) != 0;
-    if (auto value = sqlite3_column_text(stmt, 16))
-      policy.createdAt = reinterpret_cast<const char *>(value);
-    if (auto value = sqlite3_column_text(stmt, 17))
-      policy.updatedAt = reinterpret_cast<const char *>(value);
+    policy.id = stmt.column_int(0);
+    stmt.column_text_into(1, policy.name);
+    stmt.column_text_into(2, policy.description);
+    stmt.column_text_into(3, policy.identityPattern);
+    stmt.column_text_into(4, policy.groupName);
+    stmt.column_text_into(5, policy.role);
+    stmt.column_text_into(6, policy.resourceTagsCsv);
+    stmt.column_text_into(7, policy.riskLevel);
+    policy.ticketRequired = stmt.column_int(8) != 0;
+    policy.requireJustification = stmt.column_int(9) != 0;
+    stmt.column_text_into(10, policy.approvalMode);
+    stmt.column_text_into(11, policy.mfaRequirement);
+    stmt.column_text_into(12, policy.timeWindow);
+    policy.maxDurationSeconds = stmt.column_int(13);
+    stmt.column_text_into(14, policy.routingConstraint);
+    policy.enabled = stmt.column_int(15) != 0;
+    stmt.column_text_into(16, policy.createdAt);
+    stmt.column_text_into(17, policy.updatedAt);
     items.push_back(policy);
   }
-  sqlite3_finalize(stmt);
   return items;
 }
 
@@ -194,32 +192,103 @@ std::optional<AccessPolicy> query_access_policy_by_id(AppContext &ctx, int polic
 
 std::vector<AccessProfile> query_access_profiles(AppContext &ctx) {
   std::vector<AccessProfile> items;
-  if (!ctx.sqlite.db) return items;
+  if (!ctx.sqlite.is_open()) return items;
   std::lock_guard<std::mutex> lock(ctx.sqlite.mutex);
-  const char *sql =
+  auto stmt = ctx.sqlite.prepare(
       "SELECT id, name, description, resource_tags_csv, resource_ids_csv, "
-      "policy_id, created_at, updated_at FROM access_profiles ORDER BY id ASC";
-  sqlite3_stmt *stmt = nullptr;
-  if (sqlite3_prepare_v2(ctx.sqlite.db, sql, -1, &stmt, nullptr) != SQLITE_OK)
-    return items;
-  while (sqlite3_step(stmt) == SQLITE_ROW) {
+      "policy_id, created_at, updated_at FROM access_profiles ORDER BY id ASC");
+  if (!stmt) return items;
+  while (stmt.step()) {
     AccessProfile profile;
-    profile.id = sqlite3_column_int(stmt, 0);
-    if (auto value = sqlite3_column_text(stmt, 1))
-      profile.name = reinterpret_cast<const char *>(value);
-    if (auto value = sqlite3_column_text(stmt, 2))
-      profile.description = reinterpret_cast<const char *>(value);
-    if (auto value = sqlite3_column_text(stmt, 3))
-      profile.resourceTagsCsv = reinterpret_cast<const char *>(value);
-    if (auto value = sqlite3_column_text(stmt, 4))
-      profile.resourceIdsCsv = reinterpret_cast<const char *>(value);
-    profile.policyId = sqlite3_column_int(stmt, 5);
-    if (auto value = sqlite3_column_text(stmt, 6))
-      profile.createdAt = reinterpret_cast<const char *>(value);
-    if (auto value = sqlite3_column_text(stmt, 7))
-      profile.updatedAt = reinterpret_cast<const char *>(value);
+    profile.id = stmt.column_int(0);
+    stmt.column_text_into(1, profile.name);
+    stmt.column_text_into(2, profile.description);
+    stmt.column_text_into(3, profile.resourceTagsCsv);
+    stmt.column_text_into(4, profile.resourceIdsCsv);
+    profile.policyId = stmt.column_int(5);
+    stmt.column_text_into(6, profile.createdAt);
+    stmt.column_text_into(7, profile.updatedAt);
     items.push_back(profile);
   }
-  sqlite3_finalize(stmt);
   return items;
+}
+
+std::optional<ParsedEndpointUrl> parse_endpoint_url(const std::string &raw_url) {
+  const std::string url = trim_copy(raw_url);
+  if (url.empty()) return std::nullopt;
+
+  const size_t scheme_sep = url.find("://");
+  if (scheme_sep == std::string::npos) return std::nullopt;
+
+  ParsedEndpointUrl parsed;
+  parsed.scheme = to_lower(url.substr(0, scheme_sep));
+  if (parsed.scheme != "http" && parsed.scheme != "https") {
+    return std::nullopt;
+  }
+
+  std::string remainder = url.substr(scheme_sep + 3);
+  if (remainder.empty()) return std::nullopt;
+
+  const size_t path_pos = remainder.find('/');
+  const size_t query_pos = remainder.find('?');
+  size_t authority_end = std::string::npos;
+  if (path_pos == std::string::npos && query_pos == std::string::npos) {
+    authority_end = remainder.size();
+  } else if (path_pos == std::string::npos) {
+    authority_end = query_pos;
+  } else if (query_pos == std::string::npos) {
+    authority_end = path_pos;
+  } else {
+    authority_end = std::min(path_pos, query_pos);
+  }
+
+  const std::string authority = remainder.substr(0, authority_end);
+  if (authority.empty()) return std::nullopt;
+
+  parsed.target = authority_end < remainder.size() ? remainder.substr(authority_end)
+                                                    : "/";
+  if (parsed.target.empty()) parsed.target = "/";
+  if (!parsed.target.empty() && parsed.target[0] != '/') {
+    parsed.target = "/" + parsed.target;
+  }
+
+  parsed.port = parsed.scheme == "https" ? 443 : 80;
+  if (authority.front() == '[') {
+    const size_t close = authority.find(']');
+    if (close == std::string::npos || close <= 1) return std::nullopt;
+    parsed.host = authority.substr(1, close - 1);
+    if (close + 1 < authority.size()) {
+      if (authority[close + 1] != ':') return std::nullopt;
+      const std::string port_part = authority.substr(close + 2);
+      if (port_part.empty() ||
+          !std::all_of(port_part.begin(), port_part.end(),
+                       [](unsigned char c) { return std::isdigit(c) != 0; })) {
+        return std::nullopt;
+      }
+      try {
+        parsed.port = std::stoi(port_part);
+      } catch (...) {
+        return std::nullopt;
+      }
+    }
+  } else {
+    parsed.host = authority;
+    const size_t colon = authority.rfind(':');
+    if (colon != std::string::npos && authority.find(':') == colon) {
+      const std::string port_part = authority.substr(colon + 1);
+      if (!port_part.empty() &&
+          std::all_of(port_part.begin(), port_part.end(),
+                      [](unsigned char c) { return std::isdigit(c) != 0; })) {
+        try {
+          parsed.port = std::stoi(port_part);
+          parsed.host = authority.substr(0, colon);
+        } catch (...) {
+          return std::nullopt;
+        }
+      }
+    }
+  }
+
+  if (parsed.host.empty()) return std::nullopt;
+  return parsed;
 }

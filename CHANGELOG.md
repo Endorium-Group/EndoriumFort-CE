@@ -2,13 +2,122 @@
 
 ## Unreleased
 
-### Community Edition login
+### SIEM / log export (Enterprise)
 
-- Hide the "Sign in with SSO (OIDC)" button in the Community build: SSO is Enterprise-only and its routes are absent from the CE backend (the button led to a 404). The edition is resolved at build time from the `@pro` overlay (`__EF_EDITION__` in `vite.config.js`).
+The audit-event export went from two partial HTTP channels to a real shipping
+pipeline, extracted into `backend/src/pro/siem.{h,cc}`.
 
-### E2E tests
+- Added the **syslog** channel: RFC 5424 (and RFC 3164) over **UDP, TCP or TLS**,
+  with RFC 6587 octet-counted framing, a configurable facility and APP-NAME, and
+  certificate **chain and hostname** verification against a configurable CA
+  bundle. Previously the channel was listed in the catalog but refused every
+  delivery with `channel not implemented`.
+- Message bodies default to the `@cee:` cookie convention, which VictoriaLogs and
+  rsyslog's `mmjsonparse` expand back into real log fields — so field-level
+  queries work over syslog. `json` and `text` bodies are also available.
+- Replaced the flat `{id,type,actor,role,createdAt,payload}` payload with a
+  **flat, SOC-ready field model**: `_time`/`_msg` (VictoriaLogs' reserved names,
+  ordinary fields everywhere else), `event_category`/`event_action`, `outcome`,
+  `severity`/`level`, `host`, `node_id`, `version`, and payload keys promoted to
+  stable names (`session_id`, `source_ip`, `target`, `resource_name`, …). Any
+  other key is kept behind an `ef_` prefix, so a payload can no longer collide
+  with a reserved field or spoof `actor`, `host` or `severity`.
+- Field values are sanitized before serialization (control characters dropped,
+  invalid UTF-8 replaced, values truncated): a malformed payload can no longer
+  make a receiver reject the whole batch.
+- Deliveries are **batched and retried** with exponential backoff instead of
+  being counted as failed on the first error, the queue limit is configurable
+  (20000 by default, oldest dropped on overflow), and the shutdown hook now
+  **flushes the backlog** instead of discarding it.
+- Added a periodic `integration.siem.heartbeat` event so a SOC can alert on the
+  bastion going silent, which no rule over the events themselves can detect.
+- Stream connections are reused, probed for liveness before reuse (a receiver
+  that closed an idle connection no longer swallows a batch counted as
+  delivered), reconnected automatically, and opened with a **bounded connect
+  timeout** so a collector behind a DROPping firewall cannot stall the worker.
+- `GET /api/integrations/siem/channels` now reports each channel's destination
+  (credentials stripped), retry count, last failure time, queue depth, drops and
+  heartbeat state; `POST /api/integrations/siem/events` ships the drill event
+  synchronously so the operator gets the transport error itself.
+- Splunk HEC deliveries now send a numeric `time`, the emitting `host` and an
+  optional index, and batch several events per request.
+- Admin UI: the SIEM card shows the destination, retries and heartbeat state.
 
-- The bootstrap admin spec now exercises the whole first-login flow (password rotation, passkey option, TOTP enrolment, then a re-login that asks for the authenticator code) instead of skipping itself. The specs run in order on one worker, the bootstrap one after the login one, and its fallback new password meets the 12-character minimum.
+### Integration configuration from the admin console
+
+Every integration was configurable only through environment variables, which
+meant a redeploy to change a collector address. The configuration layer now has
+a store in front of the environment.
+
+- Added `backend/src/settings.{h,cc}`: a validated key/value store read by
+  `env_flag_enabled` / `env_string_value` / `env_int_value` and by the
+  per-provider OIDC `dynamic_env_*` helpers. Because those three functions are
+  the single seam every integration already reads through, **121 keys** across
+  SIEM, LDAP, SSO, ITSM, the RBI transfer policy and the shared delivery mode
+  became configurable with no change at any call site.
+- Precedence is store → environment → compiled default. A stored value wins and
+  the UI labels it "overrides the environment", so a Helm value that stopped
+  applying is visible instead of being debugged for an hour; "Revert to
+  environment" deletes the row.
+- Changes apply immediately — no restart. Other cluster nodes reload the store
+  every 15s (`ENDORIUMFORT_SETTINGS_REFRESH_SECONDS`); a transient database
+  error leaves the live cache in place rather than emptying it.
+- The catalog is a security boundary, not a convenience list: anything naming an
+  executable or passing process arguments (`ENDORIUMFORT_RBI_CHROMIUM`,
+  `_HELPER`, `_FLAGS`, `_ENGINE`), the license, the vault key, the database DSN
+  and the cluster secrets are absent on purpose, and those keys are read with
+  raw `getenv` so they stay out of reach even if the catalog were wrong.
+  `backend/tests/settings_test.cc` asserts the absences.
+- Secrets (webhook/HEC tokens, ServiceNow password, OIDC client secrets) are
+  encrypted with AES-256-GCM under the vault key, never returned by the API
+  (only `configured: true/false`), and **refused** when no vault key is
+  configured rather than stored in the clear. An unreadable row is ignored at
+  load, so an integration falls back to the environment instead of receiving an
+  empty credential.
+- Values are validated before being stored: strict integer ranges (refused, not
+  silently clamped), enum membership, `http(s)` URL scheme only (a `file://`
+  webhook is refused), no control characters — these values are interpolated
+  into syslog lines, HTTP requests and LDAP DNs — and a 4 KiB cap. A `PUT` is
+  validated as a whole, so a single bad field refuses the form instead of
+  applying half of it.
+- Added `GET`/`PUT /api/settings/integrations` behind a new `settings.manage`
+  permission (admin by default), with `settings.integration.updated` /
+  `.cleared` audit events whose payload redacts secret values.
+- Admin UI: each integration row grows a configuration form generated from the
+  backend descriptors (type, bounds, enum, help), so a key added to the catalog
+  appears with no frontend change. Shows the source of each value, who set it,
+  and whether it shadows the environment.
+- The SIEM worker now reads its origin per batch instead of once per thread, so
+  `ENDORIUMFORT_SIEM_HOSTNAME` set from the UI applies live like every other
+  key instead of waiting for a restart.
+
+### Fixed
+
+- **A TLS peer closing a connection could kill the bastion.** `SSL_write` cannot
+  pass `MSG_NOSIGNAL`, so SIGPIPE reached a process with no handler and its
+  default action terminated it — reachable through the HTTPS proxy, the OIDC
+  token exchange, the ITSM lookups and the HTTPS SIEM channels. SIGPIPE is now
+  ignored at startup, turning the condition back into the `EPIPE` the call sites
+  already handle. Found by end-to-end testing the TLS syslog channel.
+
+### Internal
+
+- Moved `parse_endpoint_url` / `ParsedEndpointUrl` from `pro/enterprise.cc` into
+  the shared `route_common` TU, where the outbound integrations can all reach it.
+- Added `backend/tests/siem_test.cc`: classification, the field model, payload
+  flattening, JSON hygiene (invalid UTF-8, control characters, truncation) and
+  the syslog wire format (PRI, header, structured data, `@cee`, framing).
+- Helm: `config.siem` block with `secrets.siemWebhookToken` /
+  `secrets.siemSplunkToken`; enabling a channel without its address now fails
+  the render instead of at the first event.
+- Documentation: `docs/siem-logging.md` (field reference, channel configuration,
+  VictoriaLogs recipes for both the syslog listener and `/insert/jsonline`,
+  LogsQL queries for a SOC, operational counters and known limits) and
+  `docs/integration-settings.md` (precedence, the catalog's security boundary,
+  validation, secret handling, API, audit trail, HA and GitOps).
+- `crow::response` silently rewrites a status code it does not know to 500, so
+  the settings route answers 400 rather than 422. Note that `pro/cluster.cc`
+  (412) and `pro/relay.cc` (412, 426) still hit this and surface as 500.
 
 ## 1.2.3 - 2026-09-24
 

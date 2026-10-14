@@ -2,6 +2,7 @@
 
 #include "routes.h"
 #include "app_context.h"
+#include "audit_query.h"
 #include "auth_mfa.h"
 #include "crypto.h"
 #include "http_proxy.h"
@@ -18,8 +19,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <functional>
+#include <optional>
 #include <sstream>
 
 namespace {
@@ -201,54 +204,41 @@ bool user_meets_mfa_requirement(const UserAccount &user,
 
 std::vector<AccessProfile> query_user_access_profiles(AppContext &ctx, int user_id) {
   std::vector<AccessProfile> items;
-  if (!ctx.sqlite.db || user_id <= 0) return items;
+  if (!ctx.sqlite.is_open() || user_id <= 0) return items;
   std::lock_guard<std::mutex> lock(ctx.sqlite.mutex);
-  const char *sql =
+  auto stmt = ctx.sqlite.prepare(
       "SELECT p.id, p.name, p.description, p.resource_tags_csv, "
       "p.resource_ids_csv, p.policy_id, p.created_at, p.updated_at "
       "FROM access_profiles p "
       "INNER JOIN user_access_profiles up ON up.profile_id = p.id "
-      "WHERE up.user_id = ? ORDER BY p.id ASC";
-  sqlite3_stmt *stmt = nullptr;
-  if (sqlite3_prepare_v2(ctx.sqlite.db, sql, -1, &stmt, nullptr) != SQLITE_OK)
-    return items;
-  sqlite3_bind_int(stmt, 1, user_id);
-  while (sqlite3_step(stmt) == SQLITE_ROW) {
+      "WHERE up.user_id = ?1 ORDER BY p.id ASC");
+  if (!stmt) return items;
+  stmt.bind_int(1, user_id);
+  while (stmt.step()) {
     AccessProfile profile;
-    profile.id = sqlite3_column_int(stmt, 0);
-    if (auto value = sqlite3_column_text(stmt, 1))
-      profile.name = reinterpret_cast<const char *>(value);
-    if (auto value = sqlite3_column_text(stmt, 2))
-      profile.description = reinterpret_cast<const char *>(value);
-    if (auto value = sqlite3_column_text(stmt, 3))
-      profile.resourceTagsCsv = reinterpret_cast<const char *>(value);
-    if (auto value = sqlite3_column_text(stmt, 4))
-      profile.resourceIdsCsv = reinterpret_cast<const char *>(value);
-    profile.policyId = sqlite3_column_int(stmt, 5);
-    if (auto value = sqlite3_column_text(stmt, 6))
-      profile.createdAt = reinterpret_cast<const char *>(value);
-    if (auto value = sqlite3_column_text(stmt, 7))
-      profile.updatedAt = reinterpret_cast<const char *>(value);
+    profile.id = stmt.column_int(0);
+    stmt.column_text_into(1, profile.name);
+    stmt.column_text_into(2, profile.description);
+    stmt.column_text_into(3, profile.resourceTagsCsv);
+    stmt.column_text_into(4, profile.resourceIdsCsv);
+    profile.policyId = stmt.column_int(5);
+    stmt.column_text_into(6, profile.createdAt);
+    stmt.column_text_into(7, profile.updatedAt);
     items.push_back(profile);
   }
-  sqlite3_finalize(stmt);
   return items;
 }
 
 std::vector<int> query_user_access_profile_ids(AppContext &ctx, int user_id) {
   std::vector<int> ids;
-  if (!ctx.sqlite.db || user_id <= 0) return ids;
+  if (!ctx.sqlite.is_open() || user_id <= 0) return ids;
   std::lock_guard<std::mutex> lock(ctx.sqlite.mutex);
-  const char *sql =
-      "SELECT profile_id FROM user_access_profiles WHERE user_id=? ORDER BY profile_id ASC";
-  sqlite3_stmt *stmt = nullptr;
-  if (sqlite3_prepare_v2(ctx.sqlite.db, sql, -1, &stmt, nullptr) != SQLITE_OK)
-    return ids;
-  sqlite3_bind_int(stmt, 1, user_id);
-  while (sqlite3_step(stmt) == SQLITE_ROW) {
-    ids.push_back(sqlite3_column_int(stmt, 0));
-  }
-  sqlite3_finalize(stmt);
+  auto stmt = ctx.sqlite.prepare(
+      "SELECT profile_id FROM user_access_profiles WHERE user_id=?1 "
+      "ORDER BY profile_id ASC");
+  if (!stmt) return ids;
+  stmt.bind_int(1, user_id);
+  while (stmt.step()) ids.push_back(stmt.column_int(0));
   return ids;
 }
 
@@ -256,104 +246,75 @@ std::vector<int> query_user_access_profile_ids(AppContext &ctx, int user_id) {
 
 
 bool assign_access_profile_to_user(AppContext &ctx, int user_id, int profile_id) {
-  if (!ctx.sqlite.db) return true;
+  if (!ctx.sqlite.is_open()) return true;
   std::lock_guard<std::mutex> lock(ctx.sqlite.mutex);
-  const char *sql =
-      "INSERT OR IGNORE INTO user_access_profiles (user_id, profile_id, created_at) "
-      "VALUES (?, ?, ?)";
-  sqlite3_stmt *stmt = nullptr;
-  if (sqlite3_prepare_v2(ctx.sqlite.db, sql, -1, &stmt, nullptr) != SQLITE_OK)
-    return false;
-  sqlite3_bind_int(stmt, 1, user_id);
-  sqlite3_bind_int(stmt, 2, profile_id);
-  const std::string created_at = now_utc();
-  sqlite3_bind_text(stmt, 3, created_at.c_str(), -1, SQLITE_TRANSIENT);
-  const bool ok = sqlite3_step(stmt) == SQLITE_DONE;
-  sqlite3_finalize(stmt);
-  return ok;
+  auto stmt = ctx.sqlite.prepare(
+      "INSERT INTO user_access_profiles (user_id, profile_id, created_at) "
+      "VALUES (?1, ?2, ?3) ON CONFLICT DO NOTHING");
+  if (!stmt) return false;
+  stmt.bind_int(1, user_id);
+  stmt.bind_int(2, profile_id);
+  stmt.bind_text(3, now_utc());
+  return stmt.execute();
 }
 
 bool revoke_access_profile_from_user(AppContext &ctx, int user_id, int profile_id) {
-  if (!ctx.sqlite.db) return true;
+  if (!ctx.sqlite.is_open()) return true;
   std::lock_guard<std::mutex> lock(ctx.sqlite.mutex);
-  const char *sql =
-      "DELETE FROM user_access_profiles WHERE user_id=? AND profile_id=?";
-  sqlite3_stmt *stmt = nullptr;
-  if (sqlite3_prepare_v2(ctx.sqlite.db, sql, -1, &stmt, nullptr) != SQLITE_OK)
-    return false;
-  sqlite3_bind_int(stmt, 1, user_id);
-  sqlite3_bind_int(stmt, 2, profile_id);
-  const bool ok = sqlite3_step(stmt) == SQLITE_DONE;
-  sqlite3_finalize(stmt);
-  return ok;
+  auto stmt = ctx.sqlite.prepare(
+      "DELETE FROM user_access_profiles WHERE user_id=?1 AND profile_id=?2");
+  if (!stmt) return false;
+  stmt.bind_int(1, user_id);
+  stmt.bind_int(2, profile_id);
+  return stmt.execute();
 }
 
 
 
 bool insert_access_grant_db(AppContext &ctx, const AccessGrant &grant) {
-  if (!ctx.sqlite.db) return true;
+  if (!ctx.sqlite.is_open()) return true;
   std::lock_guard<std::mutex> lock(ctx.sqlite.mutex);
-  const char *sql =
+  auto stmt = ctx.sqlite.prepare(
       "INSERT INTO access_grants "
       "(id, policy_id, profile_id, resource_id, session_id, approval_ref, "
       "subject, resource_scope, granted_at, expires_at, used_at, mission_ref, "
       "elevation_scope, status, credential_source, routing_constraint, "
       "ticket_id, purpose, justification, mfa_requirement) "
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-  sqlite3_stmt *stmt = nullptr;
-  if (sqlite3_prepare_v2(ctx.sqlite.db, sql, -1, &stmt, nullptr) != SQLITE_OK)
-    return false;
-  sqlite3_bind_int(stmt, 1, grant.id);
-  sqlite3_bind_int(stmt, 2, grant.policyId);
-  sqlite3_bind_int(stmt, 3, grant.profileId);
-  sqlite3_bind_int(stmt, 4, grant.resourceId);
-  sqlite3_bind_int(stmt, 5, grant.sessionId);
-  sqlite3_bind_int(stmt, 6, grant.approvalRef);
-  sqlite3_bind_text(stmt, 7, grant.subject.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt, 8, grant.resourceScope.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt, 9, grant.grantedAt.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt, 10, grant.expiresAt.c_str(), -1, SQLITE_TRANSIENT);
-  grant.usedAt.empty()
-      ? sqlite3_bind_null(stmt, 11)
-      : sqlite3_bind_text(stmt, 11, grant.usedAt.c_str(), -1, SQLITE_TRANSIENT);
-  grant.missionRef.empty()
-      ? sqlite3_bind_null(stmt, 12)
-      : sqlite3_bind_text(stmt, 12, grant.missionRef.c_str(), -1, SQLITE_TRANSIENT);
-  grant.elevationScope.empty()
-      ? sqlite3_bind_null(stmt, 13)
-      : sqlite3_bind_text(stmt, 13, grant.elevationScope.c_str(), -1,
-                          SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt, 14, grant.status.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt, 15, grant.credentialSource.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt, 16, grant.routingConstraint.c_str(), -1, SQLITE_TRANSIENT);
-  grant.ticketId.empty()
-      ? sqlite3_bind_null(stmt, 17)
-      : sqlite3_bind_text(stmt, 17, grant.ticketId.c_str(), -1, SQLITE_TRANSIENT);
-  grant.purpose.empty()
-      ? sqlite3_bind_null(stmt, 18)
-      : sqlite3_bind_text(stmt, 18, grant.purpose.c_str(), -1, SQLITE_TRANSIENT);
-  grant.justification.empty()
-      ? sqlite3_bind_null(stmt, 19)
-      : sqlite3_bind_text(stmt, 19, grant.justification.c_str(), -1,
-                          SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt, 20, grant.mfaRequirement.c_str(), -1, SQLITE_TRANSIENT);
-  const bool ok = sqlite3_step(stmt) == SQLITE_DONE;
-  sqlite3_finalize(stmt);
-  return ok;
+      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, "
+      "?15, ?16, ?17, ?18, ?19, ?20)");
+  if (!stmt) return false;
+  stmt.bind_int(1, grant.id);
+  stmt.bind_int(2, grant.policyId);
+  stmt.bind_int(3, grant.profileId);
+  stmt.bind_int(4, grant.resourceId);
+  stmt.bind_int(5, grant.sessionId);
+  stmt.bind_int(6, grant.approvalRef);
+  stmt.bind_text(7, grant.subject);
+  stmt.bind_text(8, grant.resourceScope);
+  stmt.bind_text(9, grant.grantedAt);
+  stmt.bind_text(10, grant.expiresAt);
+  stmt.bind_text_or_null(11, grant.usedAt);
+  stmt.bind_text_or_null(12, grant.missionRef);
+  stmt.bind_text_or_null(13, grant.elevationScope);
+  stmt.bind_text(14, grant.status);
+  stmt.bind_text(15, grant.credentialSource);
+  stmt.bind_text(16, grant.routingConstraint);
+  stmt.bind_text_or_null(17, grant.ticketId);
+  stmt.bind_text_or_null(18, grant.purpose);
+  stmt.bind_text_or_null(19, grant.justification);
+  stmt.bind_text(20, grant.mfaRequirement);
+  return stmt.execute();
 }
 
 bool update_access_grant_session_binding(AppContext &ctx, int grant_id, int session_id) {
-  if (!ctx.sqlite.db || grant_id <= 0) return true;
+  if (!ctx.sqlite.is_open() || grant_id <= 0) return true;
   std::lock_guard<std::mutex> lock(ctx.sqlite.mutex);
-  const char *sql = "UPDATE access_grants SET session_id=? WHERE id=?";
-  sqlite3_stmt *stmt = nullptr;
-  if (sqlite3_prepare_v2(ctx.sqlite.db, sql, -1, &stmt, nullptr) != SQLITE_OK)
-    return false;
-  sqlite3_bind_int(stmt, 1, session_id);
-  sqlite3_bind_int(stmt, 2, grant_id);
-  const bool ok = sqlite3_step(stmt) == SQLITE_DONE;
-  sqlite3_finalize(stmt);
-  return ok;
+  auto stmt =
+      ctx.sqlite.prepare("UPDATE access_grants SET session_id=?1 WHERE id=?2");
+  if (!stmt) return false;
+  stmt.bind_int(1, session_id);
+  stmt.bind_int(2, grant_id);
+  return stmt.execute();
 }
 
 
@@ -411,6 +372,11 @@ struct AccessDecision {
   std::vector<int> matchedPolicyIds;
   std::vector<std::string> matchedPolicyNames;
   std::vector<std::string> factors;
+  // Set when a matching policy restricts access to a time window and the
+  // request falls outside it: access must be refused.
+  bool timeWindowDenied = false;
+  std::string timeWindowPolicy;
+  std::string timeWindow;
 };
 
 AccessDecision build_access_decision(
@@ -451,7 +417,14 @@ AccessDecision build_access_decision(
     if (!applied_policy_ids.insert(policy.id).second) continue;
     if (!is_time_window_match_utc(policy.timeWindow, utc_tm.tm_hour,
                                   utc_tm.tm_min)) {
+      // A time window restricts access to those hours: outside it the
+      // request is refused (it used to only skip the policy's rules).
       decision.factors.push_back("policy.time_window.denied:" + policy.name);
+      if (!decision.timeWindowDenied) {
+        decision.timeWindowDenied = true;
+        decision.timeWindowPolicy = policy.name;
+        decision.timeWindow = policy.timeWindow;
+      }
       continue;
     }
 
@@ -822,7 +795,6 @@ void register_auth_routes(CrowApp &app, AppContext &ctx) {
         auth.issuedAt = now_utc();
         auth.expiresAt = ctx.compute_expiry();
         auth.token = ctx.generate_token();
-        auth.lastSeenEpoch = now_epoch_seconds();
 
         {
           std::lock_guard<std::mutex> lock(ctx.auth_mutex);
@@ -874,11 +846,6 @@ void register_auth_routes(CrowApp &app, AppContext &ctx) {
         }
         payload["issuedAt"] = auth.issuedAt;
         payload["expiresAt"] = auth.expiresAt;
-        // Tell the client whether a second factor must be enrolled before the
-        // session can be used (server enforces this via the MFA gate).
-        payload["mfaEnrollmentRequired"] =
-            ctx.mfa_required_for_role(matched->role) &&
-            !user_has_any_mfa_enabled(*matched);
         payload["authSource"] = ldap_authenticated ? "ldap" : "local";
         if (ldap_authenticated) {
           payload["directoryRole"] = ldap_role_resolution.role;
@@ -994,22 +961,15 @@ void register_auth_routes(CrowApp &app, AppContext &ctx) {
         if (!crypto::verify_password(current_password, stored))
           return crow::response(401, "Current password is incorrect");
 
-        // Validate new password (configurable min length + common-password deny).
-        auto policy =
-            crypto::validate_password(new_password, ctx.password_min_length);
+        // Validate new password
+        auto policy = crypto::validate_password(new_password);
         if (!policy.valid)
           return crow::response(400, policy.message);
 
-        // Reuse prevention (PCI DSS v4 8.3.7 / ANSSI).
-        if (ctx.password_was_recently_used(auth->userId, new_password))
-          return crow::response(
-              400, "This password was used recently; choose a different one");
-
-        // Hash and store, then record the replaced hash in history.
+        // Hash and store
         std::string hashed = crypto::hash_password(new_password);
         if (!ctx.update_user_password_hash(auth->userId, hashed))
           return crow::response(500, "Failed to update password");
-        ctx.record_password_in_history(auth->userId, stored);
         bool mfa_required = false;
         {
           std::lock_guard<std::mutex> lock(ctx.user_mutex);
@@ -1135,7 +1095,7 @@ void register_user_routes(CrowApp &app, AppContext &ctx) {
           return crow::response(400, "Invalid role");
 
         // Validate password policy
-        auto policy = crypto::validate_password(password, ctx.password_min_length);
+        auto policy = crypto::validate_password(password);
         if (!policy.valid)
           return crow::response(400, policy.message);
 
@@ -1202,7 +1162,7 @@ void register_user_routes(CrowApp &app, AppContext &ctx) {
               return crow::response(400, "Invalid role");
 
             // Validate password policy
-            auto policy = crypto::validate_password(password, ctx.password_min_length);
+            auto policy = crypto::validate_password(password);
             if (!policy.valid)
               return crow::response(400, policy.message);
 
@@ -1273,72 +1233,6 @@ void register_user_routes(CrowApp &app, AppContext &ctx) {
             crow::json::wvalue payload;
             payload["status"] = "deleted";
             payload["id"] = user_id;
-            return crow::response{payload};
-          });
-
-  // GET /api/users/<int>/data-export — RGPD subject access / portability
-  // (art.15/20): everything held about one user. Admin (users.read) or self.
-  CROW_ROUTE(app, "/api/users/<int>/data-export")
-      .methods(crow::HTTPMethod::Get)(
-          [&ctx](const crow::request &request, int user_id) {
-            auto auth = ctx.find_auth(request);
-            if (!auth) return crow::response(401, "Unauthorized");
-            const bool is_self = auth->userId == user_id;
-            if (!is_self && !has_permission(ctx, *auth, "users.read"))
-              return crow::response(403, "Forbidden");
-
-            UserAccount user;
-            {
-              std::lock_guard<std::mutex> lock(ctx.user_mutex);
-              auto it = ctx.users.find(user_id);
-              if (it == ctx.users.end())
-                return crow::response(404, "User not found");
-              user = it->second;
-            }
-
-            crow::json::wvalue payload;
-            payload["status"] = "ok";
-            payload["generatedAt"] = now_utc();
-            payload["account"]["id"] = user.id;
-            payload["account"]["username"] = user.username;
-            payload["account"]["role"] = user.role;
-            payload["account"]["createdAt"] = user.createdAt;
-            payload["account"]["updatedAt"] = user.updatedAt;
-            payload["account"]["totpEnabled"] = user.totpEnabled;
-            payload["account"]["webauthnEnabled"] =
-                user_has_webauthn_enabled(user);
-
-            payload["webauthnCredentials"] = crow::json::wvalue::list();
-            {
-              const auto creds = ctx.get_user_webauthn_credentials(user_id);
-              int i = 0;
-              for (const auto &c : creds) {
-                payload["webauthnCredentials"][i]["id"] = c.id;
-                payload["webauthnCredentials"][i]["label"] = c.label;
-                payload["webauthnCredentials"][i]["createdAt"] = c.createdAt;
-                payload["webauthnCredentials"][i]["lastUsedAt"] = c.lastUsedAt;
-                ++i;
-              }
-            }
-
-            // Audit entries referencing this user (raw JSON objects, as stored).
-            const auto lines =
-                ctx.collect_audit_lines_for_actor(user.username, 5000);
-            payload["auditEntries"] = crow::json::wvalue::list();
-            for (size_t i = 0; i < lines.size(); ++i)
-              payload["auditEntries"][i] = lines[i];
-            payload["auditEntryCount"] = static_cast<int>(lines.size());
-
-            AuditEvent evt;
-            evt.id = ctx.next_audit_id.fetch_add(1);
-            evt.type = "user.data.export";
-            evt.actor = auth->user;
-            evt.role = auth->role;
-            evt.createdAt = now_utc();
-            evt.payloadJson = "{\"subjectUserId\":" + std::to_string(user_id) +
-                              ",\"self\":" + (is_self ? "true" : "false") + "}";
-            evt.payloadIsJson = true;
-            ctx.append_audit(evt);
             return crow::response{payload};
           });
 
@@ -1778,7 +1672,13 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
               resource.tagsCsv = tags_csv;
               resource.credentialSource = credential_source;
               resource.httpUsername = http_username;
-              resource.httpPassword = http_password;
+              // The HTTP password is never sent back to clients: keep the stored one
+              // unless a new one is given, and drop it when the HTTP account is removed.
+              if (http_username.empty()) {
+                resource.httpPassword.clear();
+              } else if (!http_password.empty()) {
+                resource.httpPassword = http_password;
+              }
               resource.sshUsername = ssh_username;
               // Only update sshPassword if provided (non-empty)
               if (!ssh_password.empty()) resource.sshPassword = ssh_password;
@@ -1888,8 +1788,20 @@ void register_session_routes(CrowApp &app, AppContext &ctx) {
         snapshot.push_back(entry.second);
     }
 
+    // Operators only see the sessions they opened; journal readers see all.
+    const auto owners = ctx.access_grant_subjects();
+    const auto owner_of = [&owners](const Session &session) {
+      const auto it = owners.find(session.accessGrantId);
+      return it == owners.end() ? std::string() : it->second;
+    };
+    const bool sees_all =
+        ctx.has_permission(auth->userId, auth->role, "audit.read");
+
     std::vector<Session> filtered;
+    int visible_total = 0;
     for (const auto &session : snapshot) {
+      if (!sees_all && owner_of(session) != auth->user) continue;
+      ++visible_total;
       if (!status_filter.empty() && to_lower(session.status) != status_filter) continue;
       if (!user_filter.empty() && to_lower(session.user) != user_filter) continue;
       if (!target_filter.empty() && to_lower(session.target) != target_filter) continue;
@@ -1918,11 +1830,14 @@ void register_session_routes(CrowApp &app, AppContext &ctx) {
     crow::json::wvalue payload;
     payload["status"] = "ok";
     payload["items"] = crow::json::wvalue::list();
-    payload["total"] = static_cast<int>(snapshot.size());
+    payload["total"] = visible_total;
     payload["count"] = end_index - start_index;
     int index = 0;
-    for (int i = start_index; i < end_index; ++i)
-      payload["items"][index++] = session_to_json(filtered[i]);
+    for (int i = start_index; i < end_index; ++i) {
+      payload["items"][index] = session_to_json(filtered[i]);
+      payload["items"][index]["operator"] = owner_of(filtered[i]);
+      ++index;
+    }
     return crow::response{payload};
   });
 
@@ -2044,6 +1959,27 @@ void register_session_routes(CrowApp &app, AppContext &ctx) {
           ctx.append_audit(decision_event);
         };
 
+        if (decision.timeWindowDenied) {
+          emit_policy_decision("policy.decision.deny", "time_window");
+          // Dedicated event: surfaced as a security alert.
+          AuditEvent window_event;
+          window_event.id = ctx.next_audit_id.fetch_add(1);
+          window_event.type = "access.denied.time_window";
+          window_event.actor = auth->user;
+          window_event.role = auth->role;
+          window_event.createdAt = now_utc();
+          window_event.payloadJson =
+              "{\"resourceId\":" + std::to_string(resource_id) +
+              ",\"policy\":\"" + json_escape(decision.timeWindowPolicy) +
+              "\",\"timeWindow\":\"" + json_escape(decision.timeWindow) +
+              "\",\"target\":\"" + json_escape(target) + "\"}";
+          window_event.payloadIsJson = true;
+          ctx.append_audit(window_event);
+          return crow::response(
+              403, "Access is only allowed during " + decision.timeWindow +
+                       " UTC (policy " + decision.timeWindowPolicy + ")");
+        }
+
         if (decision.requireJustification && justification.empty()) {
           emit_policy_decision("policy.decision.deny", "missing_justification");
           return crow::response(
@@ -2115,6 +2051,16 @@ void register_session_routes(CrowApp &app, AppContext &ctx) {
           return crow::response(
               400,
               "This access path requires a ticketId under JIT policy");
+        }
+        // With a ticketing system configured (premium), the ticket must exist
+        // and still be open there.
+        if (!ticket_id.empty() && ctx.itsm_ticket_check) {
+          std::string ticket_detail;
+          if (!ctx.itsm_ticket_check(ticket_id, ticket_detail)) {
+            emit_policy_decision("policy.decision.deny", "ticket_rejected");
+            return crow::response(
+                403, "Ticket " + ticket_id + " was refused: " + ticket_detail);
+          }
         }
         if (decision.purposeRequired && purpose.empty()) {
           emit_policy_decision("policy.decision.deny", "purpose_required");
@@ -2312,6 +2258,7 @@ void register_session_routes(CrowApp &app, AppContext &ctx) {
         }
 
         crow::json::wvalue payload = session_to_json(session);
+        payload["operator"] = auth->user;
         return crow::response{payload};
       });
 
@@ -2322,11 +2269,20 @@ void register_session_routes(CrowApp &app, AppContext &ctx) {
         if (!auth) return crow::response(401, "Unauthorized");
         if (!has_permission(ctx, *auth, "sessions.read"))
           return crow::response(403, "Forbidden");
-        std::lock_guard<std::mutex> lock(ctx.session_mutex);
-        auto it = ctx.sessions.find(session_id);
-        if (it == ctx.sessions.end())
+        Session session;
+        {
+          std::lock_guard<std::mutex> lock(ctx.session_mutex);
+          auto it = ctx.sessions.find(session_id);
+          if (it == ctx.sessions.end())
+            return crow::response(404, "Session not found");
+          session = it->second;
+        }
+        const std::string owner = ctx.session_owner(session);
+        // Someone else's session does not exist for an operator.
+        if (!ctx.may_see_session(auth->userId, auth->user, auth->role, owner))
           return crow::response(404, "Session not found");
-        crow::json::wvalue payload = session_to_json(it->second);
+        crow::json::wvalue payload = session_to_json(session);
+        payload["operator"] = owner;
         return crow::response{payload};
       });
 
@@ -2338,11 +2294,18 @@ void register_session_routes(CrowApp &app, AppContext &ctx) {
             if (!auth) return crow::response(401, "Unauthorized");
             if (!has_permission(ctx, *auth, "sessions.terminate"))
               return crow::response(403, "Forbidden");
+            Session existing;
             {
               std::lock_guard<std::mutex> lock(ctx.session_mutex);
-              if (ctx.sessions.find(session_id) == ctx.sessions.end())
+              auto it = ctx.sessions.find(session_id);
+              if (it == ctx.sessions.end())
                 return crow::response(404, "Session not found");
+              existing = it->second;
             }
+            // Operators end their own sessions; admins may end anyone's.
+            const std::string owner = ctx.session_owner(existing);
+            if (!ctx.may_operate_session(auth->userId, auth->user, auth->role, owner))
+              return crow::response(404, "Session not found");
 
             ctx.terminate_session(session_id, auth->user, auth->role,
                                   "session.terminate");
@@ -2354,6 +2317,7 @@ void register_session_routes(CrowApp &app, AppContext &ctx) {
               updated = ctx.sessions.at(session_id);
             }
             crow::json::wvalue payload = session_to_json(updated);
+            payload["operator"] = owner;
             return crow::response{payload};
           });
 
@@ -2381,10 +2345,24 @@ void register_session_routes(CrowApp &app, AppContext &ctx) {
           }
         }
 
+        // Operators only receive events of the sessions they opened.
+        const bool sees_all =
+            ctx.has_permission(auth->userId, auth->role, "audit.read");
+        const auto owners =
+            sees_all ? std::unordered_map<int, std::string>() : ctx.access_grant_subjects();
+
         std::ostringstream body;
         body << "retry: 5000\n";
         int sent = 0;
         for (const auto &event : snapshot) {
+          if (!sees_all) {
+            const auto parsed = crow::json::load(event.payloadJson);
+            const int grant_id = parsed && parsed.has("accessGrantId")
+                                     ? static_cast<int>(parsed["accessGrantId"].i())
+                                     : 0;
+            const auto it = owners.find(grant_id);
+            if (it == owners.end() || it->second != auth->user) continue;
+          }
           body << "id: " << event.id << "\n";
           body << "event: " << event.type << "\n";
           body << "data: " << event.payloadJson << "\n\n";
@@ -2476,6 +2454,11 @@ void register_session_routes(CrowApp &app, AppContext &ctx) {
         crow::json::wvalue payload;
         payload["status"] = "ok";
         payload["score"] = score;
+        payload["timeWindowDenied"] = decision.timeWindowDenied;
+        if (decision.timeWindowDenied) {
+          payload["timeWindow"] = decision.timeWindow;
+          payload["timeWindowPolicy"] = decision.timeWindowPolicy;
+        }
         payload["effectiveRiskLevel"] = risk_level_for_score(score);
         payload["resourceRiskLevel"] = risk_level;
         payload["adaptivePolicyEnabled"] = resource.adaptiveAccessPolicy;
@@ -2541,30 +2524,65 @@ void register_audit_routes(CrowApp &app, AppContext &ctx) {
         return crow::response{payload};
       });
 
-  // GET /api/audit
+  // GET /api/audit — search the on-disk log (active file + archives), newest
+  // first. Query: limit (1-500, default 50), cursor (from the previous page's
+  // "next"), actor, family, category (failure|admin), from, to, q, session,
+  // facets=1 (every actor and family in the log, for the filter menus).
   CROW_ROUTE(app, "/api/audit")([&ctx](const crow::request &request) {
     auto auth = ctx.find_auth(request);
     if (!auth) return crow::response(401, "Unauthorized");
     if (!has_permission(ctx, *auth, "audit.read"))
       return crow::response(403, "Forbidden");
 
+    const auto &params = request.url_params;
+    AuditQuery query;
+    std::string error;
+    if (!parse_audit_query(params.get("limit"), params.get("cursor"),
+                           params.get("actor"), params.get("family"),
+                           params.get("category"), params.get("from"),
+                           params.get("to"), params.get("q"),
+                           params.get("session"), params.get("facets"), query,
+                           error))
+      return crow::response(400, error);
+
+    // Freeze what to read while holding the lock (a line being appended is
+    // left out), then search without blocking writers.
+    std::vector<std::string> files;
+    std::optional<uint64_t> active_size;
+    {
+      std::lock_guard<std::mutex> lock(ctx.audit_mutex);
+      files = audit_log_files(ctx.audit_path);
+      std::error_code ec;
+      const auto size = std::filesystem::file_size(ctx.audit_path, ec);
+      if (!ec) active_size = static_cast<uint64_t>(size);
+    }
+    if (!files.empty() && files.front() != ctx.audit_path) active_size.reset();
+    const AuditPage page = query_audit_files(files, active_size, query);
+    if (page.cursorExpired)
+      return crow::response(410, "This page of the audit log is no longer available");
+
     crow::json::wvalue payload;
     payload["status"] = "ok";
     payload["items"] = crow::json::wvalue::list();
-    {
-      std::lock_guard<std::mutex> lock(ctx.audit_mutex);
-      int index = 0;
-      for (auto it = ctx.audit_events.rbegin();
-           it != ctx.audit_events.rend() && index < 50; ++it) {
-        payload["items"][index]["id"] = it->id;
-        payload["items"][index]["type"] = it->type;
-        payload["items"][index]["actor"] = it->actor;
-        payload["items"][index]["role"] = it->role;
-        payload["items"][index]["createdAt"] = it->createdAt;
-        payload["items"][index]["payloadRaw"] = it->payloadJson;
-        payload["items"][index]["payloadIsJson"] = it->payloadIsJson;
-        ++index;
-      }
+    int index = 0;
+    for (const auto &row : page.items) {
+      auto &item = payload["items"][index++];
+      item["key"] = row.key;
+      item["id"] = row.id;
+      item["type"] = row.type;
+      item["actor"] = row.actor;
+      item["role"] = row.role;
+      item["createdAt"] = row.createdAt;
+      item["payloadRaw"] = row.payloadRaw;
+      item["payloadIsJson"] = row.payloadIsJson;
+    }
+    if (!page.next.empty()) payload["next"] = page.next;
+    if (query.facets) {
+      payload["facets"]["actors"] = crow::json::wvalue::list();
+      payload["facets"]["families"] = crow::json::wvalue::list();
+      int a = 0, f = 0;
+      for (const auto &name : page.actors) payload["facets"]["actors"][a++] = name;
+      for (const auto &name : page.families) payload["facets"]["families"][f++] = name;
     }
     return crow::response{payload};
   });
@@ -2583,9 +2601,113 @@ void register_audit_routes(CrowApp &app, AppContext &ctx) {
     payload["intact"] = check.ok;
     payload["lines"] = check.lines;
     payload["firstBrokenLine"] = check.firstBrokenLine;
+    payload["legacyLines"] = check.legacyLines;
     payload["keyed"] = !ctx.audit_hmac_key.empty();
     return crow::response{payload};
   });
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  Mobile device registration (push notifications + signed approvals)
+// ══════════════════════════════════════════════════════════════════════
+
+void register_device_routes(CrowApp &app, AppContext &ctx) {
+  // POST /api/devices/register — register the caller's mobile device.
+  CROW_ROUTE(app, "/api/devices/register")
+      .methods(crow::HTTPMethod::Post)(
+          [&ctx](const crow::request &request) {
+            auto auth = ctx.find_auth(request);
+            if (!auth) return crow::response(401, "Unauthorized");
+
+            auto body = crow::json::load(request.body);
+            if (!body) return crow::response(400, "Invalid JSON body");
+
+            UserDevice device;
+            device.userId = auth->userId;
+            device.platform = body.has("platform") ? std::string(body["platform"].s()) : "";
+            device.label = body.has("label") ? std::string(body["label"].s()) : "";
+            device.pushProvider = body.has("pushProvider") ? std::string(body["pushProvider"].s()) : "none";
+            device.pushToken = body.has("pushToken") ? std::string(body["pushToken"].s()) : "";
+            device.publicKey = body.has("publicKey") ? std::string(body["publicKey"].s()) : "";
+
+            if (device.platform != "ios" && device.platform != "android")
+              return crow::response(400, "platform must be 'ios' or 'android'");
+            if (device.pushProvider != "fcm" && device.pushProvider != "apns" &&
+                device.pushProvider != "unifiedpush" && device.pushProvider != "none")
+              return crow::response(400, "invalid pushProvider");
+            if (device.pushToken.empty() || device.pushToken.size() > 2048)
+              return crow::response(400, "pushToken required (max 2048 chars)");
+            if (device.label.size() > 128) device.label = device.label.substr(0, 128);
+            if (device.publicKey.size() > 4096)
+              return crow::response(400, "publicKey too large");
+
+            const int id = ctx.register_user_device(device);
+            if (id < 0) return crow::response(500, "Failed to register device");
+
+            AuditEvent evt;
+            evt.id = ctx.next_audit_id.fetch_add(1);
+            evt.type = "device.register";
+            evt.actor = auth->user;
+            evt.role = auth->role;
+            evt.createdAt = now_utc();
+            evt.payloadJson = "{\"deviceId\":" + std::to_string(id) +
+                              ",\"platform\":\"" + json_escape(device.platform) +
+                              "\",\"pushProvider\":\"" +
+                              json_escape(device.pushProvider) + "\"}";
+            evt.payloadIsJson = true;
+            ctx.append_audit(evt);
+
+            crow::json::wvalue payload;
+            payload["status"] = "registered";
+            payload["id"] = id;
+            return crow::response{payload};
+          });
+
+  // GET /api/devices — list the caller's registered devices (no push tokens).
+  CROW_ROUTE(app, "/api/devices")([&ctx](const crow::request &request) {
+    auto auth = ctx.find_auth(request);
+    if (!auth) return crow::response(401, "Unauthorized");
+    const auto devices = ctx.list_user_devices(auth->userId);
+    crow::json::wvalue payload;
+    payload["status"] = "ok";
+    payload["items"] = crow::json::wvalue::list();
+    int i = 0;
+    for (const auto &d : devices) {
+      payload["items"][i]["id"] = d.id;
+      payload["items"][i]["platform"] = d.platform;
+      payload["items"][i]["label"] = d.label;
+      payload["items"][i]["pushProvider"] = d.pushProvider;
+      payload["items"][i]["createdAt"] = d.createdAt;
+      payload["items"][i]["lastSeenAt"] = d.lastSeenAt;
+      ++i;
+    }
+    return crow::response{payload};
+  });
+
+  // DELETE /api/devices/<id> — unregister one of the caller's devices.
+  CROW_ROUTE(app, "/api/devices/<int>")
+      .methods(crow::HTTPMethod::Delete)(
+          [&ctx](const crow::request &request, int device_id) {
+            auto auth = ctx.find_auth(request);
+            if (!auth) return crow::response(401, "Unauthorized");
+            if (!ctx.delete_user_device(auth->userId, device_id))
+              return crow::response(404, "Device not found");
+
+            AuditEvent evt;
+            evt.id = ctx.next_audit_id.fetch_add(1);
+            evt.type = "device.delete";
+            evt.actor = auth->user;
+            evt.role = auth->role;
+            evt.createdAt = now_utc();
+            evt.payloadJson = "{\"deviceId\":" + std::to_string(device_id) + "}";
+            evt.payloadIsJson = true;
+            ctx.append_audit(evt);
+
+            crow::json::wvalue payload;
+            payload["status"] = "deleted";
+            payload["id"] = device_id;
+            return crow::response{payload};
+          });
 }
 
 // ══════════════════════════════════════════════════════════════════════

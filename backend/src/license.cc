@@ -9,7 +9,6 @@
 #include "routes.h"
 #include "utils.h"
 
-#include <sqlite3.h>
 
 #include <algorithm>
 #include <cctype>
@@ -57,34 +56,24 @@ bool env_flag_local(const char *name, bool fallback) {
 
 int64_t db_get_int(AppContext &ctx, const std::string &key, int64_t fallback) {
   std::lock_guard<std::mutex> lock(ctx.sqlite.mutex);
-  if (!ctx.sqlite.db) return fallback;
-  sqlite3_stmt *stmt = nullptr;
-  int64_t value = fallback;
-  if (sqlite3_prepare_v2(ctx.sqlite.db, "SELECT v FROM license_state WHERE k=?1;",
-                         -1, &stmt, nullptr) == SQLITE_OK) {
-    sqlite3_bind_text(stmt, 1, key.c_str(), -1, SQLITE_TRANSIENT);
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-      value = sqlite3_column_int64(stmt, 0);
-    }
-  }
-  sqlite3_finalize(stmt);
-  return value;
+  if (!ctx.sqlite.is_open()) return fallback;
+  auto stmt = ctx.sqlite.prepare("SELECT v FROM license_state WHERE k=?1;");
+  if (!stmt) return fallback;
+  stmt.bind_text(1, key);
+  if (!stmt.step()) return fallback;
+  return stmt.column_int64(0);
 }
 
 void db_set_int(AppContext &ctx, const std::string &key, int64_t value) {
   std::lock_guard<std::mutex> lock(ctx.sqlite.mutex);
-  if (!ctx.sqlite.db) return;
-  sqlite3_stmt *stmt = nullptr;
-  if (sqlite3_prepare_v2(
-          ctx.sqlite.db,
-          "INSERT INTO license_state(k,v) VALUES(?1,?2) "
-          "ON CONFLICT(k) DO UPDATE SET v=excluded.v;",
-          -1, &stmt, nullptr) == SQLITE_OK) {
-    sqlite3_bind_text(stmt, 1, key.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt, 2, value);
-    sqlite3_step(stmt);
-  }
-  sqlite3_finalize(stmt);
+  if (!ctx.sqlite.is_open()) return;
+  auto stmt = ctx.sqlite.prepare(
+      "INSERT INTO license_state(k,v) VALUES(?1,?2) "
+      "ON CONFLICT(k) DO UPDATE SET v=excluded.v;");
+  if (!stmt) return;
+  stmt.bind_text(1, key);
+  stmt.bind_int64(2, value);
+  stmt.execute();
 }
 
 // Load and verify the signed revocation list; augment `denylist` with revoked

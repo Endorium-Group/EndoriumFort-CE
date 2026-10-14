@@ -1,28 +1,22 @@
-import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import QRCode from 'qrcode';
 import {
   changePassword,
-  createResource,
+  fetchHealth,
+  fetchBranding,
   createSession,
-  deleteResource,
   deleteUser,
-  exportUserData,
   disable2FA,
   fetchBootstrapStatus,
   fetchAudit,
-  verifyAuditChain,
-  fetchHealth,
-  fetchRecordingCast,
-  fetchRecordings,
   fetchContainmentStatus,
   fetchActiveSecurityIncident,
   openSecurityIncident,
   closeSecurityIncident,
   reportSecurityIncidentEscalation,
   fetchSecurityAlerts,
-  fetchSessionDna,
   issueEphemeralCredential,
   consumeEphemeralCredential,
   previewSessionRisk,
@@ -38,15 +32,12 @@ import {
   login,
   logout,
   startOidcSso,
+  fetchSsoLoginOptions,
   setAuthToken,
   setup2FA,
   terminateSession,
-  updateResource,
   updateUser,
   createUser,
-  getUserResourcePermissions,
-  grantResourcePermission,
-  revokeResourcePermission,
   verify2FA,
   fetchAccessRequests,
   createAccessRequest,
@@ -60,26 +51,54 @@ import {
   setMfaPreference,
   fetchAccessProfiles,
   fetchAccessGrants,
-  fetchSessionEvidencePack,
-  getUserAccessProfiles,
-  grantAccessProfile,
-  revokeAccessProfile,
-  fetchK8sResources,
-  configureK8sResource,
 } from './api.js';
-import { describeAccessOutcome, describeResourcePolicy, normalizeRiskLevel } from './accessPolicy.js';
-import AdminSectionNav from './components/admin/AdminSectionNav.jsx';
-import { EmptyState, InlineAlert, MetricTile, SectionCard, StatusBadge } from './components/ui/primitives.jsx';
+import LoginPage from './pages/LoginPage.jsx';
+import MapPage from './pages/MapPage.jsx';
+import SessionsPage from './pages/SessionsPage.jsx';
+import RequestsPage from './pages/RequestsPage.jsx';
+import JournalPage from './pages/JournalPage.jsx';
+import ZonesPage from './pages/ZonesPage.jsx';
+import UsersAdmin from './pages/admin/UsersAdmin.jsx';
+import ResourcesAdmin from './pages/admin/ResourcesAdmin.jsx';
+import SecurityAdmin from './pages/admin/SecurityAdmin.jsx';
+import MfaCard from './pages/account/MfaCard.jsx';
+import LicenseAdmin from './pages/admin/LicenseAdmin.jsx';
+import AccountPage from './pages/account/AccountPage.jsx';
+import FirstLoginDialog from './pages/account/FirstLoginDialog.jsx';
+import AccessDialog from './pages/AccessDialog.jsx';
+import UpsellDialog from './ui/UpsellDialog.jsx';
+import Dialog from './ui/Dialog.jsx';
+import LiveAlerts from './ui/LiveAlerts.jsx';
+import IncidentBanner from './ui/IncidentBanner.jsx';
+import LicenseBar from './ui/LicenseBar.jsx';
+import AgentDialog from './pages/AgentDialog.jsx';
+import AdminLayout from './layout/AdminLayout.jsx';
+
+import { withOperators } from './ui/sessions.js';
+import { versionText } from './ui/version.js';
+import { applyBranding } from './ui/branding.js';
+import AppShell, { SHELL_TABS, tabForPath } from './layout/AppShell.jsx';
+import GettingStarted from './ui/GettingStarted.jsx';
+import { EmptyState, SectionCard } from './components/ui/primitives.jsx';
 import { useI18n } from './i18n.jsx';
 // Premium UI comes from the `@pro` overlay: real components in the EE build
 // (src/pro/), no-op stubs in the CE build (src/pro-stub/). See vite.config.js.
-import { RecordingsPanel, VncViewerModal, EnterpriseIamPanel, RelayControlPanel, JitGovernancePanel, VaultPanel, ItdrPanel, K8sPanel } from '@pro';
+import { AppearancePage, EvidencePage, IntegrationsPage, JitPage, KubernetesPage, RelaysPage, ThreatsPage, VaultPage, VncViewerModal } from '@pro';
 // Remote Browser Isolation viewer — core feature (present in CE too).
 import RbiViewerModal from './RbiViewerModal.jsx';
 
-// SSO (OIDC) login is Enterprise-only: its routes are absent from the Community
-// backend, so the CE build must not offer the button. Set by vite.config.js.
-const SSO_LOGIN_AVAILABLE = __EF_EDITION__ !== 'community';
+// SSH session whose terminal this tab has open, so a reload can resume it.
+// Per tab (sessionStorage): another tab must not grab the same shell.
+const OPEN_TERMINAL_KEY = 'endoriumfort_open_terminal';
+const readOpenTerminal = () => {
+  try { return Number(sessionStorage.getItem(OPEN_TERMINAL_KEY)) || 0; } catch (_) { return 0; }
+};
+const rememberOpenTerminal = (sessionId) => {
+  try { sessionStorage.setItem(OPEN_TERMINAL_KEY, String(sessionId)); } catch (_) { /* storage unavailable */ }
+};
+const forgetOpenTerminal = () => {
+  try { sessionStorage.removeItem(OPEN_TERMINAL_KEY); } catch (_) { /* storage unavailable */ }
+};
 
 const normalizeRole = (role) => {
   const value = String(role || '').toLowerCase();
@@ -247,12 +266,6 @@ const LIVE_ALERT_PROFILES = {
   }
 };
 
-const LIVE_ALERT_PROFILE_LABEL = {
-  strict: 'Strict',
-  normal: 'Normal',
-  permissive: 'Permissive'
-};
-
 const compareLiveAlertPriority = (left, right) => {
   const severityDelta =
     (LIVE_ALERT_SEVERITY_WEIGHT[right.severity] || 0) -
@@ -302,18 +315,9 @@ const DEFAULT_SSH_SNIPPETS = [
 ];
 
 const ACCESS_PLAYBOOK_STORAGE_KEY = 'endoriumfort_access_playbooks';
-const SESSION_WATCHLIST_STORAGE_KEY = 'endoriumfort_session_watchlist';
-
-const clampInteger = (value, fallback, min, max) => {
-  const parsed = Number.parseInt(String(value ?? ''), 10);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(max, Math.max(min, parsed));
-};
 
 export default function App() {
-  const { locale, setLocale, t, raw } = useI18n();
-  const [status, setStatus] = useState('loading');
-  const [detail, setDetail] = useState('');
+  const { locale, t, raw } = useI18n();
   const [auth, setAuth] = useState(() => {
     try {
       const saved = localStorage.getItem('endoriumfort_auth');
@@ -334,6 +338,7 @@ export default function App() {
     return { user: '', password: '', role: 'operator', token: '', permissions: [] };
   });
   const [authError, setAuthError] = useState('');
+  const [ssoLogin, setSsoLogin] = useState({ available: false });
   const [sessions, setSessions] = useState([]);
   const [loadingSessions, setLoadingSessions] = useState(true);
   const [sessionError, setSessionError] = useState('');
@@ -355,84 +360,46 @@ export default function App() {
   });
   const [terminalReady, setTerminalReady] = useState(false);
   const [autoConnectSessionId, setAutoConnectSessionId] = useState(null);
-  const [auditOpen, setAuditOpen] = useState(false);
+  // A shell the server kept after a page reload: reattaching needs no password.
+  const [resumeSessionId, setResumeSessionId] = useState(null);
   const [auditItems, setAuditItems] = useState([]);
   const [loadingAudit, setLoadingAudit] = useState(false);
   const [auditError, setAuditError] = useState('');
   const [auditFilter, setAuditFilter] = useState(null);
-  const [auditIntegrity, setAuditIntegrity] = useState(null);
-  const [checkingIntegrity, setCheckingIntegrity] = useState(false);
+  // Session to show first on the evidence page (set when coming from Sessions or Journal).
+  const [evidenceFocus, setEvidenceFocus] = useState(null);
+  // User to filter the journal on when coming from Administration > Users.
+  const [journalActorFocus, setJournalActorFocus] = useState(null);
+  // Resource to open in Administration > Resources (from the map or zones).
+  const [resourceEditFocus, setResourceEditFocus] = useState(null);
   const [resources, setResources] = useState([]);
   const [loadingResources, setLoadingResources] = useState(false);
-  const [savingResource, setSavingResource] = useState(false);
   const [resourceError, setResourceError] = useState('');
-  const [resourceForm, setResourceForm] = useState({
-    name: '',
-    target: '',
-    protocol: 'ssh',
-    port: '22',
-    tunnelTicketRateLimitMaxAttempts: '0',
-    description: '',
-    imageUrl: '',
-    imageData: '', // base64 locale
-    tagsCsv: '',
-    credentialSource: 'vaulted',
-    httpUsername: '',
-    httpPassword: '',
-    sshUsername: '',
-    sshPassword: '',
-    agentProtocol: 'tcp',
-    k8sNamespace: 'default',
-    k8sKubeconfig: '',
-    requireAccessJustification: false,
-    requireDualApproval: false,
-    enableCommandGuard: false,
-    adaptiveAccessPolicy: false,
-    riskLevel: 'low'
-  });
-  const [editingResourceId, setEditingResourceId] = useState(null);
   const [users, setUsers] = useState([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
-  const [userError, setUserError] = useState('');
-  const [userForm, setUserForm] = useState({
-    username: '',
-    password: '',
-    role: 'operator',
-    forcePasswordRotation: false
-  });
-  const [editingUserId, setEditingUserId] = useState(null);
-  const [selectedUserForAccessScope, setSelectedUserForAccessScope] = useState(null);
-  const [userResourceScope, setUserResourceScope] = useState([]);
-  const [userAccessProfiles, setUserAccessProfiles] = useState([]);
-  const [loadingAccessScope, setLoadingAccessScope] = useState(false);
-  const [accessScopeError, setAccessScopeError] = useState('');
   // Access profiles are shared: JIT governance (@pro) does CRUD, and the Users
   // access-scope editor consumes the list to assign profiles to users.
   const [accessProfiles, setAccessProfiles] = useState([]);
-  const [loadingAccessProfiles, setLoadingAccessProfiles] = useState(false);
-  const [accessProfileError, setAccessProfileError] = useState('');
   const [accessGrants, setAccessGrants] = useState([]);
   const [loadingAccessGrants, setLoadingAccessGrants] = useState(false);
-  const [accessGrantError, setAccessGrantError] = useState('');
   // Per-session routing hints (direct/relay) shown on session cards. Core display
   // fed by fetchRelayResolution; kept in the shell (the relay ADMIN panel is @pro).
   const [sessionRelayHints, setSessionRelayHints] = useState({});
-  const [sessionEvidencePack, setSessionEvidencePack] = useState(null);
-  const [sessionEvidenceLoading, setSessionEvidenceLoading] = useState(false);
-  const [sessionEvidenceError, setSessionEvidenceError] = useState('');
   const [route, setRoute] = useState(() =>
     window.location.pathname ? window.location.pathname : '/'
   );
   const [adminSection, setAdminSection] = useState('resources');
-  const [mainTab, setMainTab] = useState('sessions');
   // Licensing / editions (open-core freemium gating)
   const [licenseStatus, setLicenseStatus] = useState(null);
+  // Version reported by the server (GET /api/health), shown once signed in.
+  const [bastionVersion, setBastionVersion] = useState('');
+  // Appearance (Pro): tab title/icon and login background, public and loaded before sign-in.
+  const [branding, setBranding] = useState(null);
   const [licenseUpsell, setLicenseUpsell] = useState(null); // {feature, requiredTier} | null
   const [licenseBannerDismissed, setLicenseBannerDismissed] = useState(false);
   const [licenseUploadText, setLicenseUploadText] = useState('');
   const [licenseBusy, setLicenseBusy] = useState(false);
   const [licenseActionMsg, setLicenseActionMsg] = useState(null); // {error, message} | null
-  const [inlineWebResource, setInlineWebResource] = useState(null);
   const [vncViewerSession, setVncViewerSession] = useState(null);
   const [rbiViewerSession, setRbiViewerSession] = useState(null);
   const [accessPromptResource, setAccessPromptResource] = useState(null);
@@ -441,6 +408,8 @@ export default function App() {
   const [accessPromptPurpose, setAccessPromptPurpose] = useState('');
   const [accessPromptPurposeEvidence, setAccessPromptPurposeEvidence] = useState('');
   const [accessPromptMode, setAccessPromptMode] = useState('connect');
+  // Approved access request the dialog will attach to the session it opens.
+  const [accessPromptRequestId, setAccessPromptRequestId] = useState(null);
   const [accessPlaybooks, setAccessPlaybooks] = useState(() => {
     try {
       const raw = localStorage.getItem(ACCESS_PLAYBOOK_STORAGE_KEY);
@@ -450,22 +419,9 @@ export default function App() {
       return [];
     }
   });
-  const [watchedSessionIds, setWatchedSessionIds] = useState(() => {
-    try {
-      const raw = localStorage.getItem(SESSION_WATCHLIST_STORAGE_KEY);
-      const parsed = raw ? JSON.parse(raw) : [];
-      return Array.isArray(parsed) ? parsed.map((item) => Number(item)).filter((id) => id > 0) : [];
-    } catch (_) {
-      return [];
-    }
-  });
-  const [watchlistAlerts, setWatchlistAlerts] = useState([]);
   const [riskPreview, setRiskPreview] = useState(null);
   const [riskPreviewLoading, setRiskPreviewLoading] = useState(false);
   const [riskPreviewError, setRiskPreviewError] = useState('');
-  const [sessionDna, setSessionDna] = useState(null);
-  const [sessionDnaLoading, setSessionDnaLoading] = useState(false);
-  const [sessionDnaError, setSessionDnaError] = useState('');
   const [accessRequests, setAccessRequests] = useState([]);
   const [loadingAccessRequests, setLoadingAccessRequests] = useState(false);
   const [accessRequestError, setAccessRequestError] = useState('');
@@ -478,7 +434,6 @@ export default function App() {
   const [totpSetupCode, setTotpSetupCode] = useState('');
   const [totpError, setTotpError] = useState('');
   const [totpDisableCode, setTotpDisableCode] = useState('');
-  const [totpCopyStatus, setTotpCopyStatus] = useState('');
   const [totpQrDataUrl, setTotpQrDataUrl] = useState('');
   const [webauthnEnabled, setWebauthnEnabled] = useState(false);
   const [webauthnCredentials, setWebauthnCredentials] = useState([]);
@@ -486,20 +441,9 @@ export default function App() {
   const [webauthnBusy, setWebauthnBusy] = useState(false);
   const [webauthnLabel, setWebauthnLabel] = useState('');
   const [preferredMfaMethod, setPreferredMfaMethod] = useState('any');
-  // Recordings state
-  const [recordings, setRecordings] = useState([]);
-  const [loadingRecordings, setLoadingRecordings] = useState(false);
-  const [recordingsError, setRecordingsError] = useState('');
-  const [recordingsOpen, setRecordingsOpen] = useState(false);
-  const [castData, setCastData] = useState(null);
-  const [castRecordingId, setCastRecordingId] = useState(null);
   // Dashboard stats
   const [stats, setStats] = useState(null);
-  const [loadingStats, setLoadingStats] = useState(false);
-  const [quickRefreshing, setQuickRefreshing] = useState(false);
   const [securityAuditItems, setSecurityAuditItems] = useState([]);
-  const [loadingSecurityAudit, setLoadingSecurityAudit] = useState(false);
-  const [securityAuditError, setSecurityAuditError] = useState('');
   const [liveSecurityAlerts, setLiveSecurityAlerts] = useState([]);
   const [liveSecurityIncident, setLiveSecurityIncident] = useState(null);
   const [containmentStatus, setContainmentStatus] = useState({
@@ -524,17 +468,6 @@ export default function App() {
       return 'normal';
     }
   });
-  // Audit search
-  const [auditSearchQuery, setAuditSearchQuery] = useState('');
-  const [auditTypeFilter, setAuditTypeFilter] = useState('');
-  // Animated player
-  const [playerEvents, setPlayerEvents] = useState([]);
-  const [playerIndex, setPlayerIndex] = useState(0);
-  const [playerPlaying, setPlayerPlaying] = useState(false);
-  const playerTermRef = useRef(null);
-  const playerTermInstanceRef = useRef(null);
-  const playerFitRef = useRef(null);
-  const playerTimerRef = useRef(null);
   // Shadow session (admin live monitoring)
   const [shadowSession, setShadowSession] = useState(null);
   const [shadowStatus, setShadowStatus] = useState('idle');
@@ -551,7 +484,6 @@ export default function App() {
     try { return localStorage.getItem('endoriumfort_darkmode') === 'true'; } catch (_) { return false; }
   });
   // Change password
-  const [changePwOpen, setChangePwOpen] = useState(false);
   const [changePwCurrent, setChangePwCurrent] = useState('');
   const [changePwNew, setChangePwNew] = useState('');
   const [changePwConfirm, setChangePwConfirm] = useState('');
@@ -567,6 +499,13 @@ export default function App() {
   // Token expiry
   const [tokenExpiresAt, setTokenExpiresAt] = useState('');
   const terminalRef = useRef(null);
+  // Long-lived xterm host: pages move this node around instead of owning it, so
+  // an open SSH terminal survives switching sections.
+  if (!terminalRef.current && typeof document !== 'undefined') {
+    const host = document.createElement('div');
+    host.className = 'ef-term__host';
+    terminalRef.current = host;
+  }
   const terminalInstanceRef = useRef(null);
   const fitAddonRef = useRef(null);
   const socketRef = useRef(null);
@@ -576,7 +515,6 @@ export default function App() {
   const liveAlertCooldownByTypeRef = useRef({});
   const liveIncidentCriticalTimestampsRef = useRef([]);
   const liveIncidentCooldownUntilRef = useRef(0);
-  const watchlistStatusRef = useRef({});
 
   // ── Licensing / editions ────────────────────────────────────────────────
   const licenseEdition = licenseStatus?.edition || 'community';
@@ -596,12 +534,22 @@ export default function App() {
   // background pollers 403 on landing → spurious upsell popups + console noise.
   const securityCenterLicensed = premiumUnlocked('enterprise');
   const jitLicensed = premiumUnlocked('pro');
+  const relaysLicensed = premiumUnlocked('pro');
 
   const canManagePlatform = hasCapability(auth.role, auth.permissions, 'manageResources');
   const canViewAudit = hasCapability(auth.role, auth.permissions, 'viewAudit');
   const canViewRecordings = hasCapability(auth.role, auth.permissions, 'viewRecordings');
   const canOperateSessions = hasCapability(auth.role, auth.permissions, 'operateSessions');
   const roleName = roleLabel(auth.role, t);
+  const visibleShellTabs = [
+    'carte',
+    'sessions',
+    (canManagePlatform || jitLicensed) && 'demandes',
+    canViewAudit && 'journal',
+    canViewRecordings && 'preuves',
+    canManagePlatform && 'zones',
+    canManagePlatform && 'admin'
+  ].filter(Boolean);
   const activeLiveAlertProfile = LIVE_ALERT_PROFILES[liveAlertProfile] || LIVE_ALERT_PROFILES.normal;
   const containmentEnabled = !!containmentStatus.enabled;
   const bootstrapRequired = !!(auth.token && bootstrapState.required);
@@ -644,12 +592,6 @@ export default function App() {
     } catch (_) {}
   }, [accessPlaybooks]);
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(SESSION_WATCHLIST_STORAGE_KEY, JSON.stringify(watchedSessionIds));
-    } catch (_) {}
-  }, [watchedSessionIds]);
-
   const currentAccessPlaybook = useMemo(() => {
     const resourceId = Number(accessPromptResource?.id) || 0;
     if (!resourceId) return null;
@@ -672,83 +614,6 @@ export default function App() {
       ...normalizedCustom
     ];
   }, [customSnippets]);
-  const tabGuide = useMemo(() => {
-    const base = {
-      overview: {
-        title: t('app.overview'),
-        hint: t('app.overviewHint'),
-        focus: t('app.overviewFocus')
-      },
-      sessions: {
-        title: t('app.sessions'),
-        hint: t('app.sessionsHint'),
-        focus: t('app.sessionsFocus')
-      },
-      audit: {
-        title: t('app.audit'),
-        hint: t('app.auditHint'),
-        focus: t('app.auditFocus')
-      },
-      recordings: {
-        title: t('app.recordings'),
-        hint: t('app.recordingsHint'),
-        focus: t('app.recordingsFocus')
-      }
-    };
-    return base[mainTab] || base.overview;
-  }, [mainTab, t]);
-
-  const missionBoardEntries = useMemo(() => {
-    const entries = [
-      {
-        id: 'sessions',
-        stage: t('app.operate'),
-        title: t('app.liveAccess'),
-        shortcut: 'Alt+1',
-        hint: t('app.openAndSupervise')
-      },
-      {
-        id: 'audit',
-        stage: t('app.trace'),
-        title: t('app.investigation'),
-        shortcut: 'Alt+2',
-        hint: t('app.reviewEvents')
-      },
-      {
-        id: 'recordings',
-        stage: t('app.evidence'),
-        title: t('app.replayVault'),
-        shortcut: 'Alt+3',
-        hint: t('app.replayRecordedSsh'),
-        requiredTier: 'pro',
-        locked: !(licenseEdition === 'enterprise' && (TIER_RANK[activeTier] || 0) >= TIER_RANK.pro),
-        hidden: !canViewRecordings
-      }
-    ];
-
-    return entries.filter((entry) => !entry.hidden);
-  }, [activeTier, canViewRecordings, licenseEdition, t]);
-
-  // Selecting a locked premium tab opens the upsell instead of a dead panel.
-  const selectMainTab = (id) => {
-    const entry = missionBoardEntries.find((item) => item.id === id);
-    if (entry?.locked) {
-      openUpsell(entry.title, entry.requiredTier);
-      return;
-    }
-    setMainTab(id);
-  };
-
-  const pendingAccessApprovals = useMemo(() => {
-    return accessRequests
-      .filter((item) => item.status === 'pending')
-      .sort((a, b) => {
-        const ta = Date.parse(a.createdAt || '') || 0;
-        const tb = Date.parse(b.createdAt || '') || 0;
-        return tb - ta;
-      })
-      .slice(0, 6);
-  }, [accessRequests]);
 
 
   const adminSections = useMemo(() => {
@@ -828,6 +693,15 @@ export default function App() {
         badgeTone: lockOf('pro') ? 'locked' : 'ok'
       },
       {
+        id: 'appearance',
+        label: t('adminE.nav.appearance'),
+        hint: t('appearance.hint'),
+        requiredTier: 'pro',
+        locked: lockOf('pro'),
+        badge: lockOf('pro') ? '🔒' : '',
+        badgeTone: lockOf('pro') ? 'locked' : 'ok'
+      },
+      {
         id: 'security',
         label: t('admin.security'),
         hint: t('admin.mfaAndPosture'),
@@ -852,20 +726,21 @@ export default function App() {
     ];
   }, [accessGrants.length, accessRequests, activeTier, licenseEdition, licenseStatus, loadingAccessGrants, loadingResources, loadingUsers, locale, resources.length, stats?.users?.adminsWithoutMfa, t, users.length]);
 
-  // Selecting a locked premium section opens the upsell instead of a broken panel.
-  const selectAdminSection = (id) => {
-    const section = adminSections.find((s) => s.id === id);
-    if (section?.locked) {
-      openUpsell(section.label, section.requiredTier);
-      return;
-    }
-    setAdminSection(id);
-  };
-
-  const activeAdminSection = useMemo(
-    () => adminSections.find((section) => section.id === adminSection) || null,
-    [adminSection, adminSections]
-  );
+  // Order and wording of the redesigned Administration menu.
+  const adminNavSections = useMemo(() => {
+    const order = ['resources', 'users', 'jit', 'routing', 'vault', 'security', 'itdr', 'enterprise', 'k8s', 'appearance', 'license'];
+    const adminsWithoutMfa = stats?.users?.adminsWithoutMfa || 0;
+    return order
+      .map((id) => adminSections.find((section) => section.id === id))
+      .filter(Boolean)
+      .map((section) => ({
+        id: section.id,
+        label: t(`adminE.nav.${section.id}`),
+        locked: !!section.locked,
+        count: section.id === 'resources' ? resources.length : section.id === 'users' ? users.length : null,
+        alert: section.id === 'security' && adminsWithoutMfa ? String(adminsWithoutMfa) : null
+      }));
+  }, [adminSections, resources.length, users.length, stats?.users?.adminsWithoutMfa, t]);
 
 
   const navigate = (path) => {
@@ -920,6 +795,33 @@ export default function App() {
     return () => { active = false; };
   }, [auth.token]);
 
+  useEffect(() => {
+    if (!auth.token) return undefined;
+    let active = true;
+    fetchHealth()
+      .then((health) => { if (active) setBastionVersion(String(health?.version || '')); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [auth.token]);
+
+  useEffect(() => {
+    let active = true;
+    fetchBranding()
+      .then((value) => { if (active) setBranding(value); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [auth.token]);
+
+  useEffect(() => { applyBranding(branding); }, [branding]);
+
+  // Login page: offer SSO only when the backend has a configured provider.
+  useEffect(() => {
+    if (auth.token) return undefined;
+    let active = true;
+    fetchSsoLoginOptions().then((options) => { if (active) setSsoLogin(options); });
+    return () => { active = false; };
+  }, [auth.token]);
+
   // Premium routes reply 403 + license-required header → open the upsell modal.
   useEffect(() => {
     const onLicenseRequired = (event) => {
@@ -933,19 +835,6 @@ export default function App() {
     return () => window.removeEventListener('endoriumfort:license-required', onLicenseRequired);
   }, []);
 
-  // Server MFA gate replies 403 mfa_enrollment_required → force the enrolment UI.
-  useEffect(() => {
-    const onMfaEnrollmentRequired = () => {
-      setBootstrapState((prev) => ({
-        ...prev,
-        required: true,
-        mfaSetupRequired: true
-      }));
-    };
-    window.addEventListener('endoriumfort:mfa-enrollment-required', onMfaEnrollmentRequired);
-    return () => window.removeEventListener('endoriumfort:mfa-enrollment-required', onMfaEnrollmentRequired);
-  }, []);
-
   // Dark mode effect
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light');
@@ -954,24 +843,35 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event) => {
+      // Alt+1…7 jumps to the visible top-level tabs, in display order.
       if (event.altKey && !event.metaKey && !event.ctrlKey) {
-        const jumpMap = {
-          '1': 'sessions',
-          '2': 'audit',
-          '3': canViewRecordings ? 'recordings' : null
-        };
-        const destination = jumpMap[event.key];
-        if (destination) {
+        const index = Number(event.key) - 1;
+        const tabs = SHELL_TABS.filter((tab) => visibleShellTabs.includes(tab.id));
+        if (Number.isInteger(index) && tabs[index]) {
           event.preventDefault();
-          setMainTab(destination);
-          return;
+          navigate(tabs[index].path);
         }
       }
     };
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [canViewRecordings]);
+  }, [visibleShellTabs.join(',')]);
+
+  // /admin/<section> selects that Administration section.
+  useEffect(() => {
+    const match = /^\/admin\/([a-z0-9]+)/.exec(route);
+    if (match && adminSections.some((section) => section.id === match[1] && !section.locked)) setAdminSection(match[1]);
+    // Re-run once the license is known: premium sections look locked until then.
+  }, [route, licenseEdition, activeTier]);
+
+  // The map shows today's journal, the sessions page each session's events, and the
+  // journal page the full log.
+  useEffect(() => {
+    const tab = tabForPath(route)?.id;
+    if (!auth.token) return;
+    if (tab === 'journal' || (['carte', 'sessions'].includes(tab) && canViewAudit)) loadAudit();
+  }, [route, auth.token, canViewAudit]);
 
   // Token expiry auto-logout
   useEffect(() => {
@@ -996,24 +896,6 @@ export default function App() {
       navigate('/');
     }
   }, [auth.token, route]);
-
-  useEffect(() => {
-    let active = true;
-    fetchHealth()
-      .then((data) => {
-        if (!active) return;
-        setStatus(data.status || 'ok');
-        setDetail(data.message || t('app.healthApiReachable'));
-      })
-      .catch(() => {
-        if (!active) return;
-        setStatus('offline');
-        setDetail(t('app.healthStartBackend'));
-      });
-    return () => {
-      active = false;
-    };
-  }, [t]);
 
   useEffect(() => {
     if (!auth.token) {
@@ -1108,12 +990,8 @@ export default function App() {
       .then((data) => {
         if (!active) return;
         setUsers(Array.isArray(data.items) ? data.items : []);
-        setUserError('');
       })
-      .catch((error) => {
-        if (!active) return;
-        setUserError(error.message || 'Unable to load users');
-      })
+      .catch(() => {})
       .finally(() => {
         if (!active) return;
         setLoadingUsers(false);
@@ -1128,25 +1006,15 @@ export default function App() {
   useEffect(() => {
     if (!auth.token || !canManagePlatform || !jitLicensed) {
       setAccessProfiles([]);
-      setLoadingAccessProfiles(false);
       return;
     }
     let active = true;
-    setLoadingAccessProfiles(true);
     fetchAccessProfiles()
       .then((data) => {
         if (!active) return;
         setAccessProfiles(Array.isArray(data.items) ? data.items : []);
-        setAccessProfileError('');
       })
-      .catch((error) => {
-        if (!active) return;
-        setAccessProfileError(error.message || 'Unable to load access profiles');
-      })
-      .finally(() => {
-        if (!active) return;
-        setLoadingAccessProfiles(false);
-      });
+      .catch(() => {});
     return () => {
       active = false;
     };
@@ -1164,12 +1032,8 @@ export default function App() {
       .then((data) => {
         if (!active) return;
         setAccessGrants(Array.isArray(data.items) ? data.items : []);
-        setAccessGrantError('');
       })
-      .catch((error) => {
-        if (!active) return;
-        setAccessGrantError(error.message || 'Unable to load access grants');
-      })
+      .catch(() => {})
       .finally(() => {
         if (!active) return;
         setLoadingAccessGrants(false);
@@ -1185,21 +1049,32 @@ export default function App() {
     if (!auth.token) { setStats(null); return; }
     let active = true;
     const load = () => {
-      setLoadingStats(true);
       fetchStats()
         .then((data) => { if (active) setStats(data); })
-        .catch(() => {})
-        .finally(() => { if (active) setLoadingStats(false); });
+        .catch(() => {});
     };
     load();
     const interval = setInterval(load, 15000); // refresh every 15s
     return () => { active = false; clearInterval(interval); };
   }, [auth.token]);
 
+  // Coming back to the map: refresh now, so the getting-started steps reflect
+  // what was just done elsewhere (e.g. two-factor sign-in turned on), and
+  // again once the first-login two-factor setup is finished.
+  const mfaSetupPending = !!bootstrapState?.mfaSetupRequired;
+  const onMapTab = !route.startsWith('/compte') && (tabForPath(route)?.id || 'carte') === 'carte';
+  useEffect(() => {
+    if (!auth.token || !onMapTab || !canManagePlatform) return undefined;
+    let active = true;
+    fetchStats()
+      .then((data) => { if (active) setStats(data); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [auth.token, onMapTab, canManagePlatform, mfaSetupPending]);
+
   useEffect(() => {
     if (!auth.token || !canViewAudit) {
       setSecurityAuditItems([]);
-      setSecurityAuditError('');
       setLiveSecurityAlerts([]);
       setLiveSecurityIncident(null);
       setContainmentStatus({ enabled: false, updatedAt: '', updatedBy: '', reason: '' });
@@ -1213,20 +1088,12 @@ export default function App() {
     }
     let active = true;
     const load = () => {
-      setLoadingSecurityAudit(true);
       fetchAudit()
         .then((data) => {
           if (!active) return;
           setSecurityAuditItems(Array.isArray(data.items) ? data.items : []);
-          setSecurityAuditError('');
         })
-        .catch((error) => {
-          if (!active) return;
-          setSecurityAuditError(error.message || 'Unable to load security feed');
-        })
-        .finally(() => {
-          if (active) setLoadingSecurityAudit(false);
-        });
+        .catch(() => {});
     };
     load();
     const interval = setInterval(load, 20000);
@@ -1411,6 +1278,7 @@ export default function App() {
                   throttledBySeverity.warning > 0 || throttledBySeverity.critical > 0
                     ? 'warning'
                     : 'ok',
+                count: suppressedCount,
                 title: `${suppressedCount} signal${suppressedCount > 1 ? 's' : ''} grouped`,
                 hint: 'Low-priority duplicates were throttled to keep focus on high-risk events.'
               });
@@ -1579,7 +1447,7 @@ export default function App() {
     }
   };
 
-  const setContainmentEnabled = async (enabled) => {
+  const setContainmentEnabled = async (enabled, reason) => {
     if (containmentBusy) return;
     if (!canManagePlatform) {
       setSessionError('Only platform admins can change containment mode.');
@@ -1589,7 +1457,7 @@ export default function App() {
     try {
       const payload = await setContainmentMode({
         enabled,
-        reason: liveSecurityIncident?.title || 'incident.escalation'
+        reason: reason || liveSecurityIncident?.title || 'incident.escalation'
       });
       setContainmentStatus({
         enabled: !!payload?.enabled,
@@ -1658,17 +1526,6 @@ export default function App() {
     setAuth((prev) => ({ ...prev, [name]: value }));
   };
 
-  const onResourceFieldChange = (event) => {
-    const { name, value, type, checked } = event.target;
-    const nextValue = type === 'checkbox' ? checked : value;
-    setResourceForm((prev) => ({ ...prev, [name]: nextValue }));
-  };
-
-  const onUserFieldChange = (event) => {
-    const { name, value, type, checked } = event.target;
-    setUserForm((prev) => ({ ...prev, [name]: type === 'checkbox' ? checked : value }));
-  };
-
 
   const onLogin = async (event) => {
     event.preventDefault();
@@ -1708,11 +1565,9 @@ export default function App() {
       setWebauthnEnabled(!!payload.webauthnEnabled);
       setPreferredMfaMethod(String(payload.preferredMfaMethod || 'any'));
       setBootstrapState({
-        // The server MFA gate (ENDORIUMFORT_REQUIRE_MFA) forces enrolment when
-        // payload.mfaEnrollmentRequired is set, even without a bootstrap flag.
-        required: !!bootstrap.required || !!payload.mfaEnrollmentRequired,
+        required: !!bootstrap.required,
         passwordChangeRequired: !!bootstrap.passwordChangeRequired,
-        mfaSetupRequired: !!bootstrap.mfaSetupRequired || !!payload.mfaEnrollmentRequired,
+        mfaSetupRequired: !!bootstrap.mfaSetupRequired,
         totpEnabled: !!payload.totpEnabled,
         webauthnEnabled: !!payload.webauthnEnabled
       });
@@ -1721,7 +1576,6 @@ export default function App() {
       setTotpQrDataUrl('');
       setTotpSetupCode('');
       setTotpError('');
-      setTotpCopyStatus('');
       setTokenExpiresAt(payload.expiresAt || '');
       localStorage.setItem('endoriumfort_auth', JSON.stringify({
         token: payload.token,
@@ -1738,7 +1592,7 @@ export default function App() {
 
   const onStartSsoLogin = () => {
     setAuthError('');
-    startOidcSso({ postLoginRedirect: '/' });
+    startOidcSso({ provider: ssoLogin.provider || undefined, postLoginRedirect: '/' });
   };
 
   const onLoginWithPasskey = async () => {
@@ -1781,11 +1635,9 @@ export default function App() {
       setWebauthnEnabled(!!payload.webauthnEnabled);
       setPreferredMfaMethod(String(payload.preferredMfaMethod || 'any'));
       setBootstrapState({
-        // The server MFA gate (ENDORIUMFORT_REQUIRE_MFA) forces enrolment when
-        // payload.mfaEnrollmentRequired is set, even without a bootstrap flag.
-        required: !!bootstrap.required || !!payload.mfaEnrollmentRequired,
+        required: !!bootstrap.required,
         passwordChangeRequired: !!bootstrap.passwordChangeRequired,
-        mfaSetupRequired: !!bootstrap.mfaSetupRequired || !!payload.mfaEnrollmentRequired,
+        mfaSetupRequired: !!bootstrap.mfaSetupRequired,
         totpEnabled: !!payload.totpEnabled,
         webauthnEnabled: !!payload.webauthnEnabled
       });
@@ -1823,82 +1675,8 @@ export default function App() {
     setPreferredMfaMethod('any');
     setTotpSetupData(null);
     setTotpQrDataUrl('');
-    setTotpCopyStatus('');
     localStorage.removeItem('endoriumfort_auth');
     navigate('/login');
-  };
-
-  const onQuickRefresh = async () => {
-    if (!auth.token || quickRefreshing) {
-      return;
-    }
-    setQuickRefreshing(true);
-    try {
-      // Core data (always). Grouped fetches are isolated so one failing group
-      // never blocks the others, and premium groups run only when licensed —
-      // otherwise their 403s would raise a spurious upsell on a plain refresh.
-      const [sessionData, resourceData, statsData] = await Promise.all([
-        fetchSessions(),
-        fetchResources(),
-        fetchStats()
-      ]);
-      setSessions(Array.isArray(sessionData?.items) ? sessionData.items : []);
-      setResources(Array.isArray(resourceData?.items) ? resourceData.items : []);
-      setStats(statsData || null);
-
-      if (canManagePlatform) {
-        try {
-          const usersData = await fetchUsers();
-          setUsers(Array.isArray(usersData?.items) ? usersData.items : []);
-        } catch (_) {}
-      }
-      if (canViewAudit) {
-        try {
-          const auditData = await fetchAudit();
-          const items = Array.isArray(auditData?.items) ? auditData.items : [];
-          setSecurityAuditItems(items);
-          if (auditOpen) setAuditItems(items);
-        } catch (_) {}
-      }
-      if (canViewAudit && securityCenterLicensed) {
-        try {
-          const [containmentData, incidentData] = await Promise.all([
-            fetchContainmentStatus(),
-            fetchActiveSecurityIncident()
-          ]);
-          setContainmentStatus({
-            enabled: !!containmentData?.enabled,
-            updatedAt: containmentData?.updatedAt || '',
-            updatedBy: containmentData?.updatedBy || '',
-            reason: containmentData?.reason || ''
-          });
-          setActiveSecurityIncident({
-            active: !!incidentData?.active,
-            incident: incidentData?.incident || null
-          });
-        } catch (_) {}
-      }
-      if (jitLicensed) {
-        try {
-          const grantsData = await fetchAccessGrants();
-          setAccessGrants(Array.isArray(grantsData?.items) ? grantsData.items : []);
-        } catch (_) {}
-      }
-      if (canManagePlatform && jitLicensed) {
-        try {
-          const profileData = await fetchAccessProfiles();
-          setAccessProfiles(Array.isArray(profileData?.items) ? profileData.items : []);
-        } catch (_) {}
-      }
-      setSessionError('');
-      setResourceError('');
-      setUserError('');
-      setSecurityAuditError('');
-    } catch (error) {
-      setSessionError(error.message || t('feedback.unableRefreshData'));
-    } finally {
-      setQuickRefreshing(false);
-    }
   };
 
   const refreshLicenseStatus = async () => {
@@ -1956,27 +1734,15 @@ export default function App() {
 
   const onTerminate = async (sessionId) => {
     try {
+      if (readOpenTerminal() === sessionId) forgetOpenTerminal();
       const updated = await terminateSession(sessionId);
       setSessions((prev) =>
         prev.map((item) => (item.id === sessionId ? updated : item))
       );
+      loadAudit();
     } catch (error) {
       setSessionError(error.message || t('feedback.unableTerminateSession'));
     }
-  };
-
-  const toggleWatchSession = (sessionId) => {
-    const normalized = Number(sessionId) || 0;
-    if (!normalized) return;
-    setWatchedSessionIds((prev) =>
-      prev.includes(normalized)
-        ? prev.filter((id) => id !== normalized)
-        : [...prev, normalized]
-    );
-  };
-
-  const dismissWatchAlert = (alertKey) => {
-    setWatchlistAlerts((prev) => prev.filter((item) => item.key !== alertKey));
   };
 
   const loadAudit = async () => {
@@ -1996,47 +1762,36 @@ export default function App() {
     }
   };
 
-  const onVerifyAuditIntegrity = async () => {
-    if (!auth.token) return;
-    setCheckingIntegrity(true);
-    setAuditIntegrity(null);
-    try {
-      const result = await verifyAuditChain();
-      setAuditIntegrity(result);
-    } catch (error) {
-      setAuditIntegrity({ error: error.message || 'verify failed' });
-    } finally {
-      setCheckingIntegrity(false);
-    }
-  };
-
   const openAudit = (sessionId = null) => {
-    setMainTab('audit');
-    setAuditOpen(true);
     setAuditFilter(sessionId);
     loadAudit();
   };
 
   useEffect(() => {
-    // Terminal DOM node exists only in the Sessions tab.
-    if (mainTab !== 'sessions' || !activeTerminalSession || !terminalRef.current) {
+    if (!activeTerminalSession || !terminalRef.current) {
       return undefined;
     }
 
     const terminal = new Terminal({
-      fontFamily: '"IBM Plex Mono", "Fira Code", monospace',
+      fontFamily: '"Cascadia Mono", Consolas, "IBM Plex Mono", monospace',
       fontSize: 13,
+      lineHeight: 1.25,
       cursorBlink: true,
       theme: {
-        background: '#111827',
-        foreground: '#f9fafb',
-        cursor: '#f59e0b'
+        background: '#101216',
+        foreground: '#d4d7dc',
+        cursor: '#d4d7dc',
+        selectionBackground: '#3a64f055'
       }
     });
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.open(terminalRef.current);
-    fitAddon.fit();
+    try {
+      fitAddon.fit();
+    } catch (_) {
+      // Host not on screen yet; TerminalSlot refits once it is attached.
+    }
 
     terminalInstanceRef.current = terminal;
     fitAddonRef.current = fitAddon;
@@ -2074,25 +1829,43 @@ export default function App() {
       fitAddonRef.current = null;
       setTerminalReady(false);
     };
-  }, [activeTerminalSession, mainTab]);
+  }, [activeTerminalSession]);
 
   useEffect(() => {
     if (!autoConnectSessionId) return;
-    if (mainTab !== 'sessions') return;
     if (!terminalReady) return;
-    if (!auth.token || !sshPassword) return;
+    if (!auth.token || (!sshPassword && resumeSessionId !== autoConnectSessionId)) return;
     if (!activeTerminalSession || activeTerminalSession.id !== autoConnectSessionId) return;
 
     setAutoConnectSessionId(null);
     connectTerminal();
   }, [
     autoConnectSessionId,
-    mainTab,
     terminalReady,
     auth.token,
     sshPassword,
-    activeTerminalSession
+    activeTerminalSession,
+    resumeSessionId
   ]);
+
+  // After a page reload: reopen the terminal of the SSH session this tab had
+  // open, if it is still running. The server kept the shell for a grace
+  // period (ENDORIUMFORT_SSH_RESUME_GRACE_SECONDS) and hands it back.
+  const resumeCheckedRef = useRef(false);
+  useEffect(() => {
+    if (resumeCheckedRef.current || !auth.token || activeTerminalSession || !sessions.length) return;
+    resumeCheckedRef.current = true;
+    let id = 0;
+    try { id = Number(sessionStorage.getItem(OPEN_TERMINAL_KEY)) || 0; } catch (_) { /* storage unavailable */ }
+    if (!id) return;
+    const session = sessions.find((item) => item.id === id);
+    const isSsh = String(session?.protocol || '').toLowerCase() === 'ssh';
+    if (!session || session.status !== 'active' || !isSsh) {
+      forgetOpenTerminal();
+      return;
+    }
+    openTerminal(session, { resume: true });
+  }, [auth.token, sessions, activeTerminalSession]);
 
   const resolveSessionResource = (session) => {
     if (!session) return null;
@@ -2122,7 +1895,8 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!auth.token || !sessions.length) {
+    // Relay lookups are licensed; without the license they would only raise upsell prompts.
+    if (!auth.token || !sessions.length || !relaysLicensed) {
       setSessionRelayHints({});
       return;
     }
@@ -2183,15 +1957,23 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [auth.token, sessions, resources]);
+  }, [auth.token, sessions, resources, relaysLicensed]);
 
-  const openTerminal = async (session) => {
+  const openTerminal = async (session, { resume = false } = {}) => {
     setActiveTerminalSession(session);
     setSshPassword('');
     setTerminalError('');
     setTerminalInfo('');
     setTerminalStatus('idle');
     setTerminalReady(false);
+
+    if (resume) {
+      setResumeSessionId(session.id);
+      setAutoConnectSessionId(session.id);
+      setTerminalInfo(t('feedback.sessionResuming'));
+      return;
+    }
+    setResumeSessionId(null);
 
     const resource = resolveSessionResource(session);
     if (!resource || !resource.hasCredentials) {
@@ -2238,7 +2020,7 @@ export default function App() {
       setTerminalError(t('feedback.pickSessionToConnect'));
       return;
     }
-    if (!sshPassword) {
+    if (!sshPassword && activeTerminalSession.id !== resumeSessionId) {
       setTerminalError(t('feedback.sshPasswordRequired'));
       return;
     }
@@ -2281,6 +2063,7 @@ export default function App() {
       socketOpened = true;
       setTerminalStatus('live');
       terminal.focus();
+      rememberOpenTerminal(activeTerminalSession.id);
       socket.send(
         JSON.stringify({
           type: 'start',
@@ -2304,8 +2087,26 @@ export default function App() {
       if (typeof event.data === 'string') {
         try {
           const payload = JSON.parse(event.data);
+          if (payload.type === 'status' && payload.message === 'Session resumed') {
+            setResumeSessionId(null);
+            setTerminalInfo(t('feedback.sessionResumed'));
+          } else if (payload.type === 'status' && payload.message === 'SSH closed') {
+            forgetOpenTerminal();
+          }
           if (payload.type === 'error') {
-            setTerminalError(payload.message || t('feedback.sshError'));
+            forgetOpenTerminal();
+            setResumeSessionId(null);
+            // The server keeps the socket open after an SSH error, so the
+            // status has to follow the message, not the socket.
+            const known = {
+              'Unable to resolve host': 'feedback.sshHostUnknown',
+              'Unable to connect': 'feedback.sshUnreachable',
+              'SSH handshake failed': 'feedback.sshHandshake',
+              'SSH authentication failed': 'feedback.sshAuthFailed',
+              'No SSH credential available for this session': 'feedback.sshNoCredential'
+            };
+            setTerminalStatus('error');
+            setTerminalError(known[payload.message] ? t(known[payload.message]) : payload.message || t('feedback.sshError'));
           }
         } catch (error) {
           terminal.write(event.data);
@@ -2341,6 +2142,20 @@ export default function App() {
       setTerminalStatus('error');
       setTerminalError(t('feedback.websocketTransportError'));
     });
+  };
+
+  // Re-measure the terminal after it was hidden, moved or went fullscreen.
+  const refitTerminal = () => {
+    const terminal = terminalInstanceRef.current;
+    if (!fitAddonRef.current || !terminal || !terminal.element?.isConnected) return;
+    try {
+      fitAddonRef.current.fit();
+    } catch (_) {
+      return;
+    }
+    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
+    }
   };
 
   const sendSnippetToTerminal = (snippet, execute = false) => {
@@ -2466,7 +2281,7 @@ export default function App() {
       localEndpoint,
       openInBrowser,
       installGuide: resolveAgentInstallGuide(),
-      command: `endoriumfort-agent connect --server ${normalizedOrigin} --token ${auth.token} --resource ${resource.id} --local-port ${localPort}`,
+      command: `endoriumfort-agent connect --server ${normalizedOrigin} --token ${linkToken || '<token>'} --resource ${resource.id} --local-port ${localPort}`,
       deepLink: `endoriumfort://connect?${params.toString()}`
     };
   };
@@ -2509,7 +2324,12 @@ export default function App() {
     };
   }, []);
 
+  // Why the last connection attempt failed (server message), so a refusal for
+  // missing access details can reopen the access dialog instead.
+  const lastConnectErrorRef = useRef('');
+
   const connectToResource = async (resource, accessMeta = {}) => {
+    lastConnectErrorRef.current = '';
     if (!auth.token) {
       setSessionError(t('feedback.signInFirst'));
       return false;
@@ -2542,7 +2362,7 @@ export default function App() {
         };
         const created = await createSession(payload);
         setSessions((prev) => [created, ...prev]);
-        if (created?.accessGrantId) {
+        if (created?.accessGrantId && jitLicensed) {
           fetchAccessGrants()
             .then((data) => {
               setAccessGrants(Array.isArray(data?.items) ? data.items : []);
@@ -2550,17 +2370,16 @@ export default function App() {
             .catch(() => {});
         }
         setSessionError('');
-        setInlineWebResource(null);
         setVncViewerSession(null);
         if (rbiTab) {
           rbiTab.location = `${window.location.origin}/?rbi=${created.id}`;
         } else {
           setRbiViewerSession(created);
-          setMainTab('sessions');
         }
         return true;
       } catch (error) {
         if (rbiTab) rbiTab.close();
+        lastConnectErrorRef.current = error.message || '';
         setSessionError(error.message || 'Unable to create session');
         return false;
       }
@@ -2582,7 +2401,7 @@ export default function App() {
         };
         const created = await createSession(payload);
         setSessions((prev) => [created, ...prev]);
-        if (created?.accessGrantId) {
+        if (created?.accessGrantId && jitLicensed) {
           fetchAccessGrants()
             .then((data) => {
               setAccessGrants(Array.isArray(data?.items) ? data.items : []);
@@ -2590,11 +2409,10 @@ export default function App() {
             .catch(() => {});
         }
         setSessionError('');
-        setInlineWebResource(null);
         setVncViewerSession(created);
-        setMainTab('sessions');
         return true;
       } catch (error) {
+        lastConnectErrorRef.current = error.message || '';
         setSessionError(error.message || 'Unable to create session');
         return false;
       }
@@ -2625,7 +2443,7 @@ export default function App() {
       };
       const created = await createSession(payload);
       setSessions((prev) => [created, ...prev]);
-      if (created?.accessGrantId) {
+      if (created?.accessGrantId && jitLicensed) {
         fetchAccessGrants()
           .then((data) => {
             setAccessGrants(Array.isArray(data?.items) ? data.items : []);
@@ -2633,7 +2451,6 @@ export default function App() {
           .catch(() => {});
       }
       setSessionError('');
-      setInlineWebResource(null);
       openTerminal(created);
 
       // Auto-inject credentials only for vaulted mode.
@@ -2643,7 +2460,6 @@ export default function App() {
           const creds = await consumeEphemeralCredential(lease.leaseId);
           if (creds.sshPassword) {
             setSshPassword(creds.sshPassword);
-            setMainTab('sessions');
             setAutoConnectSessionId(created.id);
           }
         } catch (_) {
@@ -2651,11 +2467,11 @@ export default function App() {
         }
       } else if ((resource.credentialSource || 'vaulted') !== 'vaulted') {
         setSshPassword('');
-        setMainTab('sessions');
         setAutoConnectSessionId(created.id);
       }
       return true;
     } catch (error) {
+      lastConnectErrorRef.current = error.message || '';
       setSessionError(error.message || 'Unable to create session');
       return false;
     }
@@ -2668,15 +2484,56 @@ export default function App() {
     setAccessPromptPurpose('');
     setAccessPromptPurposeEvidence('');
     setAccessPromptMode('connect');
+    setAccessPromptRequestId(null);
+    setRiskPreview(null);
+    setRiskPreviewError('');
+  };
+
+  // The access dialog only opens when the server will ask for something
+  // (reason, ticket, purpose); otherwise "Connexion immédiate" means it.
+  // What the server will ask before opening a session: an approved request
+  // (resource setting or JIT policy) and/or details in the access dialog.
+  const accessNeeds = async (resource) => {
+    const risk = String(resource?.riskLevel || '').toLowerCase();
+    const local = !!(resource.requireAccessJustification || risk === 'high' || risk === 'critical' || containmentEnabled);
+    if (!jitLicensed) return { approval: !!resource.requireDualApproval, prompt: local };
+    try {
+      const preview = await previewSessionRisk({ resourceId: resource.id, justification: '', ticketId: '', purpose: '' });
+      return {
+        approval: !!(resource.requireDualApproval || preview?.approvalRequired),
+        prompt: local || !!(preview?.justificationRequired || preview?.ticketRequired || preview?.purposeRequired)
+      };
+    } catch {
+      return { approval: !!resource.requireDualApproval, prompt: true };
+    }
+  };
+
+  // Server refusals that the access dialog can fix (see POST /api/sessions).
+  const MISSING_ACCESS_DETAILS = /requires an access justification|requires a ticketId|require a purpose|provide a justification/i;
+
+  const openConnectPrompt = (resource) => {
+    const existingPlaybook =
+      accessPlaybooks.find((item) => Number(item.resourceId) === Number(resource.id)) || null;
+    setAccessPromptMode('connect');
+    setAccessPromptResource(resource);
+    setSessionError('');
+    setAccessPromptReason(existingPlaybook?.justification || '');
+    setAccessPromptTicketId(existingPlaybook?.ticketId || '');
+    setAccessPromptPurpose(existingPlaybook?.purpose || '');
+    setAccessPromptPurposeEvidence(existingPlaybook?.purposeEvidence || '');
     setRiskPreview(null);
     setRiskPreviewError('');
   };
 
   const onConnectResource = async (resource) => {
     const protocol = String(resource?.protocol || '').toLowerCase();
-    const sessionBackedProtocol = protocol !== 'http' && protocol !== 'https' && !isAgentTunnelProtocol(protocol);
+    // Every protocol that opens a session on the bastion (web ones included,
+    // through the isolated browser) can carry a reason, ticket and purpose.
+    // Agent tunnels do not create a session here.
+    const sessionBackedProtocol = !isAgentTunnelProtocol(protocol);
 
-    if (resource.requireDualApproval && !canManagePlatform) {
+    const needs = await accessNeeds(resource);
+    if (needs.approval && !canManagePlatform) {
       const existingPlaybook =
         accessPlaybooks.find((item) => Number(item.resourceId) === Number(resource.id)) || null;
       const approved = accessRequests.find(
@@ -2685,7 +2542,7 @@ export default function App() {
           item.requester === auth.user &&
           item.status === 'approved'
       );
-      if (approved) {
+      if (approved && !needs.prompt) {
         await connectToResource(resource, {
           justification: approved.justification || '',
           ticketId: approved.ticketId || '',
@@ -2693,8 +2550,23 @@ export default function App() {
         });
         return;
       }
+      if (approved) {
+        // Approved, but the session still needs a purpose or a ticket.
+        setAccessPromptMode('connect');
+        setAccessPromptRequestId(approved.id);
+        setAccessPromptResource(resource);
+        setSessionError('');
+        setAccessPromptReason(approved.justification || '');
+        setAccessPromptTicketId(approved.ticketId || '');
+        setAccessPromptPurpose(existingPlaybook?.purpose || '');
+        setAccessPromptPurposeEvidence(existingPlaybook?.purposeEvidence || '');
+        setRiskPreview(null);
+        setRiskPreviewError('');
+        return;
+      }
       setAccessPromptMode('request');
       setAccessPromptResource(resource);
+      setSessionError('');
       setAccessPromptReason(existingPlaybook?.justification || '');
       setAccessPromptTicketId(existingPlaybook?.ticketId || '');
       setAccessPromptPurpose(existingPlaybook?.purpose || '');
@@ -2704,17 +2576,16 @@ export default function App() {
       return;
     }
 
+    if (sessionBackedProtocol && !needs.prompt) {
+      const connected = await connectToResource(resource);
+      // The server asked for details the client did not foresee (a rule it
+      // could not preview): ask for them rather than leaving an error.
+      if (!connected && MISSING_ACCESS_DETAILS.test(lastConnectErrorRef.current)) openConnectPrompt(resource);
+      return;
+    }
+
     if (sessionBackedProtocol) {
-      const existingPlaybook =
-        accessPlaybooks.find((item) => Number(item.resourceId) === Number(resource.id)) || null;
-      setAccessPromptMode('connect');
-      setAccessPromptResource(resource);
-      setAccessPromptReason(existingPlaybook?.justification || '');
-      setAccessPromptTicketId(existingPlaybook?.ticketId || '');
-      setAccessPromptPurpose(existingPlaybook?.purpose || '');
-      setAccessPromptPurposeEvidence(existingPlaybook?.purposeEvidence || '');
-      setRiskPreview(null);
-      setRiskPreviewError('');
+      openConnectPrompt(resource);
       return;
     }
     await connectToResource(resource);
@@ -2724,7 +2595,6 @@ export default function App() {
     const protocol = String(session?.protocol || '').toLowerCase();
     if (protocol === 'vnc') {
       setVncViewerSession(session);
-      setMainTab('sessions');
       return;
     }
     await openTerminal(session);
@@ -2782,7 +2652,9 @@ export default function App() {
       return;
     }
     const reason = accessPromptReason.trim();
-    if (!reason) {
+    const reasonRequired = accessPromptMode === 'request' || accessPromptResource.requireAccessJustification ||
+      containmentEnabled || !!riskPreview?.justificationRequired;
+    if (reasonRequired && !reason) {
       setSessionError(
         containmentEnabled
           ? (locale === 'fr' ? "Une raison d'accès est requise tant que le mode confinement est actif." : 'Access reason is required while containment mode is active.')
@@ -2793,7 +2665,10 @@ export default function App() {
     const purpose = accessPromptPurpose.trim();
     const purposeEvidence = accessPromptPurposeEvidence.trim();
     const riskLevel = String(accessPromptResource.riskLevel || '').toLowerCase();
-    const purposeRequired = riskLevel === 'high' || riskLevel === 'critical';
+    // The purpose belongs to the session, not to the request: the dialog does
+    // not show it when requesting, and it is asked when connecting once the
+    // request is approved.
+    const purposeRequired = accessPromptMode !== 'request' && (riskLevel === 'high' || riskLevel === 'critical');
     if (purposeRequired && !purpose) {
       setSessionError(locale === 'fr' ? 'Les ressources à haut risque exigent un objectif.' : 'High-risk resources require a purpose.');
       return;
@@ -2806,8 +2681,10 @@ export default function App() {
           ticketId: accessPromptTicketId.trim()
         });
         setAccessRequests((prev) => [created, ...prev]);
-        setSessionError(locale === 'fr' ? "Demande d'accès envoyée. Attendez l'approbation d'un admin." : 'Access request submitted. Wait for admin approval.');
+        setSessionError('');
         closeAccessPrompt();
+        // The request page shows it as pending with its history.
+        navigate('/demandes');
         return;
       } catch (error) {
         setSessionError(error.message || (locale === 'fr' ? "Impossible d'envoyer la demande d'accès" : 'Unable to submit access request'));
@@ -2818,7 +2695,8 @@ export default function App() {
       justification: reason,
       ticketId: accessPromptTicketId.trim(),
       purpose,
-      purposeEvidence
+      purposeEvidence,
+      accessRequestId: accessPromptRequestId || undefined
     });
     if (connected) {
       closeAccessPrompt();
@@ -2826,7 +2704,9 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!accessPromptResource || !auth.token) {
+    // The risk preview is part of JIT governance: without it the server answers
+    // 403 and the upsell modal would open over the connection dialog.
+    if (!accessPromptResource || !auth.token || !jitLicensed) {
       setRiskPreview(null);
       setRiskPreviewError('');
       return undefined;
@@ -2858,22 +2738,9 @@ export default function App() {
     accessPromptReason,
     accessPromptTicketId,
     accessPromptPurpose,
-    auth.token
+    auth.token,
+    jitLicensed
   ]);
-
-  const onOpenSessionDna = async (sessionId) => {
-    setSessionDnaLoading(true);
-    setSessionDnaError('');
-    setSessionDna(null);
-    try {
-      const data = await fetchSessionDna(sessionId);
-      setSessionDna(data);
-    } catch (error) {
-      setSessionDnaError(error.message || (locale === 'fr' ? "Impossible de charger l'ADN de session" : 'Unable to load session DNA'));
-    } finally {
-      setSessionDnaLoading(false);
-    }
-  };
 
   const onApproveAccessRequest = async (requestId) => {
     try {
@@ -2884,6 +2751,20 @@ export default function App() {
       setAccessRequestError('');
     } catch (error) {
       setAccessRequestError(error.message || (locale === 'fr' ? "Impossible d'approuver la demande d'accès" : 'Unable to approve access request'));
+    }
+  };
+
+  const reloadAccessRequests = async () => {
+    if (!auth.token || !jitLicensed) return;
+    setLoadingAccessRequests(true);
+    try {
+      const data = await fetchAccessRequests();
+      setAccessRequests(Array.isArray(data.items) ? data.items : []);
+      setAccessRequestError('');
+    } catch (error) {
+      setAccessRequestError(error.message || 'Unable to load access requests');
+    } finally {
+      setLoadingAccessRequests(false);
     }
   };
 
@@ -2899,301 +2780,12 @@ export default function App() {
     }
   };
 
-  const onSubmitResource = async (event) => {
-    event.preventDefault();
-    if (savingResource) {
-      return;
-    }
-    setResourceError('');
-
-    const trimmedName = resourceForm.name.trim();
-    const trimmedTarget = resourceForm.target.trim();
-    const selectedProtocol = (resourceForm.protocol || '').trim();
-    if (!trimmedName || !trimmedTarget || !selectedProtocol) {
-      setResourceError(locale === 'fr' ? 'Le nom, la cible et le protocole sont requis.' : 'Name, target and protocol are required.');
-      return;
-    }
-
-    const payload = {
-      name: trimmedName,
-      target: trimmedTarget,
-      protocol: selectedProtocol,
-      port: Number.parseInt(resourceForm.port, 10) || (selectedProtocol === 'k8s' ? 443 : 22),
-      tunnelTicketRateLimitMaxAttempts: Math.max(
-        0,
-        Number.parseInt(resourceForm.tunnelTicketRateLimitMaxAttempts, 10) || 0
-      ),
-      description: resourceForm.description.trim(),
-      imageUrl: resourceForm.imageUrl.trim(),
-      imageData: resourceForm.imageData || '',
-      tagsCsv: resourceForm.tagsCsv.trim(),
-      credentialSource: resourceForm.credentialSource || 'vaulted',
-      httpUsername: resourceForm.httpUsername.trim(),
-      httpPassword: resourceForm.httpPassword,
-      sshUsername: resourceForm.sshUsername.trim(),
-      sshPassword: resourceForm.sshPassword,
-      agentProtocol: selectedProtocol === 'agent' ? (resourceForm.agentProtocol || 'tcp') : '',
-      requireAccessJustification: !!resourceForm.requireAccessJustification,
-      requireDualApproval: !!resourceForm.requireDualApproval,
-      enableCommandGuard: !!resourceForm.enableCommandGuard,
-      adaptiveAccessPolicy: !!resourceForm.adaptiveAccessPolicy,
-      riskLevel: resourceForm.riskLevel || 'low'
-    };
-    try {
-      setSavingResource(true);
-      let savedId = editingResourceId;
-      if (editingResourceId) {
-        const updated = await updateResource(editingResourceId, payload);
-        setResources((prev) =>
-          prev.map((item) => (item.id === editingResourceId ? updated : item))
-        );
-      } else {
-        const created = await createResource(payload);
-        savedId = created.id;
-        setResources((prev) => [...prev, created]);
-      }
-      // Kubernetes credential (kubeconfig + namespace) lives in a separate
-      // encrypted store keyed by resource id — persist it after the resource
-      // exists. kubeconfig left empty on edit keeps the current one.
-      if (selectedProtocol === 'k8s' && savedId) {
-        try {
-          await configureK8sResource(savedId, {
-            namespace: (resourceForm.k8sNamespace || 'default').trim(),
-            kubeconfig: resourceForm.k8sKubeconfig || ''
-          });
-        } catch (k8sErr) {
-          setResourceError(k8sErr.message || 'Resource saved but kubeconfig failed');
-        }
-      }
-      setEditingResourceId(null);
-      setResourceForm({
-        name: '',
-        target: '',
-        protocol: 'ssh',
-        port: '22',
-        tunnelTicketRateLimitMaxAttempts: '0',
-        description: '',
-        imageUrl: '',
-        imageData: '',
-        tagsCsv: '',
-        credentialSource: 'vaulted',
-        httpUsername: '',
-        httpPassword: '',
-        sshUsername: '',
-        sshPassword: '',
-        agentProtocol: 'tcp',
-        k8sNamespace: 'default',
-        k8sKubeconfig: '',
-        requireAccessJustification: false,
-        requireDualApproval: false,
-        enableCommandGuard: false,
-        adaptiveAccessPolicy: false,
-        riskLevel: 'low'
-      });
-    } catch (error) {
-      setResourceError(error.message || t('feedback.unableSaveResource'));
-    } finally {
-      setSavingResource(false);
-    }
-  };
-
-  const onEditResource = async (resource) => {
-    setEditingResourceId(resource.id);
-    // For k8s resources, recover the stored namespace so saving doesn't reset it
-    // (the kubeconfig itself is never sent back — the field stays empty = keep).
-    let k8sNamespace = 'default';
-    if ((resource.protocol || '').toLowerCase() === 'k8s') {
-      try {
-        const res = await fetchK8sResources();
-        const cfg = (res.items || []).find((c) => c.resourceId === resource.id);
-        if (cfg && cfg.namespace) k8sNamespace = cfg.namespace;
-      } catch (_) {}
-    }
-    setResourceForm({
-      name: resource.name || '',
-      target: resource.target || '',
-      protocol: resource.protocol || 'ssh',
-      port: String(resource.port || 22),
-      tunnelTicketRateLimitMaxAttempts: String(
-        Math.max(0, Number(resource.tunnelTicketRateLimitMaxAttempts) || 0)
-      ),
-      description: resource.description || '',
-      imageUrl: resource.imageUrl || '',
-      imageData: resource.imageData || '',
-      tagsCsv: resource.tagsCsv || '',
-      credentialSource: resource.credentialSource || 'vaulted',
-      httpUsername: resource.httpUsername || '',
-      httpPassword: '',
-      sshUsername: resource.sshUsername || '',
-      sshPassword: '',
-      agentProtocol: resource.agentProtocol || 'tcp',
-      k8sNamespace,
-      k8sKubeconfig: '',
-      requireAccessJustification: !!resource.requireAccessJustification,
-      requireDualApproval: !!resource.requireDualApproval,
-      enableCommandGuard: !!resource.enableCommandGuard,
-      adaptiveAccessPolicy: !!resource.adaptiveAccessPolicy,
-      riskLevel: resource.riskLevel || 'low'
-    });
-  };
-
-  const onDeleteResource = async (resourceId) => {
-    try {
-      await deleteResource(resourceId);
-      setResources((prev) => prev.filter((item) => item.id !== resourceId));
-    } catch (error) {
-      setResourceError(error.message || t('feedback.unableDeleteResource'));
-    }
-  };
-
-
-  const onOpenSessionEvidence = async (sessionId) => {
-    setSessionEvidenceLoading(true);
-    setSessionEvidencePack(null);
-    setSessionEvidenceError('');
-    try {
-      const data = await fetchSessionEvidencePack(sessionId);
-      setSessionEvidencePack(data);
-    } catch (error) {
-      setSessionEvidenceError(error.message || 'Unable to load evidence pack');
-    } finally {
-      setSessionEvidenceLoading(false);
-    }
-  };
-
-  const onSubmitUser = async (event) => {
-    event.preventDefault();
-    setUserError('');
-    const payload = {
-      username: userForm.username.trim(),
-      password: userForm.password,
-      role: userForm.role,
-      forcePasswordRotation: !!userForm.forcePasswordRotation
-    };
-    try {
-      if (editingUserId) {
-        const updated = await updateUser(editingUserId, {
-          password: payload.password,
-          role: payload.role,
-          forcePasswordRotation: payload.forcePasswordRotation
-        });
-        setUsers((prev) =>
-          prev.map((item) => (item.id === editingUserId ? updated : item))
-        );
-      } else {
-        const created = await createUser(payload);
-        setUsers((prev) => [...prev, created]);
-      }
-      setEditingUserId(null);
-      setUserForm({
-        username: '',
-        password: '',
-        role: 'operator',
-        forcePasswordRotation: false
-      });
-    } catch (error) {
-      setUserError(error.message || t('feedback.unableSaveUser'));
-    }
-  };
-
-  const onEditUser = (user) => {
-    setEditingUserId(user.id);
-    setUserForm({
-      username: user.username || '',
-      password: '',
-      role: user.role || 'operator',
-      forcePasswordRotation: !!user.bootstrapPasswordChangeRequired
-    });
-  };
-
-  const onDeleteUser = async (userId) => {
-    try {
-      await deleteUser(userId);
-      setUsers((prev) => prev.filter((item) => item.id !== userId));
-    } catch (error) {
-      setUserError(error.message || t('feedback.unableDeleteUser'));
-    }
-  };
-
-  // RGPD subject access: download everything held about a user as a JSON file.
-  const onExportUserData = async (user) => {
-    try {
-      const data = await exportUserData(user.id);
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `user-${user.username || user.id}-data-export.json`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-    } catch (error) {
-      setUserError(error.message || 'Failed to export user data');
-    }
-  };
-
-  const onLoadUserPermissions = async (user) => {
-    try {
-      setLoadingAccessScope(true);
-      setSelectedUserForAccessScope(user);
-      const [resourceResponse, profileResponse] = await Promise.all([
-        getUserResourcePermissions(user.id),
-        getUserAccessProfiles(user.id)
-      ]);
-      setUserResourceScope(resourceResponse.resourceIds || []);
-      setUserAccessProfiles(profileResponse.profileIds || []);
-      setAccessScopeError('');
-    } catch (error) {
-      setAccessScopeError(error.message || t('feedback.unableLoadAccessScope'));
-    } finally {
-      setLoadingAccessScope(false);
-    }
-  };
-
-  const onToggleResourcePermission = async (resourceId) => {
-    if (!selectedUserForAccessScope) return;
-    
-    const hasPermission = userResourceScope.includes(resourceId);
-    try {
-      if (hasPermission) {
-        await revokeResourcePermission(selectedUserForAccessScope.id, resourceId);
-        setUserResourceScope((prev) => prev.filter((id) => id !== resourceId));
-      } else {
-        await grantResourcePermission(selectedUserForAccessScope.id, resourceId);
-        setUserResourceScope((prev) => [...prev, resourceId]);
-      }
-      setAccessScopeError('');
-    } catch (error) {
-      setAccessScopeError(error.message || t('feedback.unableModifyResourceScope'));
-    }
-  };
-
-  const onToggleAccessProfile = async (profileId) => {
-    if (!selectedUserForAccessScope) return;
-    const hasProfile = userAccessProfiles.includes(profileId);
-    try {
-      if (hasProfile) {
-        await revokeAccessProfile(selectedUserForAccessScope.id, profileId);
-        setUserAccessProfiles((prev) => prev.filter((id) => id !== profileId));
-      } else {
-        await grantAccessProfile(selectedUserForAccessScope.id, profileId);
-        setUserAccessProfiles((prev) => [...prev, profileId]);
-      }
-      const refreshedResources = await getUserResourcePermissions(selectedUserForAccessScope.id);
-      setUserResourceScope(refreshedResources.resourceIds || []);
-      setAccessScopeError('');
-    } catch (error) {
-      setAccessScopeError(error.message || 'Unable to modify access profile assignment');
-    }
-  };
 
 
   // ── 2FA handlers ──
 
   const onSetup2FA = async () => {
     setTotpError('');
-    setTotpCopyStatus('');
     try {
       const data = await setup2FA();
       setTotpSetupData(data);
@@ -3207,21 +2799,22 @@ export default function App() {
     try {
       const data = await verify2FA(totpSetupCode);
       setTotpEnabled(true);
-      setWebauthnEnabled(!!data.webauthnEnabled);
+      // The server does not always echo the key state: keep ours, then re-read it.
+      if ('webauthnEnabled' in data) setWebauthnEnabled(!!data.webauthnEnabled);
       if (data.preferredMfaMethod) setPreferredMfaMethod(String(data.preferredMfaMethod));
       setTotpSetupData(null);
       setTotpQrDataUrl('');
       setTotpSetupCode('');
       setTotpError('');
-      setTotpCopyStatus('');
       const bootstrap = data.bootstrap || {};
       setBootstrapState({
         required: !!bootstrap.required,
         passwordChangeRequired: !!bootstrap.passwordChangeRequired,
         mfaSetupRequired: !!bootstrap.mfaSetupRequired,
         totpEnabled: true,
-        webauthnEnabled: !!data.webauthnEnabled
+        webauthnEnabled: 'webauthnEnabled' in data ? !!data.webauthnEnabled : webauthnEnabled
       });
+      onLoad2FAStatus();
     } catch (error) {
       setTotpError(error.message || t('feedback.invalidCode'));
     }
@@ -3232,16 +2825,19 @@ export default function App() {
     try {
       const data = await disable2FA(totpDisableCode);
       setTotpEnabled(false);
-      setWebauthnEnabled(!!data.webauthnEnabled);
+      // The server does not always echo the key state: keep ours, then re-read it.
+      if ('webauthnEnabled' in data) setWebauthnEnabled(!!data.webauthnEnabled);
       if (data.preferredMfaMethod) setPreferredMfaMethod(String(data.preferredMfaMethod));
       setTotpDisableCode('');
       setTotpError('');
+      const keysLeft = 'webauthnEnabled' in data ? !!data.webauthnEnabled : webauthnEnabled;
       setBootstrapState((prev) => ({
         ...prev,
-        mfaSetupRequired: !data.webauthnEnabled,
+        mfaSetupRequired: !keysLeft,
         totpEnabled: false,
-        webauthnEnabled: !!data.webauthnEnabled
+        webauthnEnabled: keysLeft
       }));
+      onLoad2FAStatus();
     } catch (error) {
       setTotpError(error.message || t('feedback.invalidCode'));
     }
@@ -3251,7 +2847,8 @@ export default function App() {
     try {
       const data = await get2FAStatus();
       setTotpEnabled(!!data.totpEnabled);
-      setWebauthnEnabled(!!data.webauthnEnabled);
+      // The server does not always echo the key state: keep ours, then re-read it.
+      if ('webauthnEnabled' in data) setWebauthnEnabled(!!data.webauthnEnabled);
       setWebauthnCredentials(Array.isArray(data.credentials) ? data.credentials : []);
       setPreferredMfaMethod(String(data.preferredMfaMethod || 'any'));
       setBootstrapState((prev) => ({
@@ -3266,15 +2863,6 @@ export default function App() {
     if (auth.token) onLoad2FAStatus();
   }, [auth.token]);
 
-  const onCopyTotpValue = async (value, label) => {
-    try {
-      await navigator.clipboard.writeText(value || '');
-      setTotpCopyStatus(t('feedback.copiedLabel', { label }));
-    } catch (_) {
-      setTotpCopyStatus(t('feedback.unableCopyLabel', { label: String(label || '').toLowerCase() }));
-    }
-  };
-
   const onRegisterPasskey = async (label = '') => {
     setTotpError('');
     setWebauthnBusy(true);
@@ -3286,7 +2874,8 @@ export default function App() {
         label,
         ...registration
       });
-      setWebauthnEnabled(!!data.webauthnEnabled);
+      // The server does not always echo the key state: keep ours, then re-read it.
+      if ('webauthnEnabled' in data) setWebauthnEnabled(!!data.webauthnEnabled);
       setTotpEnabled(!!data.totpEnabled);
       if (data.preferredMfaMethod) setPreferredMfaMethod(String(data.preferredMfaMethod));
       await onLoad2FAStatus();
@@ -3316,7 +2905,8 @@ export default function App() {
     setWebauthnBusy(true);
     try {
       const data = await deleteWebAuthnCredential(credentialId);
-      setWebauthnEnabled(!!data.webauthnEnabled);
+      // The server does not always echo the key state: keep ours, then re-read it.
+      if ('webauthnEnabled' in data) setWebauthnEnabled(!!data.webauthnEnabled);
       setTotpEnabled(!!data.totpEnabled);
       setWebauthnCredentials(Array.isArray(data.credentials) ? data.credentials : []);
       if (data.preferredMfaMethod) setPreferredMfaMethod(String(data.preferredMfaMethod));
@@ -3376,21 +2966,6 @@ export default function App() {
   }, [auth.token]);
 
   useEffect(() => {
-    if (!editingUserId) {
-      setUserForm((prev) => {
-        const nextValue = prev.role === 'admin' ? true : prev.forcePasswordRotation;
-        if (nextValue === prev.forcePasswordRotation) {
-          return prev;
-        }
-        return {
-          ...prev,
-          forcePasswordRotation: nextValue
-        };
-      });
-    }
-  }, [editingUserId, userForm.role]);
-
-  useEffect(() => {
     let active = true;
     if (!totpSetupData?.otpauthUri) {
       setTotpQrDataUrl('');
@@ -3417,131 +2992,11 @@ export default function App() {
   }, [totpSetupData]);
 
 
-  useEffect(() => {
-    if (!auth.token) return;
-    if (mainTab === 'audit') {
-      loadAudit();
-    }
-    if (mainTab === 'recordings' && canViewRecordings) {
-      loadRecordings();
-    }
-  }, [mainTab, auth.token, canViewRecordings]);
-
   // ── Recording handlers ──
 
-  const loadRecordings = async (sessionId = null) => {
-    setLoadingRecordings(true);
-    setRecordingsError('');
-    try {
-      const data = await fetchRecordings(sessionId);
-      setRecordings(Array.isArray(data.items) ? data.items : []);
-    } catch (error) {
-      setRecordingsError(error.message || t('feedback.unableLoadRecordings'));
-    } finally {
-      setLoadingRecordings(false);
-    }
-  };
-
+  // The evidence page loads its own data; callers navigate to /preuves.
   const openRecordings = (sessionId = null) => {
-    setMainTab('recordings');
-    setRecordingsOpen(true);
-    setCastData(null);
-    setCastRecordingId(null);
-    loadRecordings(sessionId);
-  };
-
-  const onPlayRecording = async (recordingId) => {
-    try {
-      const data = await fetchRecordingCast(recordingId);
-      setCastData(data);
-      setCastRecordingId(recordingId);
-
-      // Parse cast events for animated player
-      const lines = data.trim().split('\n');
-      if (lines.length > 1) {
-        const header = JSON.parse(lines[0]);
-        const events = [];
-        for (let i = 1; i < lines.length; i++) {
-          try {
-            const evt = JSON.parse(lines[i]);
-            if (evt[1] === 'o') events.push({ time: evt[0], data: evt[2] });
-          } catch (_) {}
-        }
-        setPlayerEvents(events);
-        setPlayerIndex(0);
-        setPlayerPlaying(false);
-
-        // Initialize player terminal
-        setTimeout(() => {
-          if (playerTermRef.current && !playerTermInstanceRef.current) {
-            const t = new Terminal({
-              fontFamily: '"IBM Plex Mono", "Fira Code", monospace',
-              fontSize: 12,
-              cursorBlink: false,
-              disableStdin: true,
-              theme: { background: '#0a0e17', foreground: '#f9fafb', cursor: '#f59e0b' },
-              cols: header.width || 120,
-              rows: header.height || 32
-            });
-            const fit = new FitAddon();
-            t.loadAddon(fit);
-            t.open(playerTermRef.current);
-            fit.fit();
-            playerTermInstanceRef.current = t;
-            playerFitRef.current = fit;
-          }
-        }, 100);
-      }
-    } catch (error) {
-      setRecordingsError(error.message || t('feedback.unableLoadRecording'));
-    }
-  };
-
-  const startPlayer = () => {
-    if (!playerEvents.length || !playerTermInstanceRef.current) return;
-    setPlayerPlaying(true);
-    playerTermInstanceRef.current.clear();
-    setPlayerIndex(0);
-    let idx = 0;
-    const baseTime = playerEvents[0]?.time || 0;
-    const playNext = () => {
-      if (idx >= playerEvents.length) {
-        setPlayerPlaying(false);
-        return;
-      }
-      const evt = playerEvents[idx];
-      const delay = idx === 0 ? 0 : Math.min((evt.time - (playerEvents[idx - 1]?.time || 0)) * 1000, 2000);
-      playerTimerRef.current = setTimeout(() => {
-        if (playerTermInstanceRef.current) {
-          playerTermInstanceRef.current.write(evt.data);
-        }
-        idx++;
-        setPlayerIndex(idx);
-        playNext();
-      }, delay);
-    };
-    playNext();
-  };
-
-  const stopPlayer = () => {
-    setPlayerPlaying(false);
-    if (playerTimerRef.current) {
-      clearTimeout(playerTimerRef.current);
-      playerTimerRef.current = null;
-    }
-  };
-
-  const closePlayer = () => {
-    stopPlayer();
-    if (playerTermInstanceRef.current) {
-      playerTermInstanceRef.current.dispose();
-      playerTermInstanceRef.current = null;
-      playerFitRef.current = null;
-    }
-    setCastData(null);
-    setCastRecordingId(null);
-    setPlayerEvents([]);
-    setPlayerIndex(0);
+    setEvidenceFocus(sessionId);
   };
 
   // ── Shadow session handlers ──
@@ -3667,236 +3122,11 @@ export default function App() {
     [sessions]
   );
 
-  const sortedSessions = useMemo(() => {
-    return [...sessions].sort((a, b) => {
-      const ta = Date.parse(a.createdAt || '') || 0;
-      const tb = Date.parse(b.createdAt || '') || 0;
-      return tb - ta;
-    });
-  }, [sessions]);
-
-  const recentSessions = useMemo(
-    () => sortedSessions.slice(0, 6),
-    [sortedSessions]
+  // Sessions with their EndoriumFort operator resolved (session.user is the target account).
+  const sessionsView = useMemo(
+    () => withOperators(sessions, accessGrants, auditItems),
+    [sessions, accessGrants, auditItems]
   );
-
-  const watchedSessions = useMemo(() => {
-    const watched = sortedSessions.filter((session) =>
-      watchedSessionIds.includes(Number(session.id))
-    );
-    return watched.slice(0, 8);
-  }, [sortedSessions, watchedSessionIds]);
-
-  const sessionSlo = useMemo(() => {
-    const total = sessions.length;
-    const active = sessions.filter((item) => item.status === 'active').length;
-    const terminated = sessions.filter((item) => item.status === 'terminated').length;
-    const completionRate = total > 0 ? Math.round((terminated / total) * 100) : 0;
-
-    const closedDurationsMin = sessions
-      .map((item) => {
-        const opened = Date.parse(item.createdAt || '') || 0;
-        const closed = Date.parse(item.terminatedAt || '') || 0;
-        if (!opened || !closed || closed <= opened) return null;
-        return (closed - opened) / 60000;
-      })
-      .filter((value) => Number.isFinite(value));
-
-    const avgDurationMin = closedDurationsMin.length
-      ? Math.round(closedDurationsMin.reduce((sum, value) => sum + value, 0) / closedDurationsMin.length)
-      : 0;
-
-    const staleActive = sessions.filter((item) => {
-      if (item.status !== 'active') return false;
-      const opened = Date.parse(item.createdAt || '') || 0;
-      if (!opened) return false;
-      return opened < Date.now() - 4 * 60 * 60 * 1000;
-    }).length;
-
-    return {
-      total,
-      active,
-      terminated,
-      completionRate,
-      avgDurationMin,
-      staleActive
-    };
-  }, [sessions]);
-
-  useEffect(() => {
-    if (!watchedSessionIds.length) {
-      watchlistStatusRef.current = {};
-      return;
-    }
-    const nextStatus = {};
-    const nextAlerts = [];
-    watchedSessionIds.forEach((sessionId) => {
-      const found = sessions.find((item) => Number(item.id) === Number(sessionId));
-      if (!found) return;
-      const normalizedStatus = String(found.status || 'unknown').toLowerCase();
-      nextStatus[String(sessionId)] = normalizedStatus;
-      const previous = watchlistStatusRef.current[String(sessionId)];
-      if (previous && previous !== normalizedStatus) {
-        nextAlerts.push({
-          key: `watch:${sessionId}:${Date.now()}`,
-          sessionId,
-          status: normalizedStatus,
-          message: t('feedback.sessionStatusChanged', { id: sessionId, from: previous, to: normalizedStatus }),
-          createdAt: new Date().toISOString()
-        });
-      }
-    });
-    watchlistStatusRef.current = nextStatus;
-    if (nextAlerts.length) {
-      setWatchlistAlerts((prev) => [...nextAlerts, ...prev].slice(0, 6));
-    }
-  }, [sessions, watchedSessionIds]);
-
-  const securityAlerts = useMemo(() => {
-    const now = Date.now();
-    const audits = securityAuditItems;
-    const loginFailures30m = audits.filter((item) => {
-      if (!item?.type || !item?.createdAt) return false;
-      const t = Date.parse(item.createdAt) || 0;
-      if (t < now - 30 * 60 * 1000) return false;
-      return item.type.includes('auth.login.failure') || item.type.includes('auth.rate_limit');
-    }).length;
-
-    const staleActiveCount = activeSessions.filter((session) => {
-      const t = Date.parse(session.createdAt || '') || 0;
-      return t > 0 && t < now - 6 * 60 * 60 * 1000;
-    }).length;
-
-    const adminOps24h = audits.filter((item) => {
-      if (!item?.type || !item?.createdAt) return false;
-      const t = Date.parse(item.createdAt) || 0;
-      if (t < now - 24 * 60 * 60 * 1000) return false;
-      return item.type.startsWith('resource.') || item.type.startsWith('user.');
-    }).length;
-
-    return [
-      {
-        key: 'failures',
-        severity: loginFailures30m >= 5 ? 'critical' : loginFailures30m > 0 ? 'warning' : 'ok',
-        title: 'Login failures (30m)',
-        value: loginFailures30m,
-        hint: loginFailures30m > 0 ? 'Investigate source IP and actor patterns in audit logs.' : 'No unusual authentication noise detected.'
-      },
-      {
-        key: 'stale',
-        severity: staleActiveCount > 0 ? 'warning' : 'ok',
-        title: 'Long-running active sessions',
-        value: staleActiveCount,
-        hint: staleActiveCount > 0 ? 'Consider reviewing or rotating long-lived sessions.' : 'All active sessions are recent.'
-      },
-      {
-        key: 'adminops',
-        severity: adminOps24h >= 10 ? 'warning' : 'ok',
-        title: 'Admin changes (24h)',
-        value: adminOps24h,
-        hint: 'User/resource changes tracked for governance and forensics.'
-      },
-      {
-        key: '2fa',
-        severity: (totpEnabled || webauthnEnabled) ? 'ok' : 'warning',
-        title: 'MFA posture',
-        value: (totpEnabled || webauthnEnabled) ? 'enabled' : 'disabled',
-        hint: webauthnEnabled
-          ? 'Your account is protected with a passkey or hardware security key.'
-          : totpEnabled
-            ? 'Your account is protected with TOTP.'
-            : 'Enable TOTP or a passkey to strengthen operator authentication.'
-      }
-    ];
-  }, [securityAuditItems, activeSessions, totpEnabled, webauthnEnabled]);
-
-  const filteredAuditItems = useMemo(() => {
-    let items = auditItems;
-    if (auditFilter) {
-      items = items.filter((item) => {
-        if (!item.payloadIsJson) return false;
-        try {
-          const payload = JSON.parse(item.payloadRaw);
-          return payload.sessionId === auditFilter;
-        } catch (error) {
-          return false;
-        }
-      });
-    }
-    if (auditTypeFilter) {
-      items = items.filter((item) =>
-        item.type.toLowerCase().includes(auditTypeFilter.toLowerCase())
-      );
-    }
-    if (auditSearchQuery) {
-      const q = auditSearchQuery.toLowerCase();
-      items = items.filter((item) =>
-        item.type.toLowerCase().includes(q) ||
-        item.actor.toLowerCase().includes(q) ||
-        (item.payloadRaw || '').toLowerCase().includes(q)
-      );
-    }
-    return items;
-  }, [auditFilter, auditItems, auditTypeFilter, auditSearchQuery]);
-
-  const renderAuditDetail = (item) => {
-    if (item.payloadIsJson) {
-      try {
-        const payload = JSON.parse(item.payloadRaw);
-        const sessionLabel = payload.sessionId
-          ? `Session #${payload.sessionId}`
-          : '';
-        const resourceLabel = payload.resourceId
-          ? `Resource #${payload.resourceId}`
-          : '';
-        const targetLabel = payload.target ? ` ${payload.target}` : '';
-        return `${sessionLabel}${resourceLabel}${targetLabel}`.trim();
-      } catch (error) {
-        return item.payloadRaw || '';
-      }
-    }
-    return item.payloadRaw || '';
-  };
-
-  const toCsvCell = (value) => {
-    const raw = String(value ?? '');
-    // Neutralize CSV formula injection: a cell starting with = + - @ (or a
-    // leading tab/CR) is interpreted as a formula by Excel/Sheets, even when
-    // quoted. Prefix such values with a single quote so they stay literal.
-    const guarded = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
-    const escaped = guarded.replace(/"/g, '""');
-    return `"${escaped}"`;
-  };
-
-  const exportFilteredAuditCsv = () => {
-    if (!filteredAuditItems.length) {
-      setAuditError(t('app.noAuditEvents'));
-      return;
-    }
-
-    const header = ['id', 'type', 'actor', 'createdAt', 'detail'];
-    const rows = filteredAuditItems.map((item) => [
-      item.id,
-      item.type,
-      item.actor,
-      item.createdAt,
-      renderAuditDetail(item) || ''
-    ]);
-    const csvLines = [header, ...rows].map((row) => row.map(toCsvCell).join(','));
-    const csvPayload = `\uFEFF${csvLines.join('\n')}`;
-
-    const blob = new Blob([csvPayload], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `audit-export-${stamp}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-    setAuditError('');
-  };
 
   const formatRelativeDate = (value) => {
     const timestamp = Date.parse(value || '');
@@ -3910,2937 +3140,683 @@ export default function App() {
 
   const renderBootstrapOverlay = () => {
     if (!bootstrapRequired) return null;
-    const currentStep = bootstrapState.passwordChangeRequired
-      ? t('bootstrap.changeDefaultPassword')
-      : t('bootstrap.enableMfa');
     return (
-      <div className="modal-overlay bootstrap-overlay">
-        <div className="modal-content bootstrap-modal" onClick={(event) => event.stopPropagation()}>
-          <p className="workflow-kicker">{t('bootstrap.title')}</p>
-          <h3>{t('bootstrap.heading')}</h3>
-          <p className="muted">
-            {t('bootstrap.body')}
-          </p>
-          <div className="bootstrap-checklist">
-            <div className={`bootstrap-step ${bootstrapState.passwordChangeRequired ? 'active' : 'done'}`}>
-              <strong>1. {t('bootstrap.step1')}</strong>
-              <span>{bootstrapState.passwordChangeRequired ? t('bootstrap.requiredNow') : t('bootstrap.done')}</span>
-            </div>
-            <div className={`bootstrap-step ${!bootstrapState.passwordChangeRequired && bootstrapState.mfaSetupRequired ? 'active' : ''} ${!bootstrapState.mfaSetupRequired ? 'done' : ''}`}>
-              <strong>2. {t('bootstrap.step2')}</strong>
-              <span>{bootstrapState.mfaSetupRequired ? t('bootstrap.pending') : t('bootstrap.done')}</span>
-            </div>
-          </div>
-          <p className="bootstrap-status">{t('bootstrap.currentStep', { step: currentStep })}</p>
-          {bootstrapState.passwordChangeRequired ? (
-            <form onSubmit={onChangePassword}>
-              <label>
-                {t('auth.currentPassword')}
-                <input
-                  type="password"
-                  value={changePwCurrent}
-                  onChange={(e) => setChangePwCurrent(e.target.value)}
-                  required
-                  autoComplete="current-password"
-                />
-              </label>
-              <label>
-                {t('bootstrap.newAdminPassword')}
-                <input
-                  type="password"
-                  value={changePwNew}
-                  onChange={(e) => setChangePwNew(e.target.value)}
-                  required
-                  autoComplete="new-password"
-                  placeholder={t('auth.passwordPlaceholder')}
-                />
-              </label>
-              <label>
-                {t('auth.confirmNewPassword')}
-                <input
-                  type="password"
-                  value={changePwConfirm}
-                  onChange={(e) => setChangePwConfirm(e.target.value)}
-                  required
-                  autoComplete="new-password"
-                />
-              </label>
-              {changePwError && <p className="error">{changePwError}</p>}
-              {changePwSuccess && <p className="success">{changePwSuccess}</p>}
-              <div className="bootstrap-actions">
-                <button type="submit">{t('auth.saveNewPassword')}</button>
-              </div>
-            </form>
-          ) : (
-            <div className="bootstrap-mfa-block">
-              {totpError && <p className="error">{totpError}</p>}
-              {!totpEnabled && !totpSetupData && (
-                <>
-                  <p className="muted">
-                    {t('bootstrap.finishHardening')}
-                  </p>
-                  <div className="bootstrap-actions">
-                    <button type="button" onClick={onSetup2FA}>{t('bootstrap.startMfaSetup')}</button>
-                    <button
-                      type="button"
-                      className="ghost"
-                      onClick={() => onRegisterPasskey('Admin security key')}
-                      disabled={webauthnBusy || !isWebAuthnSupported()}
-                    >
-                      {webauthnBusy ? t('admin.registering') : t('auth.usePasskey')}
-                    </button>
-                  </div>
-                  {!isWebAuthnSupported() && (
-                    <p className="muted">
-                      {t('bootstrap.passkeyBrowserHint')}
-                    </p>
-                  )}
-                </>
-              )}
-              {totpSetupData && (
-                <div className="bootstrap-totp-panel">
-                  <p>
-                    {t('bootstrap.totpHelp')}
-                  </p>
-                  {totpQrDataUrl && (
-                    <div className="bootstrap-qr-image-card">
-                      <img src={totpQrDataUrl} alt={t('bootstrap.qrAlt')} width={220} height={220} />
-                    </div>
-                  )}
-                  <div className="bootstrap-qr-card">
-                    <strong>{t('bootstrap.manualSecret')}</strong>
-                    <code className="inline-secret">{totpSetupData.secret}</code>
-                    <div className="bootstrap-actions">
-                      <button type="button" className="ghost" onClick={() => onCopyTotpValue(totpSetupData.secret, t('bootstrap.manualSecret'))}>
-                        {t('bootstrap.copySecret')}
-                      </button>
-                      <button type="button" className="ghost" onClick={() => onCopyTotpValue(totpSetupData.otpauthUri, t('bootstrap.enrollmentUri'))}>
-                        {t('bootstrap.copyUri')}
-                      </button>
-                    </div>
-                  </div>
-                  {totpCopyStatus && <p className="muted">{totpCopyStatus}</p>}
-                  <label>
-                    {t('auth.authenticatorCode')}
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      maxLength={6}
-                      value={totpSetupCode}
-                      onChange={(e) => setTotpSetupCode(e.target.value)}
-                      placeholder="123456"
-                    />
-                  </label>
-                  <div className="bootstrap-actions">
-                    <button type="button" onClick={onVerify2FA}>{t('bootstrap.verifyAndEnableMfa')}</button>
-                  </div>
-                </div>
-              )}
-              {(totpEnabled || webauthnEnabled) && !bootstrapState.mfaSetupRequired && (
-                <p className="success">{t('bootstrap.mfaEnabled')}</p>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
+      <FirstLoginDialog
+        user={auth.user}
+        passwordStep={!!bootstrapState.passwordChangeRequired}
+        mfaStep={!!bootstrapState.mfaSetupRequired}
+        password={{
+          current: changePwCurrent,
+          setCurrent: setChangePwCurrent,
+          next: changePwNew,
+          setNext: setChangePwNew,
+          confirm: changePwConfirm,
+          setConfirm: setChangePwConfirm,
+          onSubmit: onChangePassword,
+          error: changePwError
+        }}
+        mfa={{
+          error: totpError,
+          setupData: totpSetupData,
+          qrDataUrl: totpQrDataUrl,
+          code: totpSetupCode,
+          setCode: setTotpSetupCode,
+          onSetupApp: onSetup2FA,
+          onVerify: onVerify2FA,
+          onCancel: () => { setTotpSetupData(null); setTotpSetupCode(''); },
+          onAddKey: () => onRegisterPasskey(t('dlg.first.keyName', { user: auth.user })),
+          keyBusy: webauthnBusy,
+          keySupported: isWebAuthnSupported()
+        }}
+        onLogout={onLogout}
+      />
     );
   };
 
   const renderLogin = () => (
-    <div className="login-page">
-      <div className="login-card">
-        <div className="login-logo-wrapper">
-          <img src="/assets/logo-full-blue.png" alt="EndoriumFort" className="login-logo" />
-        </div>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-          <h1>{t('auth.signIn')}</h1>
-          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-            <select aria-label={t('common.language')} value={locale} onChange={(event) => setLocale(event.target.value)}>
-              <option value="fr">{t('common.french')}</option>
-              <option value="en">{t('common.english')}</option>
-            </select>
-            <button type="button" className="ghost icon-btn" title={darkMode ? t('auth.lightMode') : t('auth.darkMode')} onClick={toggleDarkMode}>
-              {darkMode ? '☀️' : '🌙'}
-            </button>
-          </div>
-        </div>
-        <p className="muted">
-          {t('auth.accessConsole')}
-        </p>
-        <form className="auth-form" onSubmit={onLogin}>
-          <label>
-            {t('auth.user')}
-            <input
-              name="user"
-              value={auth.user}
-              onChange={onAuthChange}
-              placeholder="ops-admin"
-              disabled={twoFARequired}
-            />
-          </label>
-          <label>
-            {t('auth.password')}
-            <input
-              name="password"
-              type="password"
-              value={auth.password}
-              onChange={onAuthChange}
-              placeholder={t('auth.password')}
-              disabled={twoFARequired}
-            />
-          </label>
-          {twoFARequired && (
-            <div className="login-mfa-block">
-              {availableMfaMethods.includes('totp') && (
-                <label>
-                  {t('auth.authenticatorCode6Digits')}
-                  <input
-                    className="mfa-code-input login-mfa-code"
-                    type="text"
-                    inputMode="numeric"
-                    maxLength={6}
-                    value={totpCode}
-                    onChange={(e) => setTotpCode(e.target.value)}
-                    placeholder="123456"
-                    autoFocus
-                  />
-                </label>
-              )}
-              {availableMfaMethods.includes('webauthn') && (
-                <div className="mfa-panel-block login-passkey-card">
-                  <p className="muted">
-                    {t('auth.usePasskey')}
-                  </p>
-                  <button
-                    type="button"
-                    className="ghost"
-                    onClick={onLoginWithPasskey}
-                    disabled={webauthnBusy || !webauthnLoginOptions}
-                  >
-                    {webauthnBusy ? t('auth.waitingForSecurityKey') : t('auth.usePasskey')}
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-          <button type="submit">
-            {twoFARequired ? t('auth.verifyAndSignIn') : t('auth.signIn')}
-          </button>
-          {!twoFARequired && SSO_LOGIN_AVAILABLE && (
-            <button type="button" className="ghost" onClick={onStartSsoLogin}>
-              {locale === 'fr' ? 'Se connecter via SSO (OIDC)' : 'Sign in with SSO (OIDC)'}
-            </button>
-          )}
-          {twoFARequired && (
-            <button
-              type="button"
-              className="ghost"
-              onClick={() => {
-                setTwoFARequired(false);
-                setTotpCode('');
-                setAvailableMfaMethods([]);
-                setWebauthnLoginOptions(null);
-                setAuthError('');
-              }}
-            >
-              {t('common.back')}
-            </button>
-          )}
-        </form>
-        {authError && <p className="error">{authError}</p>}
-      </div>
-    </div>
+    <LoginPage
+      auth={auth}
+      onAuthChange={onAuthChange}
+      onLogin={onLogin}
+      onStartSsoLogin={ssoLogin.available ? onStartSsoLogin : undefined}
+      onLoginWithPasskey={onLoginWithPasskey}
+      onCancelMfa={() => {
+        setTwoFARequired(false);
+        setTotpCode('');
+        setAvailableMfaMethods([]);
+        setWebauthnLoginOptions(null);
+        setAuthError('');
+      }}
+      twoFARequired={twoFARequired}
+      availableMfaMethods={availableMfaMethods}
+      totpCode={totpCode}
+      onTotpChange={setTotpCode}
+      webauthnBusy={webauthnBusy}
+      webauthnLoginOptions={webauthnLoginOptions}
+      authError={authError}
+      darkMode={darkMode}
+      onToggleDarkMode={toggleDarkMode}
+      branding={branding}
+    />
   );
 
+  // The signed-in person's own second factors (Security and My account).
+  const mfaCardProps = {
+    isAdmin: auth.role === 'admin',
+    totpEnabled: totpEnabled,
+    webauthnEnabled: webauthnEnabled,
+    preferredMfaMethod: preferredMfaMethod,
+    onUpdateMfaPreference: onUpdateMfaPreference,
+    totpSetupData: totpSetupData,
+    totpQrDataUrl: totpQrDataUrl,
+    totpSetupCode: totpSetupCode,
+    setTotpSetupCode: setTotpSetupCode,
+    onSetup2FA: onSetup2FA,
+    onVerify2FA: onVerify2FA,
+    onCancelSetup: () => { setTotpSetupData(null); setTotpSetupCode(''); },
+    totpError: totpError,
+    totpDisableCode: totpDisableCode,
+    setTotpDisableCode: setTotpDisableCode,
+    onDisable2FA: onDisable2FA,
+    webauthnSupported: isWebAuthnSupported(),
+    webauthnBusy: webauthnBusy,
+    webauthnLabel: webauthnLabel,
+    setWebauthnLabel: setWebauthnLabel,
+    webauthnCredentials: webauthnCredentials,
+    onRegisterPasskey: onRegisterPasskey,
+    onDeletePasskey: onDeletePasskey
+  };
+
   const renderAdmin = () => (
-    <div className="page compact">
-      <header className="topbar">
-        <div className="brand">
-          <img src="/assets/logo-icon-dark.png" alt="EndoriumFort" className="brand-logo" />
-          <div>
-            <h1>{t('admin.console')}</h1>
-          </div>
-        </div>
-        <div className="top-actions">
-          <select aria-label={t('common.language')} value={locale} onChange={(event) => setLocale(event.target.value)}>
-            <option value="fr">{t('common.french')}</option>
-            <option value="en">{t('common.english')}</option>
-          </select>
-          <button type="button" className="ghost icon-btn" title={darkMode ? t('auth.lightMode') : t('auth.darkMode')} onClick={toggleDarkMode}>
-            {darkMode ? '☀️' : '🌙'}
-          </button>
-          <button type="button" className="ghost" onClick={() => navigate('/')}
-          >
-            {t('auth.backToConsole')}
-          </button>
-          <button type="button" className="secondary" onClick={onLogout}>
-            {t('auth.signOut')}
-          </button>
-        </div>
-      </header>
-
-      {canManagePlatform && (
-        <>
-          {stats && (
-            <section className="metric-tile-grid reveal" style={{ marginBottom: '1rem' }}>
-              <MetricTile tone="sessions" label={t('app.activeCount', { count: '' }).trim()} value={stats.sessions?.active || 0} />
-              <MetricTile tone="total" label={t('app.totalSessions')} value={stats.sessions?.total || 0} />
-              <MetricTile tone="resources" label={t('admin.resources')} value={stats.resources?.total || 0} />
-              <MetricTile tone="users" label={t('admin.users')} value={stats.users?.total || 0} />
-              <MetricTile tone="recordings" label={t('app.recordings')} value={stats.recordings?.total || 0} />
-              <MetricTile tone="tokens" label={t('app.activeTokens')} value={stats.auth?.activeTokens || 0} />
-            </section>
-          )}
-
-          <section className="admin-shell-head reveal" style={{ marginBottom: '1rem' }}>
-            <AdminSectionNav sections={adminSections} current={adminSection} onChange={selectAdminSection} />
-            {activeAdminSection ? (
-              <div className="admin-section-status">
-                <div className="admin-section-status-copy">
-                  <strong>{activeAdminSection.label}</strong>
-                  {activeAdminSection.hint ? <span>{activeAdminSection.hint}</span> : null}
-                </div>
-                {activeAdminSection.badge ? (
-                  <StatusBadge tone={activeAdminSection.badgeTone || 'ok'}>
-                    {activeAdminSection.badge}
-                  </StatusBadge>
-                ) : null}
-              </div>
-            ) : null}
-          </section>
-        </>
-      )}
-
+    <AdminLayout
+      sections={adminNavSections}
+      current={adminSection}
+      onSelect={(id) => {
+        const section = adminSections.find((item) => item.id === id);
+        if (section?.locked) {
+          openUpsell(section.label, section.requiredTier);
+          return;
+        }
+        setAdminSection(id);
+        navigate(`/admin/${id}`);
+      }}
+      footer={`EndoriumFort ${versionText(t, bastionVersion)} · ${licenseEdition === 'enterprise' ? (licenseStatus?.tier || 'enterprise') : 'community'}`}
+    >
       {!canManagePlatform ? (
         <SectionCard title={t('admin.requiredTitle')}>
           <EmptyState title={t('admin.requiredTitle')} message={t('admin.requiredMessage')} />
         </SectionCard>
-      ) : (
-        <div className="admin-grid">
-          {adminSection === 'resources' && (
-          <div className="panel reveal access-scope-panel">
-            <div className="panel-header">
-              <div>
-                <h3>{editingResourceId ? t('admin.editResource') : t('admin.newResource')}</h3>
-              </div>
-            </div>
-            <form className="resource-form" onSubmit={onSubmitResource}>
-              <div className="full resource-section">
-                <div className="resource-section-header">
-                  <div>
-                    <h4>Identity</h4>
-                  </div>
-                </div>
-                <div className="section-grid">
-                  <label>
-                    Name
-                    <input
-                      name="name"
-                      value={resourceForm.name}
-                      onChange={onResourceFieldChange}
-                      placeholder="Finance jump host"
-                    />
-                  </label>
-                  <label>
-                    Description
-                    <input
-                      name="description"
-                      value={resourceForm.description}
-                      onChange={onResourceFieldChange}
-                      placeholder="Short usage note"
-                    />
-                  </label>
-                  <label>
-                    Tags
-                    <input
-                      name="tagsCsv"
-                      value={resourceForm.tagsCsv}
-                      onChange={onResourceFieldChange}
-                      placeholder="prod, linux, db"
-                    />
-                  </label>
-                  <label className="full">
-                    Image URL
-                    <input
-                      name="imageUrl"
-                      value={resourceForm.imageUrl}
-                      onChange={onResourceFieldChange}
-                      placeholder="https://..."
-                      disabled={!!resourceForm.imageData}
-                    />
-                  </label>
-                  <label className="full">
-                    Visual upload
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={e => {
-                        const file = e.target.files[0];
-                        if (!file) return;
-                        const reader = new window.FileReader();
-                        reader.onload = (ev) => {
-                          setResourceForm(f => ({ ...f, imageData: ev.target.result, imageUrl: '' }));
-                        };
-                        reader.readAsDataURL(file);
-                      }}
-                    />
-                    {resourceForm.imageData && (
-                      <div className="resource-image-preview">
-                        <img src={resourceForm.imageData} alt="aperçu" />
-                        <button type="button" className="ghost" onClick={() => setResourceForm(f => ({ ...f, imageData: '' }))}>
-                          Remove
-                        </button>
-                      </div>
-                    )}
-                  </label>
-                </div>
-              </div>
-
-              <div className="full resource-section">
-                <div className="resource-section-header">
-                  <div>
-                    <h4>Connectivity</h4>
-                  </div>
-                </div>
-                <div className="section-grid">
-                  <label>
-                    Target
-                    <input
-                      name="target"
-                      value={resourceForm.target}
-                      onChange={onResourceFieldChange}
-                      placeholder="10.0.0.12"
-                    />
-                  </label>
-                  <label>
-                    Protocol
-                    <select
-                      name="protocol"
-                      value={resourceForm.protocol}
-                      onChange={onResourceFieldChange}
-                    >
-                      <option value="ssh">ssh</option>
-                      <option value="rdp">rdp</option>
-                      <option value="vnc">vnc</option>
-                      <option value="http">http</option>
-                      <option value="agent">agent (tunnel)</option>
-                      <option value="k8s">kubernetes</option>
-                    </select>
-                  </label>
-                  <label>
-                    Port
-                    <input
-                      name="port"
-                      type="number"
-                      min="1"
-                      max="65535"
-                      value={resourceForm.port}
-                      onChange={onResourceFieldChange}
-                    />
-                  </label>
-                  {(resourceForm.protocol === 'agent' || resourceForm.protocol === 'rdp') && (
-                    <label>
-                      Tunnel ticket limit / min
-                      <input
-                        name="tunnelTicketRateLimitMaxAttempts"
-                        type="number"
-                        min="0"
-                        step="1"
-                        value={resourceForm.tunnelTicketRateLimitMaxAttempts}
-                        onChange={onResourceFieldChange}
-                        placeholder="0 = unlimited"
-                      />
-                      <small className="muted">0 = unlimited. Applied per user and per resource.</small>
-                    </label>
-                  )}
-                  {resourceForm.protocol === 'agent' && (
-                    <>
-                      <label>
-                        Tunneled protocol
-                        <select
-                          name="agentProtocol"
-                          value={resourceForm.agentProtocol}
-                          onChange={onResourceFieldChange}
-                        >
-                          <option value="tcp">tcp (generic)</option>
-                          <option value="ssh">ssh</option>
-                          <option value="rdp">rdp</option>
-                          <option value="vnc">vnc</option>
-                          <option value="http">http</option>
-                          <option value="https">https</option>
-                        </select>
-                        <small className="muted">Injected into the agent deep link as &amp;protocol.</small>
-                      </label>
-                      <label>
-                        User (optional)
-                        <input
-                          name="sshUsername"
-                          value={resourceForm.sshUsername}
-                          onChange={onResourceFieldChange}
-                          placeholder="administrator"
-                          autoComplete="off"
-                        />
-                        <small className="muted">Injected into the agent deep link as &amp;user.</small>
-                      </label>
-                    </>
-                  )}
-                  {(resourceForm.protocol === 'http' || resourceForm.protocol === 'https') && (
-                    <>
-                      <label>
-                        HTTP Username (optional)
-                        <input
-                          name="httpUsername"
-                          value={resourceForm.httpUsername}
-                          onChange={onResourceFieldChange}
-                          placeholder="admin"
-                          autoComplete="off"
-                        />
-                      </label>
-                      <label>
-                        HTTP Password (optional)
-                        <input
-                          name="httpPassword"
-                          type="password"
-                          value={resourceForm.httpPassword}
-                          onChange={onResourceFieldChange}
-                          placeholder="••••••••"
-                          autoComplete="new-password"
-                        />
-                      </label>
-                    </>
-                  )}
-                  {resourceForm.protocol === 'ssh' && (
-                    <>
-                      <label>
-                        Credential flow
-                        <select
-                          name="credentialSource"
-                          value={resourceForm.credentialSource}
-                          onChange={onResourceFieldChange}
-                        >
-                          <option value="vaulted">vaulted lease</option>
-                          <option value="brokered">brokered (secret stays server-side)</option>
-                          <option value="ephemeral_account">ephemeral account (brokered fallback)</option>
-                        </select>
-                      </label>
-                      <label>
-                        SSH Username (vault)
-                        <input
-                          name="sshUsername"
-                          value={resourceForm.sshUsername}
-                          onChange={onResourceFieldChange}
-                          placeholder="root"
-                          autoComplete="off"
-                        />
-                      </label>
-                      <label>
-                        SSH Password (vault)
-                        <input
-                          name="sshPassword"
-                          type="password"
-                          value={resourceForm.sshPassword}
-                          onChange={onResourceFieldChange}
-                          placeholder={editingResourceId ? 'Leave empty to keep current' : 'Stored securely, injected on connect'}
-                          autoComplete="new-password"
-                        />
-                      </label>
-                    </>
-                  )}
-                  {resourceForm.protocol === 'k8s' && (
-                    <>
-                      <label>
-                        Namespace
-                        <input
-                          name="k8sNamespace"
-                          value={resourceForm.k8sNamespace}
-                          onChange={onResourceFieldChange}
-                          placeholder="default"
-                          autoComplete="off"
-                        />
-                      </label>
-                      <label className="full">
-                        kubeconfig (YAML)
-                        <textarea
-                          name="k8sKubeconfig"
-                          rows={6}
-                          value={resourceForm.k8sKubeconfig}
-                          onChange={onResourceFieldChange}
-                          placeholder={editingResourceId ? 'Leave empty to keep current kubeconfig' : 'apiVersion: v1\nkind: Config\n...'}
-                          autoComplete="off"
-                          style={{ fontFamily: 'monospace' }}
-                        />
-                        <small className="muted">
-                          Stored encrypted. The cluster is reached via this kubeconfig — the Target field above is just a label.
-                        </small>
-                      </label>
-                    </>
-                  )}
-                </div>
-              </div>
-
-              <div className="full policy-editor">
-                <div className="policy-editor-header">
-                  <div>
-                    <h4>Access Policy</h4>
-                  </div>
-                  <span className={`pill ${normalizeRiskLevel(resourceForm.riskLevel) === 'critical' ? 'error' : normalizeRiskLevel(resourceForm.riskLevel) === 'high' ? 'warning' : 'ok'}`}>
-                    {normalizeRiskLevel(resourceForm.riskLevel)}
-                  </span>
-                </div>
-                <div className="policy-grid">
-                  <label className={`policy-option ${resourceForm.requireAccessJustification ? 'selected' : ''}`}>
-                    <input
-                      name="requireAccessJustification"
-                      type="checkbox"
-                      checked={!!resourceForm.requireAccessJustification}
-                      onChange={onResourceFieldChange}
-                    />
-                    <span className="policy-option-indicator" aria-hidden="true" />
-                    <div className="policy-option-copy">
-                      <strong>Justification</strong>
-                      <span>Prompt for access reason before connect.</span>
-                      <em>{resourceForm.requireAccessJustification ? 'Enabled' : 'Optional'}</em>
-                    </div>
-                  </label>
-                  <label className={`policy-option ${resourceForm.requireDualApproval ? 'selected' : ''}`}>
-                    <input
-                      name="requireDualApproval"
-                      type="checkbox"
-                      checked={!!resourceForm.requireDualApproval}
-                      onChange={onResourceFieldChange}
-                    />
-                    <span className="policy-option-indicator" aria-hidden="true" />
-                    <div className="policy-option-copy">
-                      <strong>Dual approval</strong>
-                      <span>Require review before session start.</span>
-                      <em>{resourceForm.requireDualApproval ? 'Required' : 'Disabled'}</em>
-                    </div>
-                  </label>
-                  <label className={`policy-option ${resourceForm.enableCommandGuard ? 'selected' : ''}`}>
-                    <input
-                      name="enableCommandGuard"
-                      type="checkbox"
-                      checked={!!resourceForm.enableCommandGuard}
-                      onChange={onResourceFieldChange}
-                    />
-                    <span className="policy-option-indicator" aria-hidden="true" />
-                    <div className="policy-option-copy">
-                      <strong>SSH command guard</strong>
-                      <span>Block dangerous commands server-side.</span>
-                      <em>{resourceForm.enableCommandGuard ? 'Protected' : 'Not enforced'}</em>
-                    </div>
-                  </label>
-                  <label className={`policy-option ${resourceForm.adaptiveAccessPolicy ? 'selected' : ''}`}>
-                    <input
-                      name="adaptiveAccessPolicy"
-                      type="checkbox"
-                      checked={!!resourceForm.adaptiveAccessPolicy}
-                      onChange={onResourceFieldChange}
-                    />
-                    <span className="policy-option-indicator" aria-hidden="true" />
-                    <div className="policy-option-copy">
-                      <strong>Adaptive controls</strong>
-                      <span>Raise requirements automatically based on risk.</span>
-                      <em>{resourceForm.adaptiveAccessPolicy ? 'Dynamic' : 'Static'}</em>
-                    </div>
-                  </label>
-                </div>
-                <label className="full">
-                  Risk level
-                  <select
-                    name="riskLevel"
-                    value={resourceForm.riskLevel}
-                    onChange={onResourceFieldChange}
-                  >
-                    <option value="low">low</option>
-                    <option value="medium">medium</option>
-                    <option value="high">high</option>
-                    <option value="critical">critical</option>
-                  </select>
-                </label>
-                <div className="policy-preview">
-                  {describeResourcePolicy(resourceForm, t).map((item) => (
-                    <span className="policy-chip" key={`preview-${item}`}>{item}</span>
-                  ))}
-                </div>
-              </div>
-
-              <div className="full resource-section routing-section">
-                <div className="resource-section-header">
-                  <div>
-                    <h4>Routing</h4>
-                  </div>
-                </div>
-                <div className="routing-summary">
-                  <article>
-                    <strong>Direct</strong>
-                    <span>Backend to target.</span>
-                  </article>
-                  <article>
-                    <strong>Relay</strong>
-                    <span>Through assigned relay.</span>
-                  </article>
-                  <article>
-                    <strong>Agent</strong>
-                    <span>Local tunnel path.</span>
-                  </article>
-                </div>
-              </div>
-
-              <div className="resource-actions">
-                <button type="submit">
-                  {savingResource
-                    ? (editingResourceId ? 'Updating...' : 'Creating...')
-                    : (editingResourceId ? 'Update' : 'Create') + ' resource'}
-                </button>
-                {editingResourceId && (
-                  <button
-                    type="button"
-                    className="ghost"
-                    onClick={() => {
-                      setEditingResourceId(null);
-                      setResourceForm({
-                        name: '',
-                        target: '',
-                        protocol: 'ssh',
-                        port: '22',
-                        tunnelTicketRateLimitMaxAttempts: '0',
-                        description: '',
-                        imageUrl: '',
-                        imageData: '',
-                        tagsCsv: '',
-                        credentialSource: 'vaulted',
-                        httpUsername: '',
-                        httpPassword: '',
-                        sshUsername: '',
-                        sshPassword: '',
-                        k8sNamespace: 'default',
-                        k8sKubeconfig: '',
-                        requireAccessJustification: false,
-                        requireDualApproval: false,
-                        enableCommandGuard: false,
-                        adaptiveAccessPolicy: false,
-                        riskLevel: 'low'
-                      });
-                    }}
-                  >
-                    {t('common.cancel')}
-                  </button>
-                )}
-              </div>
-            </form>
-            {resourceError && <p className="error">{resourceError}</p>}
-          </div>
-          )}
-
-          {adminSection === 'resources' && (
-          <div className="panel reveal">
-            <div className="panel-header">
-              <div>
-                <h3>{t('admin.resources')}</h3>
-                <p>{t('admin.configuredTiles', { count: resources.length })}</p>
-              </div>
-              {loadingResources && <span className="pill loading">{t('common.loading')}</span>}
-            </div>
-            <div className="resource-list">
-              {resources.length ? (
-                resources.map((resource) => (
-                  <article className="resource-row" key={resource.id}>
-                    <div>
-                      <h4>{resource.name}</h4>
-                      <p className="muted">
-                        {resource.protocol} {resource.target}:{resource.port}
-                      </p>
-                      {resource.description && (
-                        <p className="muted">{resource.description}</p>
-                      )}
-                      {resource.tagsCsv && (
-                        <p className="muted">Tags: {resource.tagsCsv}</p>
-                      )}
-                      {resource.protocol === 'ssh' && (
-                        <p className="muted">Credential flow: {resource.credentialSource || 'vaulted'}</p>
-                      )}
-                      <div className="policy-chip-row">
-                        {describeResourcePolicy(resource, t).map((item) => (
-                          <span className="policy-chip" key={`${resource.id}-${item}`}>{item}</span>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="resource-actions">
-                      <button
-                        type="button"
-                        className="secondary"
-                        onClick={() => onEditResource(resource)}
-                      >
-                        {t('common.edit')}
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost"
-                        onClick={() => onDeleteResource(resource.id)}
-                      >
-                        {t('common.delete')}
-                      </button>
-                    </div>
-                  </article>
-                ))
-              ) : (
-                <p className="muted">{t('admin.noResources')}</p>
-              )}
-            </div>
-          </div>
-          )}
-
-          {adminSection === 'routing' && (
-            <RelayControlPanel
-              auth={auth}
-              canManagePlatform={canManagePlatform}
-              resources={resources}
-              resolveAgentInstallGuide={resolveAgentInstallGuide}
-            />
-          )}
-
-          {adminSection === 'routing' && (
-          <div className="panel reveal">
-            <div className="panel-header">
-              <div>
-                <h3>Access Requests</h3>
-              </div>
-              {loadingAccessRequests && <span className="pill loading">{t('common.loading')}</span>}
-            </div>
-            {accessRequestError && <p className="error">{accessRequestError}</p>}
-            <div className="resource-list">
-              {accessRequests.length ? (
-                accessRequests.map((request) => (
-                  <article className="resource-row" key={request.id}>
-                    <div>
-                      <h4>
-                        #{request.id} {request.resourceName || `Resource ${request.resourceId}`}
-                      </h4>
-                      <p className="muted">
-                        {request.requester} • {request.status} • {request.createdAt}
-                      </p>
-                      {request.justification && (
-                        <p className="muted">{request.justification}</p>
-                      )}
-                      {request.ticketId && (
-                        <p className="muted">Ticket: {request.ticketId}</p>
-                      )}
-                    </div>
-                    {canManagePlatform && request.status === 'pending' && (
-                      <div className="resource-actions">
-                        <button
-                          type="button"
-                          className="secondary"
-                          onClick={() => onApproveAccessRequest(request.id)}
-                        >
-                          {t('admin.approve')}
-                        </button>
-                        <button
-                          type="button"
-                          className="ghost"
-                          onClick={() => onDenyAccessRequest(request.id)}
-                        >
-                          {t('admin.deny')}
-                        </button>
-                      </div>
-                    )}
-                  </article>
-                ))
-              ) : (
-                <p className="muted">No access requests yet.</p>
-              )}
-            </div>
-          </div>
-          )}
-
-          {adminSection === 'users' && (
-          <div className="panel reveal">
-            <div className="panel-header">
-              <div>
-                <h3>{editingUserId ? t('admin.editUser') : t('admin.newUser')}</h3>
-              </div>
-              {loadingUsers && <span className="pill loading">{t('common.loading')}</span>}
-            </div>
-            <form className="resource-form" onSubmit={onSubmitUser}>
-              <label>
-                Username
-                <input
-                  name="username"
-                  value={userForm.username}
-                  onChange={onUserFieldChange}
-                  placeholder="operator01"
-                  disabled={!!editingUserId}
-                />
-              </label>
-              <label>
-                Password
-                <input
-                  name="password"
-                  type="password"
-                  value={userForm.password}
-                  onChange={onUserFieldChange}
-                  placeholder={editingUserId ? t('auth.newPassword') : t('auth.password')}
-                />
-              </label>
-              <label>
-                Role
-                <select
-                  name="role"
-                  value={userForm.role}
-                  onChange={onUserFieldChange}
-                >
-                  <option value="operator">Session Operator</option>
-                  <option value="admin">Platform Admin</option>
-                  <option value="auditor">Security Auditor</option>
-                </select>
-              </label>
-              <label className="checkbox-row">
-                <input
-                  name="forcePasswordRotation"
-                  type="checkbox"
-                  checked={!!userForm.forcePasswordRotation}
-                  onChange={onUserFieldChange}
-                />
-                <span>Require password rotation on next sign-in</span>
-              </label>
-              <div className="resource-actions">
-                <button type="submit">
-                  {editingUserId ? 'Update' : 'Create'} user
-                </button>
-                {editingUserId && (
-                  <button
-                    type="button"
-                    className="ghost"
-                    onClick={() => {
-                      setEditingUserId(null);
-                      setUserForm({
-                        username: '',
-                        password: '',
-                        role: 'operator',
-                        forcePasswordRotation: false
-                      });
-                    }}
-                  >
-                    {t('common.cancel')}
-                  </button>
-                )}
-              </div>
-            </form>
-            {userError && <p className="error">{userError}</p>}
-            <div className="resource-list">
-              {users.length ? (
-                users.map((user) => (
-                  <article className="resource-row" key={user.id}>
-                    <div>
-                      <h4>{user.username}</h4>
-                      <p className="muted">{t('admin.roleLabel', { role: roleLabel(user.role, t) })}</p>
-                      {user.bootstrapPasswordChangeRequired && (
-                        <p className="muted">Password rotation required at next sign-in.</p>
-                      )}
-                      {user.role === 'admin' && (
-                        <p className="muted">
-                          MFA {(user.totpEnabled || user.webauthnEnabled) ? 'enabled' : 'required before platform use'}.
-                        </p>
-                      )}
-                    </div>
-                    <div className="resource-actions">
-                      <button
-                        type="button"
-                        className="secondary"
-                        onClick={() => onEditUser(user)}
-                      >
-                        {t('common.edit')}
-                      </button>
-                      <button
-                        type="button"
-                        className="secondary"
-                        onClick={() => onLoadUserPermissions(user)}
-                      >
-                        Access Scope
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost"
-                        onClick={() => onExportUserData(user)}
-                        title="Export all data held about this user (GDPR)"
-                      >
-                        {t('app.exportData')}
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost"
-                        onClick={() => onDeleteUser(user.id)}
-                      >
-                        {t('common.delete')}
-                      </button>
-                    </div>
-                  </article>
-                ))
-              ) : (
-                <p className="muted">{t('admin.noUsers')}</p>
-              )}
-            </div>
-          </div>
-          )}
-
-          {adminSection === 'users' && (
-          <div className="panel reveal access-scope-panel">
-            <div className="panel-header">
-              <div>
-                <h3>Access Scope</h3>
-              </div>
-              {selectedUserForAccessScope && (
-                <button
-                  type="button"
-                  className="ghost"
-                  onClick={() => {
-                    setSelectedUserForAccessScope(null);
-                    setUserResourceScope([]);
-                    setUserAccessProfiles([]);
-                    setAccessScopeError('');
-                  }}
-                >
-                  {t('common.close')}
-                </button>
-              )}
-            </div>
-
-            {!selectedUserForAccessScope ? (
-              <p className="muted">No user selected yet.</p>
-            ) : (
-              <>
-                {loadingAccessScope && <p>{t('admin.loadingAccessScope')}</p>}
-                {accessScopeError && <p className="error">{accessScopeError}</p>}
-                <div className="panel-header" style={{ marginTop: '0.5rem' }}>
-                  <div>
-                    <h3>Resource Scope</h3>
-                  </div>
-                </div>
-                <div className="resource-list permissions-resources-list">
-                  {resources.length ? (
-                    resources.map((resource) => (
-                      <article className="resource-row compact-perm-row" key={resource.id}>
-                        <div>
-                          <div
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '12px'
-                            }}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={userResourceScope.includes(resource.id)}
-                              onChange={() => onToggleResourcePermission(resource.id)}
-                              style={{ cursor: 'pointer' }}
-                            />
-                            <div>
-                              <h4>{resource.name}</h4>
-                              <p className="muted">
-                                {resource.protocol} {resource.target}:{resource.port}
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-                      </article>
-                    ))
-                  ) : (
-                    <p className="muted">{t('admin.noResourcesYet')}</p>
-                  )}
-                </div>
-
-                <div className="panel-header" style={{ marginTop: '1rem' }}>
-                  <div>
-                    <h3>Access Profiles</h3>
-                  </div>
-                </div>
-                <div className="resource-list permissions-resources-list">
-                  {accessProfiles.length ? (
-                    accessProfiles.map((profile) => (
-                      <article className="resource-row compact-perm-row" key={`profile-${profile.id}`}>
-                        <div>
-                          <div
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '12px'
-                            }}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={userAccessProfiles.includes(profile.id)}
-                              onChange={() => onToggleAccessProfile(profile.id)}
-                              style={{ cursor: 'pointer' }}
-                            />
-                            <div>
-                              <h4>{profile.name}</h4>
-                              <p className="muted">
-                                Policy #{profile.policyId || 0} • {profile.resourceTagsCsv || profile.resourceIdsCsv || 'all assigned resources'}
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-                      </article>
-                    ))
-                  ) : (
-                    <p className="muted">No access profiles yet.</p>
-                  )}
-                </div>
-
-                <div className="panel-header" style={{ marginTop: '1rem' }}>
-                  <div>
-                    <h3>Role Policy</h3>
-                  </div>
-                </div>
-                <div className="resource-list permissions-grid">
-                  {(roleBlueprints.find((role) => role.id === normalizeRole(selectedUserForAccessScope.role))?.permissions || [])
-                    .map((permission) => (
-                      <article className="resource-row compact-perm-row" key={permission}>
-                        <div>
-                          <h4>{permission}</h4>
-                          <p className="muted">
-                            {t('admin.grantedByRole', { role: roleLabel(selectedUserForAccessScope.role, t) })}
-                          </p>
-                        </div>
-                      </article>
-                    ))}
-                </div>
-              </>
-            )}
-          </div>
-          )}
-
-          {adminSection === 'jit' && (
-            <JitGovernancePanel
-              auth={auth}
-              canManagePlatform={canManagePlatform}
-              accessGrants={accessGrants}
-              loadingAccessGrants={loadingAccessGrants}
-              accessGrantError={accessGrantError}
-              accessProfiles={accessProfiles}
-              setAccessProfiles={setAccessProfiles}
-              loadingAccessProfiles={loadingAccessProfiles}
-              accessProfileError={accessProfileError}
-              setAccessProfileError={setAccessProfileError}
-            />
-          )}
-
-          {adminSection === 'enterprise' && <EnterpriseIamPanel auth={auth} />}
-
-          {adminSection === 'vault' && (
-            <VaultPanel
-              auth={auth}
-              canManagePlatform={canManagePlatform}
-              resources={resources}
-            />
-          )}
-
-          {adminSection === 'itdr' && (
-            <ItdrPanel auth={auth} canManagePlatform={canManagePlatform} />
-          )}
-
-          {adminSection === 'k8s' && (
-            <K8sPanel auth={auth} canManagePlatform={canManagePlatform} resources={resources} />
-          )}
-
-          {adminSection === 'license' && (
-          <div className="panel reveal">
-            <div className="panel-header">
-              <div>
-                <h3>{locale === 'fr' ? 'Licence' : 'License'}</h3>
-                <p>
-                  {locale === 'fr'
-                    ? 'Licence hors-ligne signée (Ed25519 + ML-DSA-65). Débloque les fonctionnalités premium en édition Enterprise.'
-                    : 'Signed offline license (Ed25519 + ML-DSA-65). Unlocks premium features in the Enterprise edition.'}
-                </p>
-              </div>
-              <span className={`pill ${licenseStatus?.state === 'valid' ? 'ok' : (licenseStatus?.state === 'expired' || licenseStatus?.state === 'revoked' ? 'error' : 'loading')}`}>
-                {licenseStatus?.state || 'none'}
-              </span>
-            </div>
-
-            <div className="relay-kpi-grid">
-              <article className="relay-kpi-card">
-                <span>{locale === 'fr' ? 'Édition' : 'Edition'}</span>
-                <strong>{licenseStatus?.edition || 'community'}</strong>
-              </article>
-              <article className={`relay-kpi-card ${licenseStatus?.state === 'valid' ? 'ok' : ''}`}>
-                <span>Tier</span>
-                <strong>{licenseStatus?.state === 'valid' ? (licenseStatus?.tier || 'free') : 'free'}</strong>
-              </article>
-              <article className="relay-kpi-card">
-                <span>{locale === 'fr' ? 'Type' : 'Kind'}</span>
-                <strong>{licenseStatus?.kind || 'n/a'}</strong>
-              </article>
-              <article className={`relay-kpi-card ${Number(licenseStatus?.daysRemaining) >= 0 && Number(licenseStatus?.daysRemaining) <= 7 ? 'warning' : ''}`}>
-                <span>{locale === 'fr' ? 'Jours restants' : 'Days left'}</span>
-                <strong>{Number.isFinite(Number(licenseStatus?.daysRemaining)) ? licenseStatus.daysRemaining : 'n/a'}</strong>
-              </article>
-            </div>
-
-            <div className="relay-enroll-token-box">
-              <p><strong>{locale === 'fr' ? 'Client' : 'Customer'}</strong>: {licenseStatus?.customer || 'n/a'}</p>
-              <p><strong>License ID</strong>: {licenseStatus?.licenseId || 'n/a'}</p>
-              <p><strong>{locale === 'fr' ? 'Expire le' : 'Expires at'}</strong>: {licenseStatus?.expiresAt || 'n/a'}</p>
-              <p><strong>Max nodes / seats</strong>: {Number(licenseStatus?.maxNodes) || 0} / {Number(licenseStatus?.maxSeats) || 0}</p>
-              <p><strong>Features</strong>: {Array.isArray(licenseStatus?.features) && licenseStatus.features.length ? licenseStatus.features.join(', ') : (locale === 'fr' ? 'par tier' : 'by tier')}</p>
-            </div>
-
-            <div className="panel-header" style={{ marginTop: '0.6rem' }}>
-              <div>
-                <h3>{locale === 'fr' ? 'Charger une licence' : 'Upload a license'}</h3>
-                <p>
-                  {locale === 'fr'
-                    ? 'Collez le contenu du fichier .jws. Il est vérifié puis persisté (rechargement à chaud, compatible air-gap).'
-                    : 'Paste the .jws file contents. It is verified, persisted and hot-reloaded (air-gap friendly).'}
-                </p>
-              </div>
-            </div>
-            <textarea
-              className="license-upload-input"
-              rows={5}
-              value={licenseUploadText}
-              onChange={(event) => setLicenseUploadText(event.target.value)}
-              placeholder="eyJ...header.eyJ...payload.eyJ...signatures"
-              spellCheck={false}
-            />
-            <div className="resource-actions">
-              <button type="button" onClick={onApplyLicense} disabled={licenseBusy || !licenseUploadText.trim()}>
-                {licenseBusy ? (locale === 'fr' ? 'Application...' : 'Applying...') : (locale === 'fr' ? 'Appliquer la licence' : 'Apply license')}
-              </button>
-              <button type="button" className="ghost" onClick={onReloadLicense} disabled={licenseBusy}>
-                {locale === 'fr' ? 'Recharger depuis le disque' : 'Reload from disk'}
-              </button>
-            </div>
-            {licenseActionMsg && (
-              <p className={licenseActionMsg.error ? 'error' : 'muted'}>{licenseActionMsg.message}</p>
-            )}
-          </div>
-          )}
-
-          {adminSection === 'security' && stats && (
-            <SectionCard
-              title="Security Posture"
-              actions={
-                <div className="status-row">
-                  <StatusBadge tone={stats.auth?.webauthn?.configured ? 'ok' : 'loading'}>
-                    {stats.auth?.webauthn?.configured ? 'WebAuthn ready' : 'WebAuthn needs attention'}
-                  </StatusBadge>
-                </div>
-              }
-              className="security-posture-panel"
-            >
-              <div className="security-posture-grid">
-                <article className="security-posture-card">
-                  <StatusBadge tone={(stats.users?.adminsWithoutMfa || 0) === 0 ? 'ok' : 'loading'}>
-                    {(stats.users?.adminsWithoutMfa || 0) === 0 ? 'Protected' : 'Action needed'}
-                  </StatusBadge>
-                  <h4>{stats.users?.adminsWithoutMfa || 0}</h4>
-                </article>
-                <article className="security-posture-card">
-                  <StatusBadge tone={(stats.users?.adminsPendingBootstrap || 0) === 0 ? 'ok' : 'active'}>
-                    {(stats.users?.adminsPendingBootstrap || 0) === 0 ? 'Cleared' : 'Bootstrap pending'}
-                  </StatusBadge>
-                  <h4>{stats.users?.adminsPendingBootstrap || 0}</h4>
-                </article>
-                <article className="security-posture-card">
-                  <StatusBadge tone={stats.auth?.webauthn?.rpIdValid ? 'ok' : 'loading'}>
-                    {stats.auth?.webauthn?.rpIdValid ? 'RP ID valid' : 'RP ID invalid'}
-                  </StatusBadge>
-                  <h4>{stats.auth?.webauthn?.rpId || 'n/a'}</h4>
-                </article>
-                <article className="security-posture-card">
-                  <StatusBadge tone={stats.auth?.webauthn?.originValid ? 'ok' : 'loading'}>
-                    {stats.auth?.webauthn?.originValid ? 'Origin valid' : 'Origin invalid'}
-                  </StatusBadge>
-                  <h4>{stats.auth?.webauthn?.origin || 'n/a'}</h4>
-                </article>
-                <article className="security-posture-card">
-                  <StatusBadge tone={stats.relay?.runtime?.enrollmentEnabled ? 'ok' : 'loading'}>
-                    {stats.relay?.runtime?.enrollmentEnabled ? 'Relay enrollment on' : 'Relay enrollment off'}
-                  </StatusBadge>
-                  <h4>{stats.relay?.runtime?.heartbeatStaleSeconds || 0}s</h4>
-                </article>
-              </div>
-            </SectionCard>
-          )}
-
-          {/* 2FA Management Panel */}
-          {adminSection === 'security' && (
-          <div className="panel reveal">
-            <div className="panel-header">
-              <div>
-                <h3>Two-Factor Authentication</h3>
-              </div>
-              <span className={`pill ${(totpEnabled || webauthnEnabled) ? 'ok' : 'loading'}`}>
-                {(totpEnabled || webauthnEnabled) ? 'enabled' : 'disabled'}
-              </span>
-            </div>
-              <div className="mfa-panel-block">
-                <div className="mfa-preference-grid">
-                  <button
-                    type="button"
-                    className={`ghost ${preferredMfaMethod === 'any' ? 'selected-pref' : ''}`}
-                    onClick={() => onUpdateMfaPreference('any')}
-                  >
-                    Flexible
-                  </button>
-                  <button
-                    type="button"
-                    className={`ghost ${preferredMfaMethod === 'totp' ? 'selected-pref' : ''}`}
-                    onClick={() => onUpdateMfaPreference('totp')}
-                    disabled={!totpEnabled}
-                  >
-                    Prefer TOTP
-                  </button>
-                  <button
-                    type="button"
-                    className={`ghost ${preferredMfaMethod === 'webauthn' ? 'selected-pref' : ''}`}
-                    onClick={() => onUpdateMfaPreference('webauthn')}
-                    disabled={!webauthnEnabled}
-                  >
-                    {t('admin.preferPasskey')}
-                  </button>
-                </div>
-              </div>
-              {totpError && <p className="error">{totpError}</p>}
-              {!totpEnabled && !totpSetupData && (
-                <div className="mfa-panel-block">
-                  <button type="button" onClick={onSetup2FA} className="mfa-inline-action">
-                    Setup TOTP MFA
-                  </button>
-                </div>
-              )}
-              {totpSetupData && (
-              <div className="mfa-panel-block">
-                {totpQrDataUrl && (
-                  <div className="bootstrap-qr-image-card mfa-qr-card">
-                    <img src={totpQrDataUrl} alt="Local TOTP QR Code" width={220} height={220} />
-                  </div>
-                )}
-                <div className="mfa-setup-card">
-                  <strong>Manual secret</strong>
-                  <code className="inline-secret">{totpSetupData.secret}</code>
-                  <div className="resource-actions">
-                    <button type="button" className="ghost" onClick={() => onCopyTotpValue(totpSetupData.secret, 'Secret')}>
-                      Copy secret
-                    </button>
-                    <button type="button" className="ghost" onClick={() => onCopyTotpValue(totpSetupData.otpauthUri, 'Enrollment URI')}>
-                      Copy URI
-                    </button>
-                  </div>
-                </div>
-                {totpCopyStatus && <p className="muted">{totpCopyStatus}</p>}
-                <label>
-                  Enter code from your authenticator or hardware token
-                  <input
-                    className="mfa-code-input"
-                    type="text"
-                    inputMode="numeric"
-                    maxLength={6}
-                    value={totpSetupCode}
-                    onChange={(e) => setTotpSetupCode(e.target.value)}
-                    placeholder="123456"
-                  />
-                </label>
-                <div className="resource-actions mfa-inline-action">
-                  <button type="button" onClick={onVerify2FA}>
-                    Verify &amp; Enable
-                  </button>
-                  <button
-                    type="button"
-                    className="ghost"
-                    onClick={() => { setTotpSetupData(null); setTotpSetupCode(''); }}
-                  >
-                    {t('common.cancel')}
-                  </button>
-                </div>
-              </div>
-            )}
-            <div className="mfa-panel-block">
-              <label>
-                {t('admin.passkeyLabel')}
-                <input
-                  className="mfa-code-input"
-                  type="text"
-                  value={webauthnLabel}
-                  onChange={(e) => setWebauthnLabel(e.target.value)}
-                  placeholder="Primary security key"
-                />
-              </label>
-              <div className="resource-actions mfa-inline-action">
-                <button
-                  type="button"
-                  onClick={() => onRegisterPasskey(webauthnLabel)}
-                  disabled={webauthnBusy || !isWebAuthnSupported()}
-                >
-                  {webauthnBusy ? 'Registering...' : 'Register passkey'}
-                </button>
-              </div>
-              {!isWebAuthnSupported() && (
-                <p className="mfa-hint">WebAuthn unavailable in this browser.</p>
-              )}
-              {webauthnCredentials.length > 0 && (
-                <div className="mfa-passkey-list">
-                  {webauthnCredentials.map((credential) => (
-                    <article key={credential.id} className="mfa-passkey-item">
-                      <div>
-                        <strong>{credential.label || t('admin.passkey')}</strong>
-                        <p className="muted">
-                          Added {formatRelativeDate(credential.createdAt)}
-                          {credential.lastUsedAt ? ` · used ${formatRelativeDate(credential.lastUsedAt)}` : ''}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        className="ghost"
-                        onClick={() => onDeletePasskey(credential.id)}
-                        disabled={webauthnBusy || (auth.role === 'admin' && !totpEnabled && webauthnCredentials.length <= 1)}
-                      >
-                        Remove
-                      </button>
-                    </article>
-                  ))}
-                </div>
-              )}
-              {auth.role === 'admin' && !totpEnabled && webauthnCredentials.length <= 1 && (
-                <p className="mfa-hint">Add another factor before removing the last passkey.</p>
-              )}
-            </div>
-            {totpEnabled && (
-              <div className="mfa-panel-block">
-                <label>
-                  Current TOTP code
-                  <input
-                    className="mfa-code-input"
-                    type="text"
-                    inputMode="numeric"
-                    maxLength={6}
-                    value={totpDisableCode}
-                    onChange={(e) => setTotpDisableCode(e.target.value)}
-                    placeholder="123456"
-                  />
-                </label>
-                <button
-                  type="button"
-                  onClick={onDisable2FA}
-                  className="ghost mfa-inline-action"
-                  disabled={auth.role === 'admin' && !webauthnEnabled}
-                >
-                  Disable 2FA
-                </button>
-                {auth.role === 'admin' && !webauthnEnabled && (
-                  <p className="mfa-hint">Register a passkey before disabling TOTP.</p>
-                )}
-              </div>
-            )}
-          </div>
-          )}
-        </div>
-      )}
-    </div>
+      ) : adminSection === 'resources' ? (
+        <ResourcesAdmin
+          resources={resources}
+          loading={loadingResources}
+          focusId={resourceEditFocus}
+          onFocusUsed={() => setResourceEditFocus(null)}
+          onResourcesChange={setResources}
+          onOpenMap={() => navigate('/carte')}
+        />
+      ) : adminSection === 'license' ? (
+        <LicenseAdmin
+          status={licenseStatus}
+          version={versionText(t, bastionVersion)}
+          usersCount={users.length}
+          isUnlocked={premiumUnlocked}
+          uploadText={licenseUploadText}
+          setUploadText={setLicenseUploadText}
+          onApply={onApplyLicense}
+          onReload={onReloadLicense}
+          busy={licenseBusy}
+          message={licenseActionMsg}
+        />
+      ) : adminSection === 'k8s' && premiumUnlocked('pro') ? (
+        <KubernetesPage
+          resources={resources}
+          currentUser={auth.user}
+          onEditResource={(resource) => {
+            setResourceEditFocus(resource.id);
+            setAdminSection('resources');
+            navigate('/admin/resources');
+          }}
+          onNewResource={() => {
+            setResourceEditFocus('new:k8s');
+            setAdminSection('resources');
+            navigate('/admin/resources');
+          }}
+        />
+      ) : adminSection === 'appearance' && premiumUnlocked('pro') ? (
+        <AppearancePage branding={branding} onSaved={setBranding} />
+      ) : adminSection === 'enterprise' && premiumUnlocked('enterprise') ? (
+        <IntegrationsPage />
+      ) : adminSection === 'itdr' && premiumUnlocked('enterprise') ? (
+        <ThreatsPage
+          onOpenJournal={(username) => {
+            setJournalActorFocus(username);
+            navigate('/journal');
+          }}
+        />
+      ) : adminSection === 'vault' && premiumUnlocked('enterprise') ? (
+        <VaultPage resources={resources} />
+      ) : adminSection === 'routing' && relaysLicensed ? (
+        <RelaysPage
+          resources={resources}
+          resolveAgentInstallGuide={resolveAgentInstallGuide}
+          onOpenZones={() => navigate('/zones')}
+        />
+      ) : adminSection === 'jit' && jitLicensed ? (
+        <JitPage
+          resources={resources}
+          sessions={sessionsView}
+          accessGrants={accessGrants}
+          accessProfiles={accessProfiles}
+          setAccessProfiles={setAccessProfiles}
+          onTerminate={onTerminate}
+          onOpenZones={() => navigate('/zones')}
+          onOpenUsers={() => {
+            setAdminSection('users');
+            navigate('/admin/users');
+          }}
+        />
+      ) : adminSection === 'users' ? (
+        <UsersAdmin
+          users={users}
+          resources={resources}
+          auditItems={auditItems}
+          accessProfiles={accessProfiles}
+          profilesEnabled={jitLicensed}
+          roleBlueprints={roleBlueprints}
+          currentUser={auth.user}
+          loading={loadingUsers}
+          onCreate={async (payload) => {
+            const created = await createUser(payload);
+            setUsers((prev) => [...prev, created]);
+            return created;
+          }}
+          onUpdate={async (userId, payload) => {
+            const updated = await updateUser(userId, payload);
+            setUsers((prev) => prev.map((item) => (item.id === userId ? updated : item)));
+            return updated;
+          }}
+          onDelete={async (userId) => {
+            await deleteUser(userId);
+            setUsers((prev) => prev.filter((item) => item.id !== userId));
+            return true;
+          }}
+          onOpenJournal={(username) => {
+            setJournalActorFocus(username);
+            navigate('/journal');
+          }}
+        />
+      ) : adminSection === 'security' ? (
+        <SecurityAdmin
+          users={users}
+          resources={resources}
+          sessions={sessionsView}
+          accessRequests={accessRequests}
+          stats={stats}
+          licenseDaysRemaining={licenseValid ? licenseDaysRemaining : Number.NaN}
+          vaultLicensed={premiumUnlocked('enterprise')}
+          relaysLicensed={relaysLicensed}
+          containment={{
+            status: containmentStatus,
+            busy: containmentBusy,
+            licensed: securityCenterLicensed,
+            onToggle: (enabled) => setContainmentEnabled(enabled, enabled ? t('sec.manualReason') : ''),
+            onUnlock: () => openUpsell(t('sec.containTitle'), 'enterprise')
+          }}
+          onGo={(target) => navigate(target)}
+        >
+          <MfaCard {...mfaCardProps} />
+        </SecurityAdmin>
+      ) : null}
+    </AdminLayout>
   );
 
-  const renderMain = () => (
-    <div className="page compact">
-      {canViewAudit && liveSecurityIncident && (
-        <section className="incident-banner critical reveal" role="alert" aria-live="assertive">
-          <div>
-            <p className="incident-kicker">Escalation Triggered</p>
-            <h3>{liveSecurityIncident.title}</h3>
-            <p className="muted">{liveSecurityIncident.hint}</p>
-            <p className="muted">
-              {liveSecurityIncident.criticalCount} critical signals in the last 5 minutes · triggered {formatRelativeDate(liveSecurityIncident.createdAt)}
-            </p>
-            {containmentEnabled && (
-              <p className="incident-containment-state">
-                Containment active{containmentStatus.updatedBy ? ` by ${containmentStatus.updatedBy}` : ''}
-                {containmentStatus.updatedAt ? ` · ${formatRelativeDate(containmentStatus.updatedAt)}` : ''}
-              </p>
-            )}
-            {activeSecurityIncident?.active && activeSecurityIncident?.incident?.id > 0 && (
-              <p className="incident-case-state">
-                Active case #{activeSecurityIncident.incident.id}
-                {activeSecurityIncident.incident.openedBy ? ` · opened by ${activeSecurityIncident.incident.openedBy}` : ''}
-                {activeSecurityIncident.incident.openedAt ? ` · ${formatRelativeDate(activeSecurityIncident.incident.openedAt)}` : ''}
-              </p>
-            )}
-            {incidentSuspectSessions.length > 0 && (
-              <div className="incident-sessions">
-                <p className="muted">Correlated sessions (highest risk first):</p>
-                <div className="incident-session-list">
-                  {incidentSuspectSessions.map((session) => (
-                    <button
-                      key={`incident-session-${session.id}`}
-                      type="button"
-                      className="ghost incident-session-chip"
-                      onClick={() => openAudit(session.id)}
-                    >
-                      Session #{session.id} · score {session.score} · {session.status}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-          <div className="incident-actions">
-            <button type="button" className="secondary" onClick={() => openAudit()}>
-              Investigate now
+  // Security alerts shown above every section (they used to live in the legacy main view).
+  const openJournalAt = (sessionId = null) => {
+    navigate('/journal');
+    openAudit(sessionId);
+  };
+
+  const renderGlobalAlerts = () => (
+    <>
+    {canViewAudit && liveSecurityIncident && (
+      <IncidentBanner
+        incident={liveSecurityIncident}
+        incidentCase={activeSecurityIncident}
+        containment={{ enabled: containmentEnabled, updatedBy: containmentStatus.updatedBy }}
+        suspects={incidentSuspectSessions}
+        activeSuspectCount={activeIncidentSuspectSessions.length}
+        strictProfile={liveAlertProfile === 'strict'}
+        canManage={canManagePlatform}
+        canOperate={canOperateSessions}
+        busy={{ case: incidentCaseBusy, containment: containmentBusy }}
+        onInvestigate={() => openJournalAt()}
+        onOpenSession={(sessionId) => openJournalAt(sessionId)}
+        onStrict={() => setLiveAlertProfile('strict')}
+        onOpenCase={openIncidentCase}
+        onCloseCase={closeIncidentCase}
+        onContainment={(enabled) => setContainmentEnabled(enabled)}
+        onTerminateSuspects={requestTerminateIncidentSuspects}
+        onDismiss={dismissLiveSecurityIncident}
+      />
+    )}
+
+    {incidentTerminateConfirmOpen && (
+      <Dialog
+        title={t('live.confirm.title', { count: activeIncidentSuspectSessions.length })}
+        onClose={incidentTerminateBusy ? undefined : () => setIncidentTerminateConfirmOpen(false)}
+        width={420}
+        footer={
+          <>
+            <span className="ef-dlg__spacer" />
+            <button type="button" className="ef-btn" onClick={() => setIncidentTerminateConfirmOpen(false)} disabled={incidentTerminateBusy}>
+              {t('common.cancel')}
             </button>
-            {liveAlertProfile !== 'strict' && (
-              <button type="button" className="ghost" onClick={() => setLiveAlertProfile('strict')}>
-                Switch to strict
-              </button>
-            )}
-            {!activeSecurityIncident?.active && (
-              <button type="button" className="ghost" onClick={openIncidentCase} disabled={incidentCaseBusy}>
-                {incidentCaseBusy ? 'Opening incident...' : 'Open incident case'}
-              </button>
-            )}
-            {canManagePlatform && activeSecurityIncident?.active && (
-              <button type="button" className="ghost" onClick={closeIncidentCase} disabled={incidentCaseBusy}>
-                {incidentCaseBusy ? t('app.closingIncident') : t('app.closeIncidentCase')}
-              </button>
-            )}
-            {canManagePlatform && !containmentEnabled && (
-              <button type="button" className="ghost" onClick={() => setContainmentEnabled(true)} disabled={containmentBusy}>
-                {containmentBusy ? 'Enabling containment...' : 'Enable containment'}
-              </button>
-            )}
-            {canManagePlatform && containmentEnabled && (
-              <button type="button" className="ghost" onClick={() => setContainmentEnabled(false)} disabled={containmentBusy}>
-                {containmentBusy ? 'Updating containment...' : 'Disable containment'}
-              </button>
-            )}
-            {canOperateSessions && activeIncidentSuspectSessions.length > 0 && (
-              <button type="button" className="ghost" onClick={requestTerminateIncidentSuspects}>
-                {t('app.terminateActiveSuspects', { count: activeIncidentSuspectSessions.length })}
-              </button>
-            )}
-            <button type="button" className="ghost" onClick={dismissLiveSecurityIncident}>
-              Dismiss
+            <button type="button" className="ef-btn ef-btn--primary" onClick={confirmTerminateIncidentSuspects} disabled={incidentTerminateBusy}>
+              {incidentTerminateBusy ? t('live.confirm.busy') : t('live.confirm.action', { count: activeIncidentSuspectSessions.length })}
             </button>
-          </div>
-        </section>
-      )}
+          </>
+        }
+      >
+        <p style={{ margin: 0 }}>{t('app.confirmTerminateBody', { count: activeIncidentSuspectSessions.length })}</p>
+      </Dialog>
+    )}
 
-      {incidentTerminateConfirmOpen && (
-        <div className="modal-overlay" onClick={() => !incidentTerminateBusy && setIncidentTerminateConfirmOpen(false)}>
-          <div className="modal-content" onClick={(event) => event.stopPropagation()}>
-            <h3>Confirm Session Termination</h3>
-            <p>
-              {t('app.confirmTerminateBody', { count: activeIncidentSuspectSessions.length })}
-            </p>
-            <div className="resource-actions" style={{ marginTop: '0.9rem' }}>
-              <button type="button" onClick={confirmTerminateIncidentSuspects} disabled={incidentTerminateBusy}>
-                {incidentTerminateBusy ? 'Terminating...' : 'Confirm terminate'}
-              </button>
-              <button
-                type="button"
-                className="ghost"
-                onClick={() => setIncidentTerminateConfirmOpen(false)}
-                disabled={incidentTerminateBusy}
-              >
-                {t('common.cancel')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+    {canViewAudit && (
+      <LiveAlerts
+        alerts={liveSecurityAlerts}
+        onDismiss={dismissLiveSecurityAlert}
+        onOpenJournal={openJournalAt}
+      />
+    )}
+    </>
+  );
 
-      {canViewAudit && (
-        <div className="live-alert-stack" role="status" aria-live="polite">
-          {liveSecurityAlerts.map((alert) => (
-            <article className={`live-alert ${alert.severity}`} key={alert.key}>
-              <div className="live-alert-head">
-                <strong>{alert.title}</strong>
-                <span className="live-alert-severity">{String(alert.severity || 'warning').toUpperCase()}</span>
-                <button
-                  type="button"
-                  className="ghost live-alert-close"
-                  onClick={() => dismissLiveSecurityAlert(alert.key)}
-                >
-                  Dismiss
-                </button>
-              </div>
-              <p className="muted">{alert.hint}</p>
-              <p className="muted">
-                {alert.eventType} - {formatRelativeDate(alert.createdAt)}
-              </p>
-            </article>
-          ))}
-        </div>
-      )}
+  // Modals and viewers opened by session actions, available from every section.
+  const renderSessionOverlays = () => (
+    <>
+    {vncViewerSession && (
+      <VncViewerModal
+        session={{ ...vncViewerSession, resourceName: resources.find((r) => Number(r.id) === Number(vncViewerSession.resourceId))?.name }}
+        onClose={() => setVncViewerSession(null)}
+      />
+    )}
 
-      <header className="topbar">
-        <div className="brand">
-          <img src="/assets/logo-icon-dark.png" alt="EndoriumFort" className="brand-logo" />
-          <div>
-            <h1>{t('app.title')}</h1>
-            <p>{t('app.subtitle')}</p>
-          </div>
-        </div>
-        <div className="top-actions">
-          <div className="health">
-            <span className={`pill ${status}`}>{status}</span>
-            <span className="detail">{detail}</span>
-            <span className="pill monitor">{roleName}</span>
-          </div>
-          <div className="nav-actions">
-            <select aria-label={t('common.language')} value={locale} onChange={(event) => setLocale(event.target.value)}>
-              <option value="fr">{t('common.french')}</option>
-              <option value="en">{t('common.english')}</option>
-            </select>
-            {canManagePlatform && (
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => navigate('/admin')}
-              >
-                {t('app.admin')}
-              </button>
-            )}
-            <button type="button" className="ghost" onClick={() => setChangePwOpen(true)}>
-              {t('auth.changePassword')}
-            </button>
-            <button type="button" className="ghost icon-btn" title={darkMode ? t('auth.lightMode') : t('auth.darkMode')} onClick={toggleDarkMode}>
-              {darkMode ? '☀️' : '🌙'}
-            </button>
-            <button type="button" className="ghost" onClick={onLogout}>
-              {t('auth.signOut')}
-            </button>
-          </div>
-        </div>
-      </header>
+    {rbiViewerSession && (
+      <RbiViewerModal
+        session={{ ...rbiViewerSession, resourceName: resources.find((r) => Number(r.id) === Number(rbiViewerSession.resourceId))?.name }}
+        onClose={() => {
+          const closed = rbiViewerSession;
+          setRbiViewerSession(null);
+          if (closed?.id) {
+            terminateSession(closed.id).catch(() => {});
+            setSessions((prev) =>
+              prev.map((s) => (s.id === closed.id ? { ...s, status: 'terminated' } : s))
+            );
+          }
+        }}
+      />
+    )}
 
-      <section className="mission-board reveal" aria-label={t('nav.missionBoard')}>
-        <div className="mission-headline">
-          <div>
-            <p className="workflow-kicker">{t('app.accessWorkspace')}</p>
-            <h3>{t('app.chooseResource')}</h3>
-            <p>{t('app.chooseResourceHint')}</p>
-          </div>
-          <div className="mission-headline-actions">
-            <button type="button" className="ghost" onClick={onQuickRefresh} disabled={quickRefreshing}>
-              {quickRefreshing ? t('app.refreshing') : t('app.refreshData')}
-            </button>
-          </div>
-        </div>
-
-        <div className="mission-grid">
-          {missionBoardEntries.map((entry) => (
-            <button
-              key={entry.id}
-              type="button"
-              className={mainTab === entry.id ? 'mission-card active' : 'mission-card'}
-              onClick={() => selectMainTab(entry.id)}
-            >
-              <span className="mission-stage">{entry.locked ? '🔒 ' : ''}{entry.stage}</span>
-              <strong>{entry.title}</strong>
-              <p>{entry.hint}</p>
-              <span className="mission-shortcut">{entry.shortcut}</span>
-            </button>
-          ))}
-        </div>
-
-        <p className="muted">{tabGuide.focus}</p>
-      </section>
-
-      {canViewAudit && (
-        <section className="live-alert-settings reveal" aria-label={t('nav.alertNoiseFilter')}>
-          <div className="live-alert-settings-copy">
-            <strong>{t('app.alertNoiseFilter')}</strong>
-            <span>{t('app.alertNoiseHint')}</span>
-          </div>
-          <div className="live-alert-profile-tabs" role="group" aria-label={t('nav.liveAlertFilterMode')}>
-            {Object.keys(LIVE_ALERT_PROFILES).map((profileKey) => (
-              <button
-                type="button"
-                key={profileKey}
-                className={`live-alert-profile-btn ${liveAlertProfile === profileKey ? 'active' : ''}`}
-                onClick={() => setLiveAlertProfile(profileKey)}
-              >
-                {LIVE_ALERT_PROFILE_LABEL[profileKey] || profileKey}
-              </button>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {/* ── Dashboard Stats ── */}
-      {false && mainTab === 'overview' && stats && (
-        <section className="stats-grid reveal">
-          <div className="stat-card">
-            <div className="stat-icon stat-sessions">⚡</div>
-            <div>
-              <h4>{stats.sessions?.active || 0}</h4>
-              <p className="muted">Active sessions</p>
-            </div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-icon stat-total">📊</div>
-            <div>
-              <h4>{stats.sessions?.total || 0}</h4>
-              <p className="muted">Total sessions</p>
-            </div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-icon stat-resources">🖥️</div>
-            <div>
-              <h4>{stats.resources?.total || 0}</h4>
-              <p className="muted">{t('app.resources')}</p>
-            </div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-icon stat-users">👤</div>
-            <div>
-              <h4>{stats.users?.total || 0}</h4>
-              <p className="muted">Users</p>
-            </div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-icon stat-recordings">🎬</div>
-            <div>
-              <h4>{stats.recordings?.total || 0}</h4>
-              <p className="muted">Recordings</p>
-            </div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-icon stat-tokens">🔑</div>
-            <div>
-              <h4>{stats.auth?.activeTokens || 0}</h4>
-              <p className="muted">Active tokens</p>
-            </div>
-          </div>
-        </section>
-      )}
-
-      {false && mainTab === 'overview' && (
-      <section className="ops-grid">
-        <div className="panel reveal">
-          <div className="panel-header">
-            <div>
-              <h3>Security center</h3>
-              <p>Live posture and anomaly hints from audit and session activity.</p>
-            </div>
-            <div className="status-row">
-              {canViewAudit ? (
-                <span className={`pill ${loadingSecurityAudit ? 'loading' : 'ok'}`}>
-                  {loadingSecurityAudit ? 'syncing' : `${securityAuditItems.length} feed items`}
-                </span>
-              ) : (
-                <span className="pill loading">operator scope</span>
-              )}
-            </div>
-          </div>
-          <div className="security-alert-grid">
-            {securityAlerts.map((alert) => (
-              <article className={`security-alert ${alert.severity}`} key={alert.key}>
-                <div className="security-alert-head">
-                  <h4>{alert.title}</h4>
-                  <span>{alert.value}</span>
-                </div>
-                <p className="muted">{alert.hint}</p>
-              </article>
-            ))}
-          </div>
-          <div className="security-actions">
-            <button type="button" className="secondary" onClick={() => openAudit()}>
-              Investigate in audit
-            </button>
-            {!totpEnabled && canManagePlatform && (
-              <button type="button" className="ghost" onClick={() => navigate('/admin')}>
-                Configure MFA
-              </button>
-            )}
-          </div>
-          {securityAuditError && <p className="error">{securityAuditError}</p>}
-        </div>
-
-        <div className="panel reveal">
-          <div className="panel-header">
-            <div>
-              <h3>Recent sessions</h3>
-              <p>Last opened sessions, prioritized for fast intervention.</p>
-            </div>
-            <span className="pill ok">{t('app.shownCount', { count: recentSessions.length })}</span>
-          </div>
-          <div className="recent-session-list">
-            {recentSessions.length ? (
-              recentSessions.map((session) => (
-                <article className="recent-session-item" key={`recent-${session.id}`}>
-                  <div>
-                    <h4>#{session.id} {session.user} -&gt; {session.target}</h4>
-                    <p className="muted">{session.protocol}:{session.port} - opened {formatRelativeDate(session.createdAt)}</p>
-                  </div>
-                  <div className="recent-session-actions">
-                    <span className={`pill ${session.status}`}>{session.status}</span>
-                    {session.status === 'active' ? (
-                      <button type="button" className="ghost" onClick={() => onTerminate(session.id)}>Terminate</button>
-                    ) : (
-                      <button type="button" className="ghost" onClick={() => openAudit(session.id)}>Audit</button>
-                    )}
-                  </div>
-                </article>
-              ))
-            ) : (
-              <p className="muted">No sessions yet.</p>
-            )}
-          </div>
-        </div>
-      </section>
-      )}
-
-      <section className="panel resources-panel reveal">
-        <div className="panel-header">
-          <div>
-            <h3>{t('app.resources')}</h3>
-            <p>{t('app.resourcesHint')}</p>
-          </div>
-          <div className="status-row">
-            {loadingResources ? (
-              <span className="pill loading">{t('common.loading')}</span>
-            ) : (
-              <span className="pill ok">{t('app.tilesCount', { count: resources.length })}</span>
-            )}
-          </div>
-        </div>
-        {resourceError && <InlineAlert tone="error">{resourceError}</InlineAlert>}
-        <div className="resource-tiles">
-          {resources.length ? (
-            resources.map((resource) => {
-              const protocol = String(resource?.protocol || 'ssh').toLowerCase();
-              const resourceName = resource?.name || `${t('app.resource')} #${resource.id}`;
-              const endpointPort = resource?.port ?? '-';
-              const endpoint = `${resource?.target || t('common.notAvailable')}:${endpointPort}`;
-              const policyTags = Array.from(new Set([
-                ...describeAccessOutcome(resource, t),
-                ...describeResourcePolicy(resource, t)
-              ]));
-
-              return (
-                <button
-                  type="button"
-                  className="resource-tile"
-                  key={resource.id}
-                  onClick={() => onConnectResource(resource)}
-                >
-                  <div className="resource-tile-header">
-                    <div
-                      className="resource-thumb"
-                      style={
-                        resource.imageData
-                          ? { backgroundImage: `url(${resource.imageData})` }
-                          : resource.imageUrl
-                            ? { backgroundImage: `url(${resource.imageUrl})` }
-                            : undefined
-                      }
-                    >
-                      {!(resource.imageData || resource.imageUrl) && (
-                        <span className="resource-letter">
-                          {resourceName[0] || 'R'}
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="resource-info">
-                      <h4 title={resourceName}>{resourceName}</h4>
-                      <p className="resource-endpoint">
-                        <span className="resource-protocol-chip">{protocol.toUpperCase()}</span>
-                        <span className="resource-endpoint-value">{endpoint}</span>
-                      </p>
-                    </div>
-
-                    <span className={`resource-launch-pill ${protocol === 'agent' ? 'agent' : 'direct'}`}>
-                      {protocol === 'agent' ? t('app.launch') : t('app.connectLower')}
-                    </span>
-                  </div>
-
-                  {resource.description && (
-                    <p className="resource-description">{resource.description}</p>
-                  )}
-
-                  <div className="resource-tag-row">
-                    {resource.hasCredentials && (
-                      <span className="resource-tag resource-tag-vault" title={t('app.vaultStored')}>
-                        {t('app.vault')}
-                      </span>
-                    )}
-                    {policyTags.map((item) => (
-                      <span className="resource-tag resource-tag-policy" key={`policy-${resource.id}-${item}`}>
-                        {item}
-                      </span>
-                    ))}
-                  </div>
-                </button>
-              );
-            })
-          ) : (
-            <EmptyState title={t('app.noResourcesYet')} message={t('app.noResourcesMessage')} />
-          )}
-        </div>
-      </section>
-
-      {(mainTab === 'sessions' || mainTab === 'audit') && (
-      <section className="main-grid">
-        {mainTab === 'sessions' && (
-        <div className="panel reveal">
-          <div className="panel-header">
-            <div>
-              <h3>{t('app.sessionPanelTitle')}</h3>
-              <p>{t('app.sessionPanelHint')}</p>
-            </div>
-            <div className="status-row">
-              {loadingSessions ? (
-                <span className="pill loading">{t('common.loading')}</span>
-              ) : (
-                <span className="pill ok">{t('app.activeCount', { count: activeSessions.length })}</span>
-              )}
-            </div>
-          </div>
-          {sessionError && <p className="error">{sessionError}</p>}
-
-          {canManagePlatform && (
-            <div style={{ marginBottom: '1rem' }}>
-              <div className="panel-header" style={{ marginBottom: '0.7rem' }}>
-                <div>
-                  <h3 style={{ fontSize: '1rem' }}>{t('app.pendingApprovals')}</h3>
-                  <p>{t('app.pendingApprovalsHint')}</p>
-                </div>
-                <span className={`pill ${pendingAccessApprovals.length ? 'loading' : 'ok'}`}>
-                  {t('admin.pendingCount', { count: pendingAccessApprovals.length })}
-                </span>
-              </div>
-              {accessRequestError && <p className="error">{accessRequestError}</p>}
-              <div className="resource-list">
-                {pendingAccessApprovals.length ? (
-                  pendingAccessApprovals.map((request) => (
-                    <article className="resource-row" key={`pending-req-${request.id}`}>
-                      <div>
-                        <h4>
-                          #{request.id} {request.resourceName || `Resource ${request.resourceId}`}
-                        </h4>
-                        <p className="muted">
-                          {request.requester} • {request.createdAt}
-                        </p>
-                        {request.justification && <p className="muted">{request.justification}</p>}
-                      </div>
-                      <div className="resource-actions">
-                        <button
-                          type="button"
-                          className="secondary"
-                          onClick={() => onApproveAccessRequest(request.id)}
-                        >
-                          {t('admin.approve')}
-                        </button>
-                        <button
-                          type="button"
-                          className="ghost"
-                          onClick={() => onDenyAccessRequest(request.id)}
-                        >
-                          {t('admin.deny')}
-                        </button>
-                      </div>
-                    </article>
-                  ))
-                ) : (
-                  <p className="muted">{t('app.noPendingApprovals')}</p>
-                )}
-              </div>
-            </div>
-          )}
-
-          <div className="watchlist-panel">
-            <div className="slo-grid">
-              <article className="slo-card">
-                <span>{t('app.completionRate')}</span>
-                <strong>{sessionSlo.completionRate}%</strong>
-                <p className="muted">{t('app.terminatedSessionsTotal')}</p>
-              </article>
-              <article className="slo-card">
-                <span>{t('app.averageDuration')}</span>
-                <strong>{sessionSlo.avgDurationMin} min</strong>
-                <p className="muted">{t('app.basedOnClosedHistory')}</p>
-              </article>
-              <article className="slo-card">
-                <span>{t('app.staleActiveSessions')}</span>
-                <strong>{sessionSlo.staleActive}</strong>
-                <p className="muted">{t('app.activeOverHours')}</p>
-              </article>
-            </div>
-            <div className="panel-header" style={{ marginBottom: '0.35rem' }}>
-              <div>
-                <h3 style={{ fontSize: '1rem' }}>{t('app.criticalSessionWatchlist')}</h3>
-                <p>{t('app.watchlistHint')}</p>
-              </div>
-              <span className={`pill ${watchedSessions.length ? 'loading' : 'ok'}`}>
-                {t('app.watchedCount', { count: watchedSessions.length })}
-              </span>
-            </div>
-            {watchlistAlerts.length > 0 && (
-              <div className="watch-alert-list">
-                {watchlistAlerts.map((alert) => (
-                  <article key={alert.key} className="watch-alert-item">
-                    <p>{alert.message}</p>
-                    <button type="button" className="ghost" onClick={() => dismissWatchAlert(alert.key)}>
-                      {t('app.dismiss')}
-                    </button>
-                  </article>
-                ))}
-              </div>
-            )}
-            {watchedSessions.length ? (
-              <div className="watchlist-grid">
-                {watchedSessions.map((session) => (
-                  <article key={`watch-${session.id}`} className="watchlist-item">
-                    <strong>#{session.id} {session.user} -&gt; {session.target}</strong>
-                    <span className={`pill ${session.status}`}>{session.status}</span>
-                    <p className="muted">Opened {formatRelativeDate(session.createdAt)}</p>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <p className="muted">{t('app.noWatchedSessions')}</p>
-            )}
-          </div>
-
-          {(sessionEvidenceLoading || sessionEvidencePack || sessionEvidenceError) && (
-            <div className="watchlist-panel">
-              <div className="panel-header" style={{ marginBottom: '0.5rem' }}>
-                <div>
-                  <h3 style={{ fontSize: '1rem' }}>Evidence Pack</h3>
-                  <p>Signed JIT access proof for the selected session.</p>
-                </div>
-              </div>
-              {sessionEvidenceLoading && <p className="muted">Loading evidence pack...</p>}
-              {sessionEvidenceError && <p className="error">{sessionEvidenceError}</p>}
-              {sessionEvidencePack && (
-                <div className="resource-list">
-                  <article className="resource-row">
-                    <div>
-                      <h4>Session #{sessionEvidencePack.session?.id}</h4>
-                      <p className="muted">
-                        Digest: <code>{sessionEvidencePack.digest}</code>
-                      </p>
-                      <p className="muted">
-                        Signature: <code>{sessionEvidencePack.signature}</code>
-                      </p>
-                      <p className="muted">
-                        Grant #{sessionEvidencePack.accessGrant?.id || 'n/a'} • Policy #{sessionEvidencePack.accessGrant?.policyId || 0}
-                      </p>
-                    </div>
-                  </article>
-                </div>
-              )}
-            </div>
-          )}
-
-          <div className="session-grid">
-            {sessions.map((session) => (
-              <article className="session-card" key={session.id}>
-                <header>
-                  <div>
-                    <h4>#{session.id}</h4>
-                    <span className="muted">
-                      {session.protocol} : {session.port}
-                    </span>
-                  </div>
-                  <div className="session-card-tools">
-                    <button
-                      type="button"
-                      className={watchedSessionIds.includes(Number(session.id)) ? 'secondary' : 'ghost'}
-                      onClick={() => toggleWatchSession(session.id)}
-                    >
-                      {watchedSessionIds.includes(Number(session.id)) ? t('app.pinned') : t('app.pin')}
-                    </button>
-                    <span className={`pill ${session.status}`}>
-                      {session.status}
-                    </span>
-                  </div>
-                </header>
-                <p className="session-route">
-                  <strong>{session.user}</strong>
-                  <span className="arrow">{t('app.to')}</span>
-                  <strong>{session.target}</strong>
-                </p>
-                <div className="session-route-hints">
-                  <span className={`pill ${sessionRelayHints[session.id]?.route === 'relay' ? 'loading' : 'ready'}`}>
-                    {sessionRelayHints[session.id]?.route === 'relay' ? t('app.viaRelay') : t('app.directRoute')}
-                  </span>
-                  {sessionRelayHints[session.id]?.route === 'relay' && sessionRelayHints[session.id]?.relayLabel && (
-                    <span className="muted session-relay-label">
-                      {sessionRelayHints[session.id].relayLabel} ({sessionRelayHints[session.id].relayStatus || 'offline'})
-                    </span>
-                  )}
-                </div>
-                <div className="session-meta">
-                  <span>{t('app.openedAt', { value: session.createdAt })}</span>
-                  {session.accessGrantId ? (
-                    <span>Grant #{session.accessGrantId}</span>
-                  ) : null}
-                  {session.credentialSource ? (
-                    <span>{session.credentialSource}</span>
-                  ) : null}
-                  {session.terminatedAt && (
-                    <span>{t('app.closedAt', { value: session.terminatedAt })}</span>
-                  )}
-                </div>
-                <div className="session-actions">
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() => onTerminate(session.id)}
-                    disabled={session.status !== 'active' || !canOperateSessions}
-                  >
-                    {t('app.terminate')}
-                  </button>
-                  <button
-                    type="button"
-                    className="ghost"
-                    onClick={() => openAudit(session.id)}
-                  >
-                    {t('app.openAudit')}
-                  </button>
-                  {canViewAudit && (
-                    <button
-                      type="button"
-                      className="ghost"
-                      onClick={() => onOpenSessionDna(session.id)}
-                    >
-                      {t('app.sessionDna')}
-                    </button>
-                  )}
-                  {canViewAudit && (
-                    <button
-                      type="button"
-                      className="ghost"
-                      onClick={() => onOpenSessionEvidence(session.id)}
-                    >
-                      Evidence pack
-                    </button>
-                  )}
-                  {canViewAudit && (
-                    <button
-                      type="button"
-                      className="ghost"
-                      onClick={() => openRecordings(session.id)}
-                    >
-                      {t('app.recordings')}
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    className="ghost"
-                    onClick={() => openLiveSession(session)}
-                    disabled={session.status !== 'active' || !canOperateSessions}
-                  >
-                    {t('app.openLive')}
-                  </button>
-                  {canViewAudit &&
-                    session.status === 'active' && (
-                      <button
-                        type="button"
-                        className="ghost shadow-btn"
-                        onClick={() => openShadow(session)}
-                        title={t('app.shadowObserve')}
-                      >
-                        👁 {t('app.shadowTitle')}
-                      </button>
-                    )}
-                </div>
-              </article>
-            ))}
-          </div>
-        </div>
-        )}
-        {mainTab === 'audit' && (
-          <div className="panel audit-panel reveal">
-            <div className="panel-header">
-              <div>
-                <h3>{t('app.auditLog')}</h3>
-                <p>{t('app.auditLogHint')}</p>
-              </div>
-              <div className="status-row">
-                {loadingAudit ? (
-                  <span className="pill loading">{t('common.loading')}</span>
-                ) : (
-                  <span className="pill ok">{t('app.eventsCount', { count: filteredAuditItems.length })}</span>
-                )}
-              </div>
-            </div>
-            <div className="audit-controls">
-              <button
-                type="button"
-                className="secondary"
-                onClick={loadAudit}
-                disabled={loadingAudit}
-              >
-                {t('common.refresh')}
-              </button>
-              <button
-                type="button"
-                className="ghost"
-                onClick={exportFilteredAuditCsv}
-                disabled={!filteredAuditItems.length}
-              >
-                {t('app.exportCsv')}
-              </button>
-              <button
-                type="button"
-                className="ghost"
-                onClick={onVerifyAuditIntegrity}
-                disabled={checkingIntegrity}
-                title="Recompute the tamper-evidence hash chain"
-              >
-                {checkingIntegrity ? t('app.integrityChecking') : t('app.verifyIntegrity')}
-              </button>
-              {auditIntegrity && !auditIntegrity.error && (
-                <span className={`pill ${auditIntegrity.intact ? 'ok' : 'danger'}`}>
-                  {auditIntegrity.intact
-                    ? t('app.integrityIntact', { count: auditIntegrity.lines })
-                    : t('app.integrityBroken', { line: auditIntegrity.firstBrokenLine })}
-                  {auditIntegrity.keyed ? ' · HMAC' : ''}
-                </span>
-              )}
-              {auditIntegrity && auditIntegrity.error && (
-                <span className="pill danger">{auditIntegrity.error}</span>
-              )}
-              {auditFilter && (
-                <button
-                  type="button"
-                  className="ghost"
-                  onClick={() => setAuditFilter(null)}
-                >
-                  {t('app.clearFilter')}
-                </button>
-              )}
-              <button type="button" className="ghost" onClick={() => setAuditFilter(null)}>
-                {t('app.clearView')}
-              </button>
-            </div>
-            <div className="audit-search-row">
-              <input
-                type="text"
-                placeholder={t('app.searchEvents')}
-                value={auditSearchQuery}
-                onChange={(e) => setAuditSearchQuery(e.target.value)}
-                style={{ flex: 1, maxWidth: '280px' }}
-              />
-              <select
-                value={auditTypeFilter}
-                onChange={(e) => setAuditTypeFilter(e.target.value)}
-                style={{ maxWidth: '200px' }}
-              >
-                <option value="">{t('app.allTypes')}</option>
-                <option value="auth.login">{t('app.login')}</option>
-                <option value="auth.logout">{t('app.logout')}</option>
-                <option value="auth.login.failure">{t('app.loginFailure')}</option>
-                <option value="session.create">{t('app.sessionCreate')}</option>
-                <option value="session.terminate">{t('app.sessionTerminate')}</option>
-                <option value="session.close">{t('app.sessionClose')}</option>
-                <option value="resource">{t('app.resource')}</option>
-                <option value="user">{t('admin.users')}</option>
-                <option value="credential">{t('app.credential')}</option>
-                <option value="tunnel">{t('app.tunnel')}</option>
-              </select>
-            </div>
-            {auditError && <p className="error">{auditError}</p>}
-            {!canViewAudit && (
-              <p className="muted">{t('app.auditorRoleHint')}</p>
-            )}
-            {canViewAudit && (
-              <div className="audit-list">
-                {filteredAuditItems.length ? (
-                  filteredAuditItems.map((item) => (
-                    <article className="audit-item" key={item.id}>
-                      <div>
-                        <h4>{item.type}</h4>
-                        <p className="muted">
-                          {renderAuditDetail(item) || t('app.noSessionData')}
-                        </p>
-                      </div>
-                      <div className="audit-meta">
-                        <span className="muted">{item.actor}</span>
-                        <span className="muted">{item.createdAt}</span>
-                      </div>
-                    </article>
-                  ))
-                ) : (
-                  <p className="muted">{t('app.noAuditEvents')}</p>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-      </section>
-      )}
-
-      {/* Recordings panel */}
-      {mainTab === 'recordings' && canViewRecordings && (
-        <Suspense
-          fallback={(
-            <SectionCard title={t('recordings.title')} subtitle={t('app.loadingRecordingsView')}>
-              <EmptyState title={t('common.loading')} message={t('app.preparingReplayWorkspace')} />
-            </SectionCard>
-          )}
-        >
-          <RecordingsPanel
-            loadingRecordings={loadingRecordings}
-            recordings={recordings}
-            recordingsError={recordingsError}
-            loadRecordings={loadRecordings}
-            closePlayer={closePlayer}
-            castData={castData}
-            castRecordingId={castRecordingId}
-            playerPlaying={playerPlaying}
-            startPlayer={startPlayer}
-            stopPlayer={stopPlayer}
-            playerIndex={playerIndex}
-            playerEvents={playerEvents}
-            playerTermRef={playerTermRef}
-            onPlayRecording={onPlayRecording}
-          />
-        </Suspense>
-      )}
-
-      {mainTab === 'sessions' && (
-      <section className="panel terminal-panel reveal">
-        <div className="panel-header">
-          <div>
-            <h3>{t('app.liveSshConsole')}</h3>
-            <p>{t('app.liveSshConsoleHint')}</p>
-          </div>
-          <span className={`pill ${terminalStatus === 'live' ? 'ok' : 'loading'}`}>
-            {terminalStatus}
-          </span>
-        </div>
-        <div className="terminal-controls">
-          <div>
-            <span className="muted">{t('app.sessions')}</span>
-            <h4>
-              {activeTerminalSession
-                ? `#${activeTerminalSession.id} ${activeTerminalSession.target}`
-                : t('auth.noSessionSelected')}
-            </h4>
-          </div>
-          <label>
-            {t('app.sshPassword')}
-            <input
-              type="password"
-              value={sshPassword}
-              onChange={(event) => setSshPassword(event.target.value)}
-              placeholder={t('auth.enterSshPassword')}
-            />
-          </label>
-          <button type="button" onClick={connectTerminal}>
-            {t('auth.connect')}
-          </button>
-        </div>
-        <div className="snippet-studio">
-          <div className="snippet-studio-head">
-            <h4>{t('app.sshSnippetsStudio')}</h4>
-            <p>{t('app.sshSnippetsHint')}</p>
-          </div>
-          <div className="snippet-grid">
-            {sshSnippetLibrary.map((snippet) => (
-              <article key={snippet.id} className="snippet-card">
-                <strong>{snippet.label}</strong>
-                <code>{snippet.command}</code>
-                <div className="snippet-actions">
-                  <button type="button" className="ghost" onClick={() => sendSnippetToTerminal(snippet, false)}>
-                    {t('app.inject')}
-                  </button>
-                  <button type="button" onClick={() => sendSnippetToTerminal(snippet, true)}>
-                    {t('app.run')}
-                  </button>
-                  {snippet.custom && (
-                    <button
-                      type="button"
-                      className="danger"
-                      onClick={() => removeCustomSnippet(snippet.id)}
-                    >
-                      Delete
-                    </button>
-                  )}
-                </div>
-              </article>
-            ))}
-          </div>
-          <div className="snippet-builder">
-            <label>
-              {t('app.snippetLabel')}
-              <input
-                type="text"
-                value={snippetLabel}
-                onChange={(event) => setSnippetLabel(event.target.value)}
-                placeholder="Example: App logs"
-              />
-            </label>
-            <label>
-              {t('app.command')}
-              <input
-                type="text"
-                value={snippetCommand}
-                onChange={(event) => setSnippetCommand(event.target.value)}
-                placeholder="tail -n 80 /var/log/app.log"
-              />
-            </label>
-            <button type="button" className="secondary" onClick={addCustomSnippet}>
-              {t('app.saveSnippet')}
-            </button>
-          </div>
-        </div>
-        {terminalError && <p className="error">{terminalError}</p>}
-        {terminalInfo && <p className="muted">{terminalInfo}</p>}
-        <div className="terminal-shell" ref={terminalRef} />
-      </section>
-      )}
-
-      {mainTab === 'sessions' && inlineWebResource && (
-      <section className="panel reveal" style={{ marginBottom: '24px' }}>
-          <div className="panel-header">
-            <div>
-              <h3>{t('app.embeddedWebAccess')}</h3>
-              <p>
-                {inlineWebResource.name} - {inlineWebResource.protocol} {inlineWebResource.target}:{inlineWebResource.port}
-              </p>
-          </div>
-          <div className="resource-actions">
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => window.open(`/proxy/${inlineWebResource.id}`, '_blank', 'noopener,noreferrer')}
-            >
-              {locale === 'fr' ? 'Ouvrir dans un onglet' : 'Open in new tab'}
-            </button>
-            <button
-              type="button"
-              className="ghost"
-              onClick={() => setInlineWebResource(null)}
-            >
-              {t('common.close')}
-            </button>
-          </div>
-        </div>
-        <iframe
-          title={`resource-${inlineWebResource.id}`}
-          src={`/proxy/${inlineWebResource.id}`}
-          className="proxy-iframe"
-          style={{ width: '100%', height: 'calc(100vh - 240px)', minHeight: '520px', borderRadius: '12px', border: '1px solid var(--stroke)', background: '#fff' }}
-          sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-modals allow-top-navigation-by-user-activation"
-        />
-      </section>
-      )}
-
-      {vncViewerSession && (
-        <VncViewerModal
-          session={vncViewerSession}
-          onClose={() => setVncViewerSession(null)}
-        />
-      )}
-
-      {rbiViewerSession && (
-        <RbiViewerModal
-          session={rbiViewerSession}
-          onClose={() => {
-            const closed = rbiViewerSession;
-            setRbiViewerSession(null);
-            if (closed?.id) {
-              terminateSession(closed.id).catch(() => {});
-              setSessions((prev) =>
-                prev.map((s) => (s.id === closed.id ? { ...s, status: 'terminated' } : s))
-              );
-            }
+    {accessPromptResource && (() => {
+      const risk = String(accessPromptResource.riskLevel || '').toLowerCase();
+      const highRisk = risk === 'high' || risk === 'critical';
+      const setters = {
+        reason: setAccessPromptReason,
+        ticket: setAccessPromptTicketId,
+        purpose: setAccessPromptPurpose,
+        evidence: setAccessPromptPurposeEvidence
+      };
+      return (
+        <AccessDialog
+          resource={accessPromptResource}
+          mode={accessPromptMode}
+          containment={{ enabled: containmentEnabled, reason: containmentStatus.reason }}
+          values={{
+            reason: accessPromptReason,
+            ticket: accessPromptTicketId,
+            purpose: accessPromptPurpose,
+            evidence: accessPromptPurposeEvidence
           }}
-        />
-      )}
-
-      {/* Shadow session panel */}
-      {mainTab === 'sessions' && shadowSession && (
-        <section className="panel terminal-panel shadow-panel reveal">
-            <div className="panel-header">
-              <div>
-              <h3>👁 {t('app.shadowTitle')} - Session #{shadowSession.id}</h3>
-              <p>
-                {t('app.readOnlyObservation')}{' '}
-                <strong>{shadowSession.user}</strong> → <strong>{shadowSession.target}</strong>
-              </p>
-            </div>
-            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              <span className={`pill ${shadowStatus === 'live' ? 'ok' : shadowStatus === 'error' ? 'error' : 'loading'}`}>
-                {shadowStatus}
-              </span>
-              <button type="button" className="secondary" onClick={closeShadow}>
-                {t('common.close')}
-              </button>
-            </div>
-          </div>
-          <div className="terminal-shell shadow-terminal" ref={shadowTermRef} />
-        </section>
-      )}
-
-      {accessPromptResource && (
-        <div
-          className="modal-overlay"
-          onClick={closeAccessPrompt}
-        >
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <h3>
-              {accessPromptMode === 'request'
-                ? t('app.approvalRequestRequired')
-                : t('app.connectionJustificationRequired')}
-            </h3>
-            <p className="muted" style={{ marginTop: 0 }}>
-              {accessPromptMode === 'request'
-                ? t('app.approvalWorkflowRequired', { name: accessPromptResource.name })
-                : containmentEnabled
-                  ? t('app.containmentReasonRequired', { name: accessPromptResource.name })
-                  : t('app.accessReasonRequired', { name: accessPromptResource.name })}
-            </p>
-            <div className="policy-chip-row" style={{ marginBottom: '0.8rem' }}>
-              {describeAccessOutcome(accessPromptResource, t).map((item) => (
-                <span className="policy-chip" key={`access-prompt-${item}`}>{item}</span>
-              ))}
-            </div>
-            {containmentEnabled && accessPromptMode === 'connect' && containmentStatus.reason && (
-              <p className="muted" style={{ marginTop: 0 }}>
-                {t('app.containmentContext', { value: containmentStatus.reason })}
-              </p>
-            )}
-            <form onSubmit={onSubmitAccessPrompt}>
-              <div className="risk-preview-box">
-                <strong>{t('app.riskPreview')}</strong>
-                {riskPreviewLoading && <p className="muted">{t('app.calculatingRiskScore')}</p>}
-                {riskPreviewError && <p className="error">{riskPreviewError}</p>}
-                {riskPreview && (
-                  <>
-                    <p className="muted" style={{ marginBottom: '0.35rem' }}>
-                      {t('app.score', { value: riskPreview.score, risk: riskPreview.effectiveRiskLevel })}
-                    </p>
-                    <p className="muted" style={{ marginBottom: '0.35rem' }}>
-                      {[
-                        riskPreview.justificationRequired ? 'justification' : null,
-                        riskPreview.ticketRequired ? 'ticket' : null,
-                        riskPreview.approvalRequired ? 'approval' : null,
-                        riskPreview.mfaRequirement && riskPreview.mfaRequirement !== 'any'
-                          ? `mfa:${riskPreview.mfaRequirement}`
-                          : null,
-                        riskPreview.routingConstraint && riskPreview.routingConstraint !== 'any'
-                          ? `route:${riskPreview.routingConstraint}`
-                          : null,
-                        riskPreview.maxDurationSeconds ? `ttl:${riskPreview.maxDurationSeconds}s` : null
-                      ].filter(Boolean).join(' • ')}
-                    </p>
-                    <p className="muted" style={{ margin: 0 }}>
-                      {Array.isArray(riskPreview.factors)
-                        ? riskPreview.factors.join(' - ')
-                        : t('app.noFactors')}
-                    </p>
-                  </>
-                )}
-              </div>
-              <div className="playbook-strip">
-                <div>
-                  <strong>{t('app.accessPlaybook')}</strong>
-                  <p className="muted">
-                    {currentAccessPlaybook
-                      ? t('app.playbookSavedAt', { value: new Date(currentAccessPlaybook.updatedAt || Date.now()).toLocaleString(locale) })
-                      : t('app.noPlaybookYet')}
-                  </p>
-                </div>
-                <div className="playbook-actions">
-                  <button type="button" className="ghost" onClick={applyCurrentAccessPlaybook}>
-                    {t('app.apply')}
-                  </button>
-                  <button type="button" className="secondary" onClick={saveCurrentAccessPlaybook}>
-                    {t('common.save')}
-                  </button>
-                  {currentAccessPlaybook && (
-                    <button type="button" className="danger" onClick={deleteCurrentAccessPlaybook}>
-                      {t('common.delete')}
-                    </button>
-                  )}
-                </div>
-              </div>
-              <label>
-                {t('app.accessReason')}
-                <input
-                  type="text"
-                  value={accessPromptReason}
-                  onChange={(event) => setAccessPromptReason(event.target.value)}
-                  placeholder={t('app.accessReasonPlaceholder')}
-                  required
-                />
-              </label>
-              <label>
-                {t('app.ticketChangeId')}
-                <input
-                  type="text"
-                  value={accessPromptTicketId}
-                  onChange={(event) => setAccessPromptTicketId(event.target.value)}
-                  placeholder={t('app.ticketChangePlaceholder')}
-                />
-              </label>
-              <label>
-                {t('app.sessionPurpose')} {(String(accessPromptResource.riskLevel || '').toLowerCase() === 'high' ||
-                String(accessPromptResource.riskLevel || '').toLowerCase() === 'critical')
-                  ? t('app.requiredForHighRisk')
-                  : t('app.optionalLabel')}
-                <input
-                  type="text"
-                  value={accessPromptPurpose}
-                  onChange={(event) => setAccessPromptPurpose(event.target.value)}
-                  placeholder={t('app.sessionPurposePlaceholder')}
-                  required={
-                    String(accessPromptResource.riskLevel || '').toLowerCase() === 'high' ||
-                    String(accessPromptResource.riskLevel || '').toLowerCase() === 'critical'
-                  }
-                />
-              </label>
-              <label>
-                {t('app.purposeEvidence')}
-                <input
-                  type="text"
-                  value={accessPromptPurposeEvidence}
-                  onChange={(event) => setAccessPromptPurposeEvidence(event.target.value)}
-                  placeholder={t('app.purposeEvidencePlaceholder')}
-                />
-              </label>
-              <div style={{ display: 'flex', gap: '0.8rem', marginTop: '0.8rem' }}>
-                <button type="submit">
-                  {accessPromptMode === 'request' ? t('app.submitRequest') : t('app.continue')}
-                </button>
-                <button
-                  type="button"
-                  className="ghost"
-                  onClick={closeAccessPrompt}
-                >
-                  {t('common.cancel')}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {sessionDnaLoading && (
-        <div className="modal-overlay" onClick={() => setSessionDnaLoading(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <h3>{t('app.sessionDna')}</h3>
-            <p className="muted">{t('app.loadingChain')}</p>
-          </div>
-        </div>
-      )}
-
-      {(sessionDna || sessionDnaError) && !sessionDnaLoading && (
-        <div
-          className="modal-overlay"
-          onClick={() => {
-            setSessionDna(null);
-            setSessionDnaError('');
+          setValue={(key, value) => setters[key](value)}
+          required={{
+            reason: !!(accessPromptMode === 'request' || accessPromptResource.requireAccessJustification || containmentEnabled || riskPreview?.justificationRequired),
+            ticket: !!(riskPreview?.ticketRequired || (accessPromptResource.adaptiveAccessPolicy && highRisk)),
+            purpose: highRisk || !!riskPreview?.purposeRequired
           }}
-        >
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <h3>{t('app.sessionDna')} {sessionDna?.sessionId ? `#${sessionDna.sessionId}` : ''}</h3>
-            {sessionDnaError && <p className="error">{sessionDnaError}</p>}
-            {sessionDna && (
-              <>
-                <p className="muted" style={{ marginTop: 0 }}>
-                  {t('app.integrity', { value: sessionDna.verified ? t('app.verified') : t('app.mismatchDetected') })}
-                </p>
-                <div className="audit-timeline" style={{ maxHeight: '320px', overflowY: 'auto' }}>
-                  {(sessionDna.entries || []).length ? (
-                    sessionDna.entries.map((entry) => (
-                      <article key={`dna-${entry.id}`}>
-                        <strong>{entry.eventType}</strong>
-                        <p>#{entry.id} - {entry.createdAt}</p>
-                        <p>hash: {String(entry.chainHash || '').slice(0, 20)}...</p>
-                      </article>
-                    ))
-                  ) : (
-                    <p className="muted">{t('app.noDnaEntries')}</p>
-                  )}
-                </div>
-              </>
-            )}
-            <div style={{ marginTop: '0.8rem' }}>
-              <button
-                type="button"
-                className="ghost"
-                onClick={() => {
-                  setSessionDna(null);
-                  setSessionDnaError('');
-                }}
-              >
-                {t('common.close')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+          preview={jitLicensed ? { loading: riskPreviewLoading, error: riskPreviewError, data: riskPreview } : null}
+          playbook={{
+            current: currentAccessPlaybook,
+            onApply: applyCurrentAccessPlaybook,
+            onSave: saveCurrentAccessPlaybook,
+            onDelete: deleteCurrentAccessPlaybook
+          }}
+          error={sessionError}
+          approvedRequestId={accessPromptRequestId}
+          onSubmit={onSubmitAccessPrompt}
+          onClose={closeAccessPrompt}
+        />
+      );
+    })()}
 
-      {/* Agent launch modal */}
-      {agentModal && (
-        <div className="modal-overlay" onClick={() => {
+    {agentModal && (
+      <AgentDialog
+        modal={agentModal}
+        onLaunch={launchAgentDeepLink}
+        onNewPort={async () => {
+          const randomPort = 10000 + Math.floor(Math.random() * 50000);
+          const launchPayload = await buildAgentLaunchPayload(agentModal.resource, randomPort);
+          setAgentModal((prev) => (prev ? { ...prev, port: randomPort, launchState: 'idle', ...launchPayload } : prev));
+        }}
+        onClose={() => {
           clearAgentLaunchWatcher();
           setAgentModal(null);
-        }}>
-          <div className="modal-content agent-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="agent-modal-header">
-              <span className="agent-icon">🚀</span>
-              <div>
-                <h3>{t('app.agentTunnel')}</h3>
-                <p className="muted">{t('app.agentLocalConnection')}</p>
-              </div>
-            </div>
-            <div className="agent-modal-info">
-              <div className="agent-info-row">
-                <span className="agent-label">{t('app.resourceLabel')}</span>
-                <span className="agent-value">{agentModal.resource.name}</span>
-              </div>
-              <div className="agent-info-row">
-                <span className="agent-label">{t('app.targetLabel')}</span>
-                <span className="agent-value">{agentModal.resource.target}:{agentModal.resource.port}</span>
-              </div>
-              <div className="agent-info-row">
-                <span className="agent-label">{t('app.localPort')}</span>
-                <span className="agent-value">127.0.0.1:{agentModal.port}</span>
-              </div>
-            </div>
-            <div className="agent-command-block">
-              <label className="agent-label">{t('app.fallbackCommand')}</label>
-              <div className="agent-command-row">
-                <code className="agent-command">{agentModal.command}</code>
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={async () => {
-                    try {
-                      await navigator.clipboard.writeText(agentModal.command);
-                      setAgentModal((prev) => (prev ? { ...prev, copied: 'ok' } : prev));
-                    } catch (_) {
-                      setAgentModal((prev) => (prev ? { ...prev, copied: 'fail' } : prev));
-                    }
-                    setTimeout(() => setAgentModal((prev) => prev ? ({ ...prev, copied: 'idle' }) : null), 2000);
-                  }}
-                >
-                  {agentModal.copied === 'ok' ? `✓ ${t('app.copied')}` : agentModal.copied === 'fail' ? `❌ ${t('app.copyFailed')}` : `📋 ${t('app.copy')}`}
-                </button>
-              </div>
-            </div>
-            <div className="agent-command-block">
-              <label className="agent-label">{t('app.deepLink')}</label>
-              <div className="agent-command-row">
-                <code className="agent-command">{agentModal.deepLink}</code>
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={async () => {
-                    try {
-                      await navigator.clipboard.writeText(agentModal.deepLink);
-                      setAgentModal((prev) => (prev ? { ...prev, linkCopied: 'ok' } : prev));
-                    } catch (_) {
-                      setAgentModal((prev) => (prev ? { ...prev, linkCopied: 'fail' } : prev));
-                    }
-                    setTimeout(() => setAgentModal((prev) => prev ? ({ ...prev, linkCopied: 'idle' }) : null), 2000);
-                  }}
-                >
-                  {agentModal.linkCopied === 'ok' ? `✓ ${t('app.copied')}` : agentModal.linkCopied === 'fail' ? `❌ ${t('app.copyFailed')}` : `📋 ${t('app.copyLink')}`}
-                </button>
-              </div>
-            </div>
-            <div className="agent-modal-tip">
-              {agentModal.openInBrowser ? (
-                <p>💡 {t('app.agentOpenBrowserTip', { value: agentModal.localUrl })} <a href={agentModal.localUrl} target="_blank" rel="noreferrer">{agentModal.localUrl}</a>.</p>
-              ) : (
-                <p>💡 {t('app.agentClientTip', { protocol: String(agentModal.resource?.protocol || '').toUpperCase(), value: agentModal.localEndpoint })}</p>
-              )}
-              {agentModal.launchState === 'opening' && (
-                <p className="muted">{t('app.openingAgentApp')}</p>
-              )}
-              {agentModal.launchState === 'fallback' && (
-                <>
-                  <p className="error" style={{ marginBottom: '0.45rem' }}>
-                    {t('app.missingProtocolHandler')}
-                  </p>
-                  <p className="muted" style={{ marginBottom: '0.45rem' }}>
-                    {t('app.quickInstall', { platform: agentModal.installGuide?.platform || 'OS' })}
-                  </p>
-                  <div className="agent-command-row">
-                    <code className="agent-command">{agentModal.installGuide?.command}</code>
-                    <button
-                      type="button"
-                      className="secondary"
-                      onClick={async () => {
-                        try {
-                          await navigator.clipboard.writeText(agentModal.installGuide?.command || '');
-                          setAgentModal((prev) => (prev ? { ...prev, installCopied: 'ok' } : prev));
-                        } catch (_) {
-                          setAgentModal((prev) => (prev ? { ...prev, installCopied: 'fail' } : prev));
-                        }
-                        setTimeout(() => setAgentModal((prev) => prev ? ({ ...prev, installCopied: 'idle' }) : null), 2000);
-                      }}
-                    >
-                      {agentModal.installCopied === 'ok' ? `✓ ${t('app.copied')}` : agentModal.installCopied === 'fail' ? `❌ ${t('app.copyFailed')}` : `📋 ${t('app.copyInstall')}`}
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-            <div className="agent-modal-actions">
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => launchAgentDeepLink(agentModal.deepLink)}
-              >
-                🚀 {t('app.openWithAgent')}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const randomPort = 10000 + Math.floor(Math.random() * 50000);
-                  const launchPayload = buildAgentLaunchPayload(agentModal.resource, randomPort);
-                  setAgentModal((prev) => ({ ...prev, port: randomPort, copied: 'idle', linkCopied: 'idle', installCopied: 'idle', launchState: 'idle', ...launchPayload }));
-                }}
-                className="ghost"
-              >
-                🔄 {t('app.newPort')}
-              </button>
-              <button type="button" className="ghost" onClick={() => {
-                clearAgentLaunchWatcher();
-                setAgentModal(null);
-              }}>{t('app.closeLabel')}</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Change password modal */}
-      {changePwOpen && (
-        <div className="modal-overlay" onClick={() => setChangePwOpen(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <h3>{t('auth.changePassword')}</h3>
-            <form onSubmit={onChangePassword}>
-              <label>
-                {t('auth.currentPassword')}
-                <input type="password" value={changePwCurrent}
-                  onChange={(e) => setChangePwCurrent(e.target.value)} required />
-              </label>
-              <label>
-                {t('auth.newPassword')}
-                <input type="password" value={changePwNew}
-                  onChange={(e) => setChangePwNew(e.target.value)} required
-                  placeholder={t('auth.passwordPlaceholder')} />
-              </label>
-              <label>
-                {t('auth.confirmNewPassword')}
-                <input type="password" value={changePwConfirm}
-                  onChange={(e) => setChangePwConfirm(e.target.value)} required />
-              </label>
-              {changePwError && <p className="error">{changePwError}</p>}
-              {changePwSuccess && <p className="success">{changePwSuccess}</p>}
-              <div style={{display:'flex',gap:'0.8rem',marginTop:'0.8rem'}}>
-                <button type="submit">{t('auth.change')}</button>
-                <button type="button" className="ghost" onClick={() => {
-                  setChangePwOpen(false); setChangePwError(''); setChangePwSuccess('');
-                  setChangePwCurrent(''); setChangePwNew(''); setChangePwConfirm('');
-                }}>{t('common.cancel')}</button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-    </div>
+        }}
+      />
+    )}
+    </>
   );
 
   // ── License banner (Enterprise edition only) ──────────────────────────────
   const renderLicenseBanner = () => {
     if (!auth.token || licenseEdition !== 'enterprise') return null;
-    const fr = locale === 'fr';
-    if (licenseState === 'expired' || licenseState === 'revoked') {
-      const msg = licenseState === 'revoked'
-        ? (fr ? 'Licence révoquée — les fonctionnalités premium sont désactivées.' : 'License revoked — premium features are disabled.')
-        : (fr ? 'Licence expirée — les fonctionnalités premium sont désactivées.' : 'License expired — premium features are disabled.');
-      return (
-        <div className="license-banner license-banner-error" role="alert">
-          <span>⛔ {msg}</span>
-          {canManagePlatform && (
-            <button type="button" className="ghost" onClick={() => navigate('/admin')}>
-              {fr ? 'Gérer la licence' : 'Manage license'}
-            </button>
-          )}
-        </div>
-      );
-    }
-    if (licenseValid && Number.isFinite(licenseDaysRemaining) && licenseDaysRemaining >= 0 && licenseDaysRemaining <= 7 && !licenseBannerDismissed) {
-      const msg = fr
-        ? `Votre licence expire dans ${licenseDaysRemaining} jour${licenseDaysRemaining > 1 ? 's' : ''}.`
-        : `Your license expires in ${licenseDaysRemaining} day${licenseDaysRemaining !== 1 ? 's' : ''}.`;
-      return (
-        <div className="license-banner license-banner-warn" role="status">
-          <span>⚠️ {msg}</span>
-          <button type="button" className="ghost" onClick={() => setLicenseBannerDismissed(true)}>
-            {fr ? 'Ignorer' : 'Dismiss'}
-          </button>
-        </div>
-      );
-    }
-    return null;
+    const blocked = licenseState === 'expired' || licenseState === 'revoked';
+    const expiring = licenseValid && Number.isFinite(licenseDaysRemaining) && licenseDaysRemaining >= 0 &&
+      licenseDaysRemaining <= 7 && !licenseBannerDismissed;
+    if (!blocked && !expiring) return null;
+    return (
+      <LicenseBar
+        state={licenseState}
+        daysRemaining={licenseDaysRemaining}
+        canManage={canManagePlatform}
+        onOpenLicense={() => navigate('/admin/license')}
+        onDismiss={() => setLicenseBannerDismissed(true)}
+      />
+    );
   };
 
   // ── Premium upsell modal (403 license-required or locked tab/section) ──────
   const renderLicenseUpsell = () => {
     if (!licenseUpsell) return null;
-    const fr = locale === 'fr';
-    const feature = licenseUpsell.feature || (fr ? 'cette fonctionnalité' : 'this feature');
-    const tier = licenseUpsell.requiredTier || 'pro';
-    const isCommunity = licenseEdition !== 'enterprise';
-    const title = fr ? 'Fonctionnalité premium' : 'Premium feature';
-    const body = isCommunity
-      ? (fr
-          ? `« ${feature} » fait partie de l'édition Enterprise. Passez à EndoriumFort Enterprise pour la débloquer.`
-          : `"${feature}" is part of the Enterprise edition. Upgrade to EndoriumFort Enterprise to unlock it.`)
-      : (fr
-          ? `« ${feature} » nécessite une licence ${tier} valide. Chargez une licence ou contactez le service commercial.`
-          : `"${feature}" requires a valid ${tier} license. Load a license or contact sales.`);
     return (
-      <div className="modal-overlay" onClick={() => setLicenseUpsell(null)}>
-        <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-          <h3>🔒 {title}</h3>
-          <p>{body}</p>
-          <div className="modal-actions" style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
-            {!isCommunity && canManagePlatform && (
-              <button type="button" onClick={() => { setLicenseUpsell(null); navigate('/admin'); }}>
-                {fr ? 'Gérer la licence' : 'Manage license'}
-              </button>
-            )}
-            <button type="button" className="ghost" onClick={() => setLicenseUpsell(null)}>
-              {fr ? 'Fermer' : 'Close'}
-            </button>
-          </div>
-        </div>
-      </div>
+      <UpsellDialog
+        feature={licenseUpsell.feature}
+        requiredTier={licenseUpsell.requiredTier}
+        community={licenseEdition !== 'enterprise'}
+        canManage={canManagePlatform}
+        onOpenLicense={() => { setLicenseUpsell(null); navigate('/admin/license'); }}
+        onClose={() => setLicenseUpsell(null)}
+      />
     );
   };
 
   if (route === '/login') {
     return renderLogin();
   }
-  if (route === '/admin') {
-    return (
-      <>
-        {renderLicenseBanner()}
-        {renderAdmin()}
-        {renderLicenseUpsell()}
-        {renderBootstrapOverlay()}
-      </>
+
+  const currentTab = route.startsWith('/compte') ? 'compte' : tabForPath(route)?.id || 'carte';
+  let shellBody;
+  if (currentTab === 'compte') {
+    shellBody = (
+      <AccountPage
+        user={auth.user}
+        roleName={roleName}
+        auditItems={auditItems}
+        mfa={mfaCardProps}
+        password={{
+          current: changePwCurrent,
+          setCurrent: setChangePwCurrent,
+          next: changePwNew,
+          setNext: setChangePwNew,
+          confirm: changePwConfirm,
+          setConfirm: setChangePwConfirm,
+          onSubmit: onChangePassword,
+          error: changePwError,
+          success: changePwSuccess
+        }}
+        darkMode={darkMode}
+        onSetDarkMode={setDarkMode}
+        alertProfile={liveAlertProfile}
+        onSetAlertProfile={setLiveAlertProfile}
+        showAlerts={canViewAudit}
+      />
+    );
+  } else if (currentTab === 'admin') {
+    shellBody = renderAdmin();
+  } else if (currentTab === 'zones') {
+    shellBody = (
+      <ZonesPage
+        resources={resources}
+        policiesLicensed={jitLicensed}
+        relaysLicensed={relaysLicensed}
+        onResourcesChanged={async () => {
+          try {
+            const data = await fetchResources();
+            setResources(Array.isArray(data.items) ? data.items : []);
+          } catch (_) {
+            // The next reload will catch up.
+          }
+        }}
+        onEditResource={(resource) => {
+          setResourceEditFocus(resource.id);
+          setAdminSection('resources');
+          navigate('/admin/resources');
+        }}
+        onUnlock={(feature, tier) => openUpsell(feature, tier)}
+      />
+    );
+  } else if (currentTab === 'carte') {
+    // First steps of a new bastion, for administrators, once the data they
+    // depend on has loaded (so nothing flashes as "to do" while loading).
+    const startReady = canManagePlatform && stats && !loadingUsers && !loadingResources;
+    const openAdmin = (section) => {
+      setAdminSection(section);
+      navigate(`/admin/${section}`);
+    };
+    const startSteps = !startReady ? [] : [
+      // Required in the Enterprise build (premium features stay locked without
+      // it), optional in Community (it is how one moves to a paid edition).
+      {
+        id: 'license',
+        done: licenseValid,
+        optional: licenseEdition !== 'enterprise',
+        onGo: () => openAdmin('license')
+      },
+      {
+        id: 'resource',
+        done: resources.length > 0,
+        onGo: () => { setResourceEditFocus('new'); openAdmin('resources'); }
+      },
+      {
+        id: 'mfa',
+        done: (Number(stats?.users?.adminsWithoutMfa) || 0) === 0,
+        onGo: () => openAdmin('security')
+      },
+      {
+        id: 'operator',
+        done: users.some((user) => normalizeRole(user.role) !== 'admin'),
+        onGo: () => openAdmin('users')
+      }
+    ];
+    shellBody = (
+      <MapPage
+        intro={startSteps.length ? <GettingStarted user={auth.user} steps={startSteps} /> : null}
+        resources={resources}
+        sessions={sessionsView}
+        auditItems={auditItems}
+        currentUser={auth.user}
+        canManage={canManagePlatform}
+        canViewAudit={canViewAudit}
+        relaysEnabled={relaysLicensed}
+        onUnlockRelays={() => openUpsell(t('relayLock.label'), 'pro')}
+        previewAccess={jitLicensed ? previewSessionRisk : null}
+        loading={loadingResources}
+        error={resourceError}
+        onConnect={(resource) => {
+          // The access prompt, terminal and web viewer still live in the Sessions screen.
+          navigate('/sessions');
+          onConnectResource(resource);
+        }}
+        onOpenSession={(session) => {
+          navigate('/sessions');
+          if (String(session.protocol || '').toLowerCase() === 'ssh') openTerminal(session);
+        }}
+        onEdit={(resource) => {
+          setResourceEditFocus(resource.id);
+          setAdminSection('resources');
+          navigate('/admin/resources');
+        }}
+        onAddResource={() => {
+          setResourceEditFocus('new');
+          setAdminSection('resources');
+          navigate('/admin/resources');
+        }}
+      />
+    );
+  } else if (currentTab === 'preuves') {
+    shellBody = (
+      <EvidencePage
+        sessions={sessionsView}
+        resources={resources}
+        recordingsLicensed={premiumUnlocked('pro')}
+        evidenceLicensed={premiumUnlocked('enterprise')}
+        focusSessionId={evidenceFocus}
+        onUnlock={(feature, tier) => openUpsell(feature, tier)}
+        onOpenJournal={(sessionId) => {
+          navigate('/journal');
+          openAudit(sessionId);
+        }}
+      />
+    );
+  } else if (currentTab === 'journal') {
+    shellBody = (
+      <JournalPage
+        resources={resources}
+        sessionFilter={auditFilter}
+        actorFocus={journalActorFocus}
+        onActorFocusUsed={() => setJournalActorFocus(null)}
+        canViewRecordings={canViewRecordings}
+        onRefresh={loadAudit}
+        onClearSessionFilter={() => setAuditFilter(null)}
+        onFilterSession={(sessionId) => setAuditFilter(sessionId)}
+        onOpenRecordings={(sessionId) => {
+          navigate('/preuves');
+          openRecordings(sessionId);
+        }}
+      />
+    );
+  } else if (currentTab === 'demandes') {
+    shellBody = (
+      <RequestsPage
+        requests={accessRequests}
+        resources={resources}
+        sessions={sessionsView}
+        currentUser={auth.user}
+        canReview={canManagePlatform}
+        licensed={jitLicensed}
+        loading={loadingAccessRequests}
+        error={accessRequestError}
+        onRefresh={reloadAccessRequests}
+        onApprove={onApproveAccessRequest}
+        onDeny={onDenyAccessRequest}
+        onConnect={(resource) => {
+          navigate('/sessions');
+          onConnectResource(resource);
+        }}
+        onOpenSession={(session) => {
+          navigate('/sessions');
+          if (String(session.protocol || '').toLowerCase() === 'ssh') openTerminal(session);
+        }}
+        onOpenMap={() => navigate('/carte')}
+        onUnlock={() => openUpsell(t('req.title'), 'pro')}
+      />
+    );
+  } else if (currentTab === 'sessions') {
+    shellBody = (
+      <SessionsPage
+        sessions={sessionsView}
+        resources={resources}
+        currentUser={auth.user}
+        canOperate={canOperateSessions}
+        canViewAudit={canViewAudit}
+        dnaEnabled={premiumUnlocked('enterprise')}
+        relayHints={sessionRelayHints}
+        relaysEnabled={relaysLicensed}
+        onUnlockRelays={() => openUpsell(t('relayLock.label'), 'pro')}
+        auditItems={auditItems}
+        loading={loadingSessions}
+        error={sessionError}
+        terminalHost={terminalRef.current}
+        activeTerminalSession={activeTerminalSession}
+        terminalStatus={terminalStatus}
+        terminalError={terminalError}
+        terminalInfo={terminalInfo}
+        sshPassword={sshPassword}
+        onSshPasswordChange={setSshPassword}
+        onConnectTerminal={connectTerminal}
+        onOpenTerminal={openTerminal}
+        onRefitTerminal={refitTerminal}
+        snippets={sshSnippetLibrary}
+        snippetLabel={snippetLabel}
+        snippetCommand={snippetCommand}
+        onSnippetLabelChange={setSnippetLabel}
+        onSnippetCommandChange={setSnippetCommand}
+        onSendSnippet={sendSnippetToTerminal}
+        onAddSnippet={addCustomSnippet}
+        onRemoveSnippet={removeCustomSnippet}
+        shadowSession={shadowSession ? sessionsView.find((s) => s.id === shadowSession.id) || shadowSession : null}
+        shadowStatus={shadowStatus}
+        shadowTermRef={shadowTermRef}
+        onObserve={openShadow}
+        onCloseShadow={closeShadow}
+        onOpenVnc={openLiveSession}
+        onTerminate={onTerminate}
+        onOpenAudit={(sessionId) => {
+          navigate('/journal');
+          openAudit(sessionId);
+        }}
+        onOpenRecordings={(sessionId) => {
+          navigate('/preuves');
+          openRecordings(sessionId);
+        }}
+        onNewSession={() => navigate('/carte')}
+      />
     );
   }
+
   return (
     <>
       {renderLicenseBanner()}
-      {renderMain()}
+      <AppShell
+        route={route}
+        version={versionText(t, bastionVersion)}
+        onNavigate={navigate}
+        visibleTabs={visibleShellTabs}
+        counts={{
+          sessions: activeSessions.length,
+          demandes: canManagePlatform
+            ? accessRequests.filter((item) => item.status === 'pending').length
+            : 0
+        }}
+        user={auth.user}
+        roleName={roleName}
+        sessions={sessionsView}
+        onOpenSession={(session) => {
+          navigate('/sessions');
+          if (String(session.protocol || '').toLowerCase() === 'ssh') openTerminal(session);
+        }}
+        onTerminateSession={onTerminate}
+        darkMode={darkMode}
+        onToggleDarkMode={toggleDarkMode}
+        onOpenAccount={() => navigate('/compte')}
+        onLogout={onLogout}
+      >
+        <div className="ef-legacy">
+          {renderGlobalAlerts()}
+          {shellBody}
+        </div>
+      </AppShell>
+      {renderSessionOverlays()}
       {renderLicenseUpsell()}
       {renderBootstrapOverlay()}
     </>

@@ -119,6 +119,12 @@ inline const std::vector<IssuerKey> &issuer_keys() {
        "MCowBQYDK2VwAyEAoLH5IsOTcuSGCfLzyM5EyZnMtVTh7_9x1UeDaAsdVjE",
        "MIIHsjALBglghkgBZQMEAxIDggehAApd4s7yCgTVGqCqsOZldivoVOVxjb_JgizwlkzdZUAyPEDzo_2gNhs67didjI4XbNUHinsUB0gBzoBEJmPNyEWc31j33gntv0GL0N5aYtuSYQR1E5lZzDjaVNU-Ee2CD3q7qYA5EN6JzlKg6w317MMzyXO2cooWBLZrONqpgy9VUdSEgAQfQxAxN4geL2OlHD4xiZPk1zStXk1YMr-eryloJhVS5XVNGo6fu2udpTezPQCfqeCVIdeUwaKE0sPujQi0z4f2OOMfPc3JYYF8m1Q-tLDIfVTtxRdZ6-yfueGWJWs5ofPUB7dwLmNVEMVV1180HsTeABCFLpEfB80D0RCeF0Ya9xlRNbNLs8i07miBVC9lgdReOL7ruwZ68f5nG_8prm0vSd7bVk9kGVEDYElImgCe64nBksfezLMYyGTU0L_FJMqZ0uyHeF0a0YNotCrYvKvXkvbUUe8ksrurbaiZSE11GTcsOd1cj2pIxdWvWVd0HL3c4q7dGtSOXZ2ub01q1zziaTZfE3r4WAJcodtP0VccEjG6ON7EWuR-v_qtXTPmpPWHHOjx1S102CKsAzjHM1KUfQ0uwFfwPlL6rJxEpK0CJ332tpM9XFcoF8y9Mu6Ct7QVFmocDfSn-uBpWgHH6ddONDkVCBmCPual1pOOdYkuEMwuX0f6-pFZBZFKhQ_bvInEZNI17aBJkcKF6yozxN_NMLsXwCb_iTY_jVX70ayfLyn-1m2rVTmTXPAbP1z3BDKockPO5Ndfaqg85sa7DzuldNdXP-cr5UBpZE8GcMn93u3sEHzi7vv_a1ADnU-4KDnfjP4N6hUEsDuiHyu4Cf8sg49NkyQc8wETp2PewgO_g4UpGhqFD0fuQi97qRU-HdaecId_jQHbtLUOJPnpu9X1CBIEt6DPjurJVjAYKGS1r83oNDon4aNNZqBblLiFoh34-YCtFt3H8eFTk45t1tNXd9bZAFNqcRBpMAH70ay9cUESLr5Pq0gam2K9fUfQs4-QkCkuW85oFl6oeEqy3N_Jln2XCJa7-oF0Bgh44j_sDaFEkrXWGdnHoyQMEuepqJJnmO8yll8QlJG6f01ExxDYUpLtGDHCgXd9OBuQh_FWVmaHbVDAAtwDk3Ih6fRa0oKsjvjmMx5dN08ZQHr0FSRxVdtRPiHbQRunhmjWX8n71PI33dW-Esj2UsclI4-oBTee5aDEDrAAtbgAHd0eOjLkKJC2XjIFszIinLh-a9_MDI6a6wRZwnQebnhWBCMyBFnImVWF2ZRdYR1L0fQsiCHZpg0Dtfgaw28VLE7ztbj3B527ztViq01QjcVHqosMxV97eRtuNExWLBJqo6dlM-I7xn_yasJGyGjlvQo7o6a6y3u0O6_qbFqEC4ALf-aN0BWIYb7yeOIOfPWDiiJqO2q_PVK1c52gzSZwg3ezrXpaBANzcYFs5mmu8WXdcObms5gMl1409Eo3SGTIzGs0q_09QDXLoY4BeMHzayPVmgBqlKxBi8YZWmtJss9K2Nv9thkYT55ia0kTV-laaH9cW4TK1K3Hp9i-IRsYspNTQ9Cvf7Og5i0Mf3Nv5rO6sLQcmK5nyjvpnHwPgWNUYZ1pgRdt-dAV5LxZv48gUlHOosXtWKe5PwyOQTcnxtqaWAJEImLOLgnsTdoVRkEKcn_Pi8MavWRnm4rZfC8TP4Xypm4aGG1iDRYcLZUYgMYLG_W2Vc1FLtPb9PWlgoBCUs9rop2dhaKVne9yjYB8cARXP-7hA636tOW9ZG8ricpPoceXCwGSJjNLM1sOGkNvABA3ZSPLc6gMjUqdHpKW-R0UDXstqGsKHR5qSPx6tZiRvRZd_Wf4lpAH2nUyjh7o9BuWrzzZ5vY9Tx_3WHVSFknqgtRguIZ4hdz9EV9xiqYRYcFgwp5-pNCTSS9luFgRFwZNEFXMWXnt-LgumIlaDRgdP2x6X9I99dsNeN59mRZB105KzjC2xXSCzn3opt1vhmSGDgMD-VBATCEuWL0aowDncl51rFuzoVrdA1phJcXeUVooOOprCJrDlk46DqOIWj-brIdBRaIvHCLMETwKJJDpFj1pK-dsL6roFhk9IRutNd14u63kkocafrgvLlMChXBzqRo66FTPvDOY8umEt-l1Ozwii5h7Vr2YmmqirvgtM66PA8nljWBBh3IPPy6NHAY7P0P_gPlBVJJ5P8YTi0VkbbqjiWkIF2t291Kei_CWIkxzR4Ej9GGLDwqCtJfjm7nHo50KSPVmmkunWoJxcdXJFSb8Ey6aT-FG-UGHXUr38AtYWRTWd97j4W2J43cRBOUp9sPkGqPjcKy4G2K0Gb88aWYJq0u7Rv0lxihbdF7QYfIdy_irYCIKkpatSpCevi1PMFEszFkWxTVLnMvllVScmiqSY-oofaNyzGoLxVSgVYG59qkZ12Kg6NMW_whYw2gWvJE_94N8l9i16irLc9znQcL4YbZ_JiKLShZtL_qxvnzY--LEWsbcZ3zvYcl6skM-Qe7YqQoVIwYXoVHFnYG6eAwgAAbawSvyDYbwvGcr5pmNL-eaQPP4mMY0A-tNiJBzDzE-_YenYEGFBednVWzo64DintabnFp2MBs0bIEg"},
 #endif
+#ifdef ENDORIUMFORT_LICENSE_LOCAL_KID
+      // Machine-local test issuer: the public keys come from the build
+      // (-DENDORIUMFORT_LICENSE_LOCAL_*), the private keys stay on that machine.
+      {ENDORIUMFORT_LICENSE_LOCAL_KID, ENDORIUMFORT_LICENSE_LOCAL_ED25519,
+       ENDORIUMFORT_LICENSE_LOCAL_MLDSA},
+#endif
   };
   return keys;
 }
@@ -177,6 +183,8 @@ inline const std::vector<FeatureEntitlement> &feature_catalog() {
       {"vault.dynamic", "enterprise", nullptr, GateLayer::PerRoute},
       {"itdr", "enterprise", nullptr, GateLayer::PerRoute},
       {"k8s", "pro", nullptr, GateLayer::PerRoute},
+      // Appearance: custom tab title / favicon and login page background.
+      {"branding", "pro", nullptr, GateLayer::PerRoute},
       // RBI itself is core/free; recording its graphical stream is Enterprise.
       {"rbi.recording", "enterprise", nullptr, GateLayer::PerRoute},
       // RBI file transfer / clipboard is a core capability; the DLP policy that

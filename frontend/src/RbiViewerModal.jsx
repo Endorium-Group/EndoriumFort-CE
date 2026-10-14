@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useI18n } from './i18n.jsx';
+import ViewerFrame from './ui/ViewerFrame.jsx';
 
 // Remote Browser Isolation viewer (core / CE). Streams a server-side headless
 // Chromium as JPEG frames over /api/ws/rbi and forwards mouse/keyboard back as
@@ -34,6 +35,21 @@ const CONTROL_KEYS = new Set([
   'Home', 'End', 'PageUp', 'PageDown',
   'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12',
 ]);
+
+// Server messages (rbi.cc) shown to the operator in the interface language.
+const SERVER_MESSAGES = {
+  'browser closed': 'viewer.msg.browserClosed',
+  'Server at RBI capacity, retry shortly': 'viewer.msg.capacity',
+  'Session not found': 'viewer.msg.sessionNotFound',
+  'Forbidden': 'viewer.msg.forbidden',
+  'RBI only applies to http/https resources': 'viewer.msg.httpOnly',
+  'download blocked by policy': 'viewer.msg.downloadBlocked',
+  'Upload blocked by policy': 'viewer.msg.uploadBlocked',
+  'Paste blocked by policy': 'viewer.msg.pasteBlocked',
+  'Upload exceeds size limit': 'viewer.msg.uploadTooBig',
+  'File upload requires the tiles engine': 'viewer.msg.uploadEngine',
+  'upload complete': 'viewer.msg.uploadDone'
+};
 
 export default function RbiViewerModal({ session, onClose, fullscreen = false }) {
   const { t } = useI18n();
@@ -78,13 +94,13 @@ export default function RbiViewerModal({ session, onClose, fullscreen = false })
           const msg = JSON.parse(event.data);
           if (msg.type === 'error') {
             setStatus('error');
-            setStatusMessage(msg.message || 'error');
+            setStatusMessage(SERVER_MESSAGES[msg.message] ? t(SERVER_MESSAGES[msg.message]) : msg.message || t('viewer.error'));
           } else if (msg.type === 'status') {
             if (msg.message === 'connected') {
               setStatus('connected');
               setStatusMessage('');
             } else {
-              setStatusMessage(msg.message || '');
+              setStatusMessage(SERVER_MESSAGES[msg.message] ? t(SERVER_MESSAGES[msg.message]) : msg.message || '');
             }
           }
         } catch (_) {
@@ -433,15 +449,16 @@ export default function RbiViewerModal({ session, onClose, fullscreen = false })
   };
 
   const statusLabel =
-    status === 'connected' ? t('common.connected') || 'Connected'
-    : status === 'disconnected' ? t('common.disconnected') || 'Disconnected'
-    : status === 'error' ? t('common.error') || 'Error'
-    : t('common.connecting') || 'Connecting…';
+    status === 'connected' ? t('viewer.connected')
+    : status === 'disconnected' ? t('viewer.disconnected')
+    : status === 'error' ? t('viewer.error')
+    : t('viewer.connecting');
+  const tone = status === 'connected' ? 'ok' : status === 'error' ? 'error' : status === 'connecting' ? 'busy' : 'idle';
 
   const surface = (
     <div
       ref={shellRef}
-      className="vnc-canvas-shell rbi-canvas-shell"
+      className="ef-viewer__surface"
       tabIndex={-1}
       onMouseMove={onMouseMove}
       onMouseDown={onMouseDown}
@@ -450,9 +467,7 @@ export default function RbiViewerModal({ session, onClose, fullscreen = false })
       onContextMenu={onContextMenu}
       onDragOver={onDragOver}
       onDrop={onDrop}
-      style={fullscreen
-        ? { outline: 'none', width: '100%', height: '100%', flex: 1, position: 'relative' }
-        : { outline: 'none', position: 'relative' }}
+      style={fullscreen ? { position: 'relative', width: '100%', height: '100%', flex: 1 } : undefined}
     >
       <canvas
         ref={canvasRef}
@@ -497,15 +512,9 @@ export default function RbiViewerModal({ session, onClose, fullscreen = false })
         onCancel={onFileInputCancel}
       />
       {transfer && (
-        <div style={{
-          position: 'fixed', bottom: '16px', left: '50%', transform: 'translateX(-50%)',
-          background: 'rgba(20,22,28,0.92)', color: '#fff', padding: '8px 14px',
-          borderRadius: '8px', fontFamily: 'system-ui, sans-serif', fontSize: '13px',
-          pointerEvents: 'none', zIndex: 10, maxWidth: '80vw', whiteSpace: 'nowrap',
-          overflow: 'hidden', textOverflow: 'ellipsis',
-        }}>
-          {transfer.dir === 'up' ? '↑' : '↓'} {transfer.name}
-          {typeof transfer.pct === 'number' ? ` — ${transfer.pct}%` : '…'}
+        <div className="ef-viewer__toast" role="status">
+          {transfer.dir === 'up' ? t('viewer.uploading', { name: transfer.name }) : t('viewer.downloading', { name: transfer.name })}
+          {typeof transfer.pct === 'number' ? ` · ${transfer.pct} %` : '…'}
         </div>
       )}
     </>
@@ -537,30 +546,16 @@ export default function RbiViewerModal({ session, onClose, fullscreen = false })
   }
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content vnc-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="vnc-modal-header">
-          <div>
-            <h3>Navigateur isolé (RBI)</h3>
-            <p className="muted">
-              {session?.protocol}://{session?.target}:{session?.port} — session #{session?.id}
-            </p>
-          </div>
-          <div className="vnc-header-actions">
-            <span className={`pill ${status === 'connected' ? 'ok' : status === 'connecting' ? 'loading' : 'offline'}`}>
-              {statusLabel}
-            </span>
-            <button type="button" className="ghost" onClick={onClose}>
-              {t('common.close') || 'Close'}
-            </button>
-          </div>
-        </div>
-
-        {statusMessage ? <p className="muted vnc-status-message">{statusMessage}</p> : null}
-
-        {surface}
-        {transferUi}
-      </div>
-    </div>
+    <ViewerFrame
+      kicker={t('viewer.rbiKicker', { id: session?.id })}
+      title={session?.resourceName || session?.target || t('viewer.rbiTitle')}
+      subtitle={<span className="ef-mono">{session?.protocol}://{session?.target}{session?.port ? `:${session.port}` : ''}</span>}
+      status={{ tone, label: statusLabel }}
+      message={statusMessage}
+      onClose={onClose}
+    >
+      {surface}
+      {transferUi}
+    </ViewerFrame>
   );
 }

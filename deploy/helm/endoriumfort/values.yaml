@@ -9,6 +9,39 @@
 # feature (active/active), which is out of scope for this chart.
 replicaCount: 1
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Rollout strategy.
+#
+# DO NOT set this to RollingUpdate with the default SQLite storage.
+#
+# The backend keeps its working state in memory (users, resources, sessions,
+# tunnel credentials) and persists it to single-writer SQLite databases on the
+# `data` volume. Two pods running at once gives you two divergent states both
+# writing the same files, and it breaks the tamper-evident audit hash chain,
+# which is strictly sequential. Expect data loss, not just a blip.
+#
+# There is a second, independent blocker: persistence.*.accessMode is
+# ReadWriteOnce, so the volume attaches to one node at a time. With
+# `maxUnavailable: 0` a new pod scheduled onto a different node gets stuck in
+# Multi-Attach error, and because the old pod may not be removed, the upgrade
+# deadlocks until you intervene.
+#
+# Recreate therefore trades a short, bounded gap for correctness. The probes
+# below are tuned to make that gap as small as possible. Zero-downtime upgrades
+# need an external shared database and active/active clustering first.
+updateStrategy:
+  type: Recreate
+  # Only once state no longer lives in a single-writer SQLite file on a RWO
+  # volume (external DB + ReadWriteMany or no shared volume):
+  # type: RollingUpdate
+  # rollingUpdate:
+  #   maxUnavailable: 0
+  #   maxSurge: 1
+
+# Keep the Recreate gap short: the old pod is given this long to exit before
+# being killed, and the new one cannot start until it is gone.
+terminationGracePeriodSeconds: 15
+
 image:
   # Freemium image on GHCR: premium is compiled in but license-gated (runs as the
   # free tier without a license). Apply an offline license (secrets.license or the
@@ -76,7 +109,8 @@ traefik:
 persistence:
   data:
     enabled: true
-    # DBs (endoriumfort.db, sessions.db), audit log, uploaded license.
+    # SQLite store (endoriumfort.db) when database.type=sqlite, uploaded license,
+    # session recordings metadata. Still required with PostgreSQL.
     size: 2Gi
     accessMode: ReadWriteOnce
     storageClass: ""
@@ -88,17 +122,13 @@ persistence:
     storageClass: ""
     existingClaim: ""
 
-# The image bundles the CEF ("tiles") Remote Browser Isolation engine (a headless
-# Chromium), which needs well over 1Gi when an RBI session is open. Each concurrent
-# RBI session launches its own browser, so raise the limit (and ENDORIUMFORT_RBI_MAX_SESSIONS)
-# further if you expect several at once.
 resources:
   limits:
-    cpu: "2"
-    memory: 2Gi
+    cpu: "1"
+    memory: 1Gi
   requests:
     cpu: 250m
-    memory: 512Mi
+    memory: 256Mi
 
 # Application configuration (mapped to ENDORIUMFORT_* / ACME_* env vars).
 config:
@@ -121,13 +151,80 @@ config:
     enabled: false
     domain: ""
     email: ""
+  # Audit-event export to a SIEM or log platform (Enterprise licence required).
+  # See docs/siem-logging.md for the field model and the VictoriaLogs recipes.
+  # Credentials go through `secrets` below, never here.
+  siem:
+    # Stamped on every event as `host`; defaults to the pod hostname, which is
+    # not stable across restarts — set it to the bastion's name.
+    hostname: ""
+    # Periodic "I am still shipping" event, so a SOC can alert on silence.
+    # 0 disables it.
+    heartbeatSeconds: 300
+    # Events dropped (oldest first) once the in-memory queue is full.
+    queueLimit: 0        # 0 = keep the server default (20000)
+    retryAttempts: 0     # 0 = keep the server default (4)
+    syslog:
+      enabled: false
+      host: ""           # e.g. victorialogs.monitoring.svc.cluster.local
+      port: 514
+      protocol: udp      # udp | tcp | tls  (prefer tcp/tls for a SOC)
+      format: rfc5424    # rfc5424 | rfc3164
+      # "cee" wraps the JSON in an @cee: cookie, which VictoriaLogs and rsyslog
+      # expand back into real log fields.
+      message: cee
+      framing: octet     # TCP/TLS framing: octet (RFC 6587) | lf
+      facility: 13       # RFC 5424 "log audit"
+      appName: ""        # defaults to "endoriumfort"
+      tlsVerify: true
+      caFile: ""         # path in the pod, e.g. a mounted CA bundle
+      serverName: ""     # expected certificate name / SNI, if not `host`
+    webhook:
+      enabled: false
+      # Full URL, query string included. For VictoriaLogs:
+      #   http://victorialogs:9428/insert/jsonline?_time_field=_time&_msg_field=_msg&_stream_fields=host,event_category
+      url: ""
+      # One request per batch, one JSON object per line. Required for
+      # /insert/jsonline to be efficient; a plain webhook usually wants one
+      # object per request, so this stays off by default.
+      ndjson: false
+    splunk:
+      enabled: false
+      url: ""            # e.g. https://splunk:8088/services/collector
+      index: ""
 
 # Secret values. Provide inline (rendered into a Secret) or reference an existing
 # Secret with the same keys. Leave blank to omit.
+# ─────────────────────────────────────────────────────────────────────────────
+# Storage engine.
+#
+#   sqlite      (default) embedded file on the `data` PVC. Single node, no
+#               server to run. This is what `updateStrategy: Recreate` above
+#               exists for.
+#   postgresql  external server. Required before several app pods can share one
+#               database; see "Upgrades and downtime" in the chart README for
+#               what else zero-downtime still needs.
+#
+# The DSN carries a password, so it is delivered through the Secret rather than
+# a plain env var. The `data` PVC stays in use either way for the audit log and
+# an uploaded license file.
+#
+# This chart deliberately does NOT bundle a PostgreSQL server: run one with a
+# dedicated chart or operator, or use a managed instance, and point `dsn` at it.
+database:
+  type: sqlite
+  postgresql:
+    # e.g. postgresql://endoriumfort:PASSWORD@pg-host:5432/endoriumfort?sslmode=require
+    dsn: ""
+    # Or keep the DSN in a Secret you manage yourself.
+    existingSecret: ""
+    existingSecretKey: ENDORIUMFORT_DB_DSN
+
 secrets:
   # Reuse an existing Secret instead of rendering one from the values below.
   # Keys read: ENDORIUMFORT_VAULT_KEY, ENDORIUMFORT_LICENSE,
-  #            ENDORIUMFORT_RELAY_ENROLL_SECRET, ENDORIUMFORT_CLUSTER_SHARED_SECRET
+  #            ENDORIUMFORT_RELAY_ENROLL_SECRET, ENDORIUMFORT_CLUSTER_SHARED_SECRET,
+  #            ENDORIUMFORT_SIEM_WEBHOOK_TOKEN, ENDORIUMFORT_SIEM_SPLUNK_TOKEN
   existingSecret: ""
   # 64 hex chars (32 bytes) — enables AES-256-GCM vault encryption at rest.
   vaultKey: ""
@@ -135,27 +232,47 @@ secrets:
   license: ""
   relayEnrollSecret: ""
   clusterSharedSecret: ""
+  # Bearer token for the SIEM JSON webhook, and the Splunk HEC token.
+  siemWebhookToken: ""
+  siemSplunkToken: ""
 
 # Extra environment variables appended verbatim.
 extraEnv: []
 #  - name: ENDORIUMFORT_LOG_LEVEL
 #    value: "info"
 
+# Probes hit :443 — the port the Service actually sends user traffic to — so
+# "Ready" means nginx AND the backend are serving, not just the backend. The
+# image ships a self-signed cert; httpGet with scheme HTTPS does not verify it.
+#
+# startupProbe covers a slow boot (large DB, ACME), which lets readiness poll
+# aggressively without a cold start ever tripping liveness. Readiness flips
+# within ~2s of the app really being up instead of the previous ~10-20s, which
+# is pure downtime during a Recreate rollout.
+startupProbe:
+  httpGet:
+    path: /api/health
+    port: https
+    scheme: HTTPS
+  periodSeconds: 2
+  timeoutSeconds: 3
+  # 90 x 2s = up to 3 minutes to come up before the pod is restarted.
+  failureThreshold: 90
 livenessProbe:
   httpGet:
     path: /api/health
-    port: backend
-  initialDelaySeconds: 15
+    port: https
+    scheme: HTTPS
   periodSeconds: 30
   timeoutSeconds: 5
   failureThreshold: 3
 readinessProbe:
   httpGet:
     path: /api/health
-    port: backend
-  initialDelaySeconds: 10
-  periodSeconds: 10
-  timeoutSeconds: 5
+    port: https
+    scheme: HTTPS
+  periodSeconds: 2
+  timeoutSeconds: 3
   failureThreshold: 3
 
 nodeSelector: {}

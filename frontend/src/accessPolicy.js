@@ -24,7 +24,9 @@ const fallbackTranslate = (key, params = {}) => {
 
 export const describeResourcePolicy = (resource, translate = fallbackTranslate) => {
   const riskLevel = normalizeRiskLevel(resource?.riskLevel);
-  const items = [translate('policy.risk', { level: riskLevel })];
+  const levelKey = `map.risk.${riskLevel}`;
+  const levelLabel = translate(levelKey);
+  const items = [translate('policy.risk', { level: levelLabel && levelLabel !== levelKey ? levelLabel : riskLevel })];
   const tunnelLimit = Math.max(0, Number(resource?.tunnelTicketRateLimitMaxAttempts) || 0);
   const protocol = String(resource?.protocol || '').toLowerCase();
   if (resource?.requireAccessJustification) items.push(translate('policy.reasonRequired'));

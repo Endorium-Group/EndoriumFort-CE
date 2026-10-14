@@ -167,6 +167,7 @@ struct RbiSession {
   int session_id = 0;
   int resource_id = 0;
   int auth_user_id = 0;
+  std::string auth_user;   // who opened the websocket (not the session's target account)
   int64_t rec_handle = 0;  // premium recording handle (0 = not recording)
   bool counted = false;    // whether this session is in g_active_sessions
   std::chrono::steady_clock::time_point last_frame{};  // for the FPS cap
@@ -196,6 +197,7 @@ struct RbiSession {
 // Auth snapshot handed from onaccept to onopen via the connection userdata.
 struct RbiAccept {
   int user_id = 0;
+  std::string user;
   std::string role;
 };
 
@@ -698,13 +700,14 @@ void register_rbi_routes(CrowApp &app, AppContext &ctx) {
         if (!auth) return false;
         if (!ctx.has_permission(auth->userId, auth->role, "sessions.create"))
           return false;
-        if (userdata) *userdata = new RbiAccept{auth->userId, auth->role};
+        if (userdata) *userdata = new RbiAccept{auth->userId, auth->user, auth->role};
         return true;
       })
       .onopen([&ctx](crow::websocket::connection &conn) {
         auto s = std::make_shared<RbiSession>();
         if (auto *acc = static_cast<RbiAccept *>(conn.userdata())) {
           s->auth_user_id = acc->user_id;
+          s->auth_user = acc->user;
           s->role = acc->role;
           delete acc;
           conn.userdata(nullptr);
@@ -793,6 +796,7 @@ void register_rbi_routes(CrowApp &app, AppContext &ctx) {
           int resource_id = 0;
           std::string sess_user, host, protocol;
           int port = 0;
+          Session found;
           {
             std::lock_guard<std::mutex> lock(ctx.session_mutex);
             auto it = ctx.sessions.find(session_id);
@@ -800,6 +804,7 @@ void register_rbi_routes(CrowApp &app, AppContext &ctx) {
               conn.send_text("{\"type\":\"error\",\"message\":\"Session not found\"}");
               return;
             }
+            found = it->second;
             resource_id = it->second.resourceId;
             sess_user = it->second.user;
             host = it->second.target;
@@ -816,6 +821,12 @@ void register_rbi_routes(CrowApp &app, AppContext &ctx) {
           // sessions.create globally.
           if (!has_resource_access(ctx, s->auth_user_id, s->role, resource_id)) {
             conn.send_text("{\"type\":\"error\",\"message\":\"Forbidden\"}");
+            return;
+          }
+          // ...and the session must be this person's own (or the viewer an admin).
+          if (!ctx.may_operate_session(s->auth_user_id, s->auth_user, s->role,
+                                       ctx.session_owner(found))) {
+            conn.send_text("{\"type\":\"error\",\"message\":\"Session not found\"}");
             return;
           }
 

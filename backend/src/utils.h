@@ -403,6 +403,7 @@ inline const std::vector<std::string> &permission_catalog() {
       "vnc.connect",
       "cluster.read",
       "cluster.manage",
+      "settings.manage",
       "web.proxy.access",
       "tunnel.connect"};
   return catalog;
