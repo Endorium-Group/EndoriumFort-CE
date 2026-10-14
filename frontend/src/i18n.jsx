@@ -799,6 +799,9 @@ const translations = {
     },
     settings: {
       intro: "Values saved here are stored on the server and take effect at once. They override the matching environment variable; clear one to fall back to it.",
+      configure: "Configure",
+      close: "Close",
+      unavailable: "Integration configuration is unavailable: {reason}. It needs the settings.manage permission and a backend that serves /api/settings/integrations.",
       save: "Save",
       saveCount: "Save {count} change(s)",
       discard: "Discard",
@@ -2703,6 +2706,9 @@ const translations = {
     },
     settings: {
       intro: "Les valeurs enregistr\u00e9es ici sont stock\u00e9es sur le serveur et s\u2019appliquent imm\u00e9diatement. Elles ont la priorit\u00e9 sur la variable d\u2019environnement correspondante ; videz-en une pour y revenir.",
+      configure: "Configurer",
+      close: "Fermer",
+      unavailable: "La configuration des int\u00e9grations est indisponible : {reason}. Elle requiert la permission settings.manage et un backend qui expose /api/settings/integrations.",
       save: "Enregistrer",
       saveCount: "Enregistrer {count} modification(s)",
       discard: "Annuler",

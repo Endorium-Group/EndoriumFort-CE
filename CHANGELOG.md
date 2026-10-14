@@ -90,6 +90,15 @@ a store in front of the environment.
 - The SIEM worker now reads its origin per batch instead of once per thread, so
   `ENDORIUMFORT_SIEM_HOSTNAME` set from the UI applies live like every other
   key instead of waiting for a restart.
+- Each integration row has an explicit **Configure** action. The forms live in
+  the row's collapsible panel, whose only opener was the "send a test" button —
+  and on LDAP and SSO that button is disabled until the integration already
+  works, which is exactly when the form is needed. The configuration was
+  therefore unreachable on a fresh install.
+- When the settings catalog cannot be read (missing `settings.manage`, or a
+  backend older than the routes), the page now says so instead of silently
+  rendering no forms at all, which was the one failure an operator could not
+  diagnose.
 
 ### Fixed
 

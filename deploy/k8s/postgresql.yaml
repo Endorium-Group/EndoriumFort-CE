@@ -20,8 +20,12 @@ metadata:
     app.kubernetes.io/name: endoriumfort-postgres
     app.kubernetes.io/component: database
 spec:
-  # Headless: a single stateful pod, reached by name from the bastion.
-  clusterIP: None
+  # A normal ClusterIP, deliberately not headless. One instance needs no
+  # per-pod DNS, and a headless service hands clients the raw pod IP: that
+  # traffic carries no kube-proxy ACCEPT rule, so on a node running firewalld
+  # it is rejected and surfaces as "No route to host". The virtual IP keeps the
+  # connection on the service path, and survives the pod being rescheduled.
+  type: ClusterIP
   selector:
     app.kubernetes.io/name: endoriumfort-postgres
   ports:
@@ -84,8 +88,12 @@ spec:
             - name: data
               mountPath: /var/lib/postgresql/data
           readinessProbe:
+            # -h 127.0.0.1 probes the TCP listener, not the unix socket. During
+            # initdb the entrypoint runs a temporary server on the socket only,
+            # so a socket probe would publish the endpoint before anything can
+            # actually connect over the network.
             exec:
-              command: ["pg_isready", "-U", "endoriumfort", "-d", "endoriumfort"]
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "endoriumfort", "-d", "endoriumfort"]
             initialDelaySeconds: 5
             periodSeconds: 5
             timeoutSeconds: 5
