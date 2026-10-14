@@ -148,6 +148,32 @@ export async function configureVaultDynamic(resourceId, payload) {
   return response.json();
 }
 
+// ── SSH command guard (core: the guard has no license feature) ──
+export async function fetchSshGuardRules() {
+  const response = await fetch('/api/ssh-guard/rules', { headers: withAuthHeaders() });
+  await ensureResponseOk(response, 'Failed to fetch SSH guard rules');
+  return response.json();
+}
+
+export async function saveSshGuardRule(name, payload) {
+  const response = await fetch(`/api/ssh-guard/rules/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload)
+  });
+  await ensureResponseOk(response, 'Failed to save the SSH guard rule');
+  return response.json();
+}
+
+export async function deleteSshGuardRule(name) {
+  const response = await fetch(`/api/ssh-guard/rules/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+    headers: withAuthHeaders()
+  });
+  await ensureResponseOk(response, 'Failed to delete the SSH guard rule');
+  return response.json();
+}
+
 // ── ITDR: identity threat detection & response (premium) ──
 export async function fetchItdrRules() {
   const response = await fetch('/api/itdr/rules', { headers: withAuthHeaders() });

@@ -3,6 +3,7 @@
 #include "ssh.h"
 #include "app_context.h"
 #include "session_recording.h"
+#include "ssh_guard.h"
 #include "utils.h"
 
 #include <algorithm>
@@ -646,23 +647,6 @@ void register_ssh_routes(CrowApp &app, AppContext &ctx) {
           if (connection->command_guard_enabled) {
             static const std::regex allowed_chars(
                 R"(^[a-zA-Z0-9\s_./:\-\|&;<>='"()\[\]{}*+?,@!%#~`$\\]*$)");
-            static const std::vector<std::pair<std::string, std::regex>>
-                blocked_patterns = {
-                    {"wipe_root",
-                     std::regex(R"((^|[;&|]\s*)(sudo\s+)?rm\s+-rf\s+/($|\s))",
-                                std::regex::icase)},
-                    {"fork_bomb",
-                     std::regex(R"(:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;?\s*:)",
-                                std::regex::icase)},
-                    {"disk_format",
-                     std::regex(R"((^|[;&|]\s*)(sudo\s+)?mkfs(\.[a-z0-9]+)?\b)",
-                                std::regex::icase)},
-                    {"raw_disk_dd",
-                     std::regex(R"((^|[;&|]\s*)(sudo\s+)?dd\s+if=.*\s+of=/dev/)",
-                                std::regex::icase)},
-                    {"power_command",
-                     std::regex(R"((^|[;&|]\s*)(sudo\s+)?(shutdown|poweroff|reboot)\b)",
-                                std::regex::icase)}};
 
             const bool has_control_sequence =
                 input.find('\x1b') != std::string::npos ||
@@ -696,11 +680,11 @@ void register_ssh_routes(CrowApp &app, AppContext &ctx) {
               return;
             }
 
-            for (const auto &pattern : blocked_patterns) {
-              if (std::regex_search(input, pattern.second)) {
-                emit_guard_block(pattern.first);
-                return;
-              }
+            // The blocklist is administrator-configurable; see ssh_guard.h.
+            const std::string matched = ssh_guard::first_match(input);
+            if (!matched.empty()) {
+              emit_guard_block(matched);
+              return;
             }
           }
 

@@ -694,6 +694,31 @@ const translations = {
       openLicense: "Open License",
       howComputed: "Checks are computed in your browser from the accounts, resources, sessions and settings visible to you."
     },
+    sshGuard: {
+      title: 'SSH command guard',
+      intro: 'Commands blocked before they reach the remote shell, on resources with the SSH guard enabled. Built-in rules can be switched off but not removed.',
+      rule: 'Rule',
+      command: 'Command',
+      actions: 'Actions',
+      add: 'Add',
+      remove: 'Remove',
+      builtinTag: 'Built in',
+      builtinPattern: 'built-in pattern',
+      namePlaceholder: 'rule name',
+      commandPlaceholder: 'e.g. curl, rm -rf /, systemctl stop',
+      hint: 'A command matches at the start of the input or just after ;, & or |, with or without sudo, ignoring case. It will not fire on a longer word: "shutdown" does not match "shutdownctl".',
+      badName: 'The name may only contain letters, digits, hyphens and underscores (1 to 48 characters).',
+      badCommand: 'Enter the command to block.',
+      loadError: 'Could not load the SSH guard rules.',
+      saveError: 'Could not save the rule.',
+      builtin: {
+        wipe_root: 'Wipe the root filesystem',
+        fork_bomb: 'Fork bomb',
+        disk_format: 'Format a filesystem',
+        raw_disk_dd: 'Raw write to a block device',
+        power_command: 'Shut down or reboot the host'
+      }
+    },
     threats: {
       title: "Threat detection",
       subtitle: "The bastion watches sign-ins and sessions for suspicious behaviour and can respond on its own.",
@@ -2600,6 +2625,31 @@ const translations = {
       openRelays: "Ouvrir Relais",
       openLicense: "Ouvrir Licence",
       howComputed: "Les vérifications sont calculées dans votre navigateur à partir des comptes, ressources, sessions et réglages visibles."
+    },
+    sshGuard: {
+      title: 'Garde-fou SSH',
+      intro: "Commandes bloquées avant d'atteindre le shell distant, sur les ressources dont le garde-fou SSH est activé. Les règles intégrées se désactivent mais ne se suppriment pas.",
+      rule: 'Règle',
+      command: 'Commande',
+      actions: 'Actions',
+      add: 'Ajouter',
+      remove: 'Supprimer',
+      builtinTag: 'Intégrée',
+      builtinPattern: 'motif intégré',
+      namePlaceholder: 'nom de la règle',
+      commandPlaceholder: 'ex. curl, rm -rf /, systemctl stop',
+      hint: "Une commande correspond en début de saisie ou juste après ;, & ou |, avec ou sans sudo, sans tenir compte de la casse. Elle ne se déclenche pas sur un mot plus long : « shutdown » ne vise pas « shutdownctl ».",
+      badCommand: 'Saisissez la commande à bloquer.',
+      badName: 'Le nom ne peut contenir que lettres, chiffres, tirets et tirets bas (1 à 48 caractères).',
+      loadError: 'Impossible de charger les règles du garde-fou SSH.',
+      saveError: "Impossible d'enregistrer la règle.",
+      builtin: {
+        wipe_root: 'Effacement de la racine',
+        fork_bomb: 'Bombe à fork',
+        disk_format: "Formatage d'un système de fichiers",
+        raw_disk_dd: 'Écriture brute sur un périphérique bloc',
+        power_command: "Arrêt ou redémarrage de l'hôte"
+      }
     },
     threats: {
       title: "Détection des menaces",

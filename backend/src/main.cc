@@ -7,6 +7,7 @@
 #include "runtime_config.h"
 #include "settings.h"
 #include "routes.h"
+#include "ssh_guard.h"
 #include "security_middleware.h"
 #include "ssh.h"
 
@@ -43,6 +44,7 @@ int main() {
   // Integration configuration set from the admin console, loaded before any
   // route group reads its settings.
   settings::init(ctx);
+  ssh_guard::init(ctx);
   log_runtime_config(runtime_config);
 
   // ── License (freemium open-core): load + verify offline, then expose to gate ──
@@ -69,6 +71,7 @@ int main() {
   register_stats_routes(app, ctx);
   register_license_routes(app, ctx);
   register_settings_routes(app, ctx);
+  register_ssh_guard_routes(app, ctx);
   register_proxy_routes(app, ctx);
   register_web_resource_routes(app, ctx);
   register_ssh_routes(app, ctx);

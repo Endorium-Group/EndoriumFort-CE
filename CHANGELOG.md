@@ -102,6 +102,19 @@ a store in front of the environment.
 
 ### Fixed
 
+- **A released interface could stay invisible to returning browsers.** nginx
+  served `/assets/` as `immutable` for 30 days but sent no `Cache-Control` at
+  all for `index.html` — the one file whose name does not change between builds.
+  Browsers then cached it heuristically and kept requesting the previous build's
+  hashed bundle, so a user who had opened the console before a release stayed on
+  the old interface until a hard refresh. `index.html` is now `no-cache` in both
+  the image and the .deb nginx config.
+- **Static assets lost every security header.** nginx replaces inherited
+  `add_header` directives as soon as a location declares one of its own, so the
+  `Cache-Control` line in `location /assets/` silently dropped
+  `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` and HSTS from
+  every script and stylesheet response. They are repeated in the locations that
+  set their own headers.
 - **A TLS peer closing a connection could kill the bastion.** `SSL_write` cannot
   pass `MSG_NOSIGNAL`, so SIGPIPE reached a process with no handler and its
   default action terminated it — reachable through the HTTPS proxy, the OIDC

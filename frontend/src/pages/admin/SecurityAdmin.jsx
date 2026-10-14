@@ -3,6 +3,7 @@ import { useI18n } from '../../i18n.jsx';
 import { fetchRelays, fetchVaultRotation } from '../../api.js';
 import { normalizeRiskLevel } from '../../accessPolicy.js';
 import ConfirmButton from '../../ui/ConfirmButton.jsx';
+import SshGuardRules from '../../SshGuardRules.jsx';
 import { LockIcon } from '../../ui/RelayLock.jsx';
 import { formatDuration, formatWhen, useNow } from '../../ui/sessions.js';
 
@@ -145,6 +146,7 @@ export default function SecurityAdmin({
         ))}
       </section>
       <p className="ef-hint" style={{ marginBottom: 16 }}>{t('sec.howComputed')}</p>
+      <SshGuardRules />
       {children}
     </div>
   );

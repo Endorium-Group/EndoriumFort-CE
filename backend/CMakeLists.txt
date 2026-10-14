@@ -81,6 +81,8 @@ add_executable(endoriumfort_backend
   src/route_common.cc
   src/settings.cc
   src/settings_routes.cc
+  src/ssh_guard.cc
+  src/ssh_guard_routes.cc
   src/iam_common.cc
   src/license.cc
   src/ssh.cc
@@ -234,6 +236,19 @@ if (BUILD_TESTING)
     src/license.cc
   )
 
+  add_executable(endoriumfort_backend_ssh_guard_tests
+    tests/ssh_guard_test.cc
+    src/ssh_guard.cc
+    src/app_context.cc
+    src/http_proxy.cc
+    src/scim_query.cc
+    src/audit_query.cc
+    src/route_common.cc
+    src/iam_common.cc
+    src/settings.cc
+    src/license.cc
+  )
+
   add_executable(endoriumfort_backend_device_tests
     tests/device_test.cc
     src/app_context.cc
@@ -338,6 +353,13 @@ if (BUILD_TESTING)
       ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
 
+  target_include_directories(endoriumfort_backend_ssh_guard_tests
+    PRIVATE
+      ${crow_SOURCE_DIR}/include
+      ${asio_SOURCE_DIR}/asio/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
   target_include_directories(endoriumfort_backend_device_tests
     PRIVATE
       ${crow_SOURCE_DIR}/include
@@ -420,6 +442,10 @@ if (BUILD_TESTING)
     PRIVATE ASIO_STANDALONE
   )
 
+  target_compile_definitions(endoriumfort_backend_ssh_guard_tests
+    PRIVATE ASIO_STANDALONE
+  )
+
   if (ENDORIUMFORT_PRO)  # pro test defs
   target_compile_definitions(endoriumfort_backend_scim_routes_tests
     PRIVATE ASIO_STANDALONE
@@ -445,6 +471,7 @@ if (BUILD_TESTING)
   target_link_libraries(endoriumfort_backend_audit_query_tests PRIVATE OpenSSL::Crypto Threads::Threads)
   target_link_libraries(endoriumfort_backend_device_tests PRIVATE endoriumfort_db OpenSSL::SSL OpenSSL::Crypto)
   target_link_libraries(endoriumfort_backend_settings_tests PRIVATE endoriumfort_db OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
+  target_link_libraries(endoriumfort_backend_ssh_guard_tests PRIVATE endoriumfort_db OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
   if (ENDORIUMFORT_PRO)  # pro test libs
   target_link_libraries(endoriumfort_backend_scim_routes_tests PRIVATE endoriumfort_db OpenSSL::SSL OpenSSL::Crypto)
   target_link_libraries(endoriumfort_backend_security_alerts_tests PRIVATE endoriumfort_db OpenSSL::SSL OpenSSL::Crypto)
@@ -476,6 +503,7 @@ if (BUILD_TESTING)
   add_test(NAME backend_audit_query_test COMMAND endoriumfort_backend_audit_query_tests)
   add_test(NAME backend_device_test COMMAND endoriumfort_backend_device_tests)
   add_test(NAME backend_settings_test COMMAND endoriumfort_backend_settings_tests)
+  add_test(NAME backend_ssh_guard_test COMMAND endoriumfort_backend_ssh_guard_tests)
   if (ENDORIUMFORT_PRO)  # pro tests
   add_test(NAME backend_scim_routes_test COMMAND endoriumfort_backend_scim_routes_tests)
   add_test(NAME backend_security_alerts_test COMMAND endoriumfort_backend_security_alerts_tests)
