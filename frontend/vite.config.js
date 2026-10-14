@@ -12,9 +12,15 @@ const proReal = fileURLToPath(new URL('./src/pro/index.jsx', import.meta.url));
 const proStub = fileURLToPath(new URL('./src/pro-stub/index.jsx', import.meta.url));
 const forceStub = process.env.EF_EDITION === 'community';
 const proEntry = !forceStub && existsSync(proReal) ? proReal : proStub;
+// Build-time edition flag for core UI that must not offer Enterprise-only
+// flows in the Community build (e.g. the SSO login button).
+const edition = proEntry === proStub ? 'community' : 'enterprise';
 
 export default defineConfig({
   plugins: [react()],
+  define: {
+    __EF_EDITION__: JSON.stringify(edition)
+  },
   resolve: {
     alias: {
       '@pro': proEntry

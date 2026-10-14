@@ -77,6 +77,10 @@ import { RecordingsPanel, VncViewerModal, EnterpriseIamPanel, RelayControlPanel,
 // Remote Browser Isolation viewer — core feature (present in CE too).
 import RbiViewerModal from './RbiViewerModal.jsx';
 
+// SSO (OIDC) login is Enterprise-only: its routes are absent from the Community
+// backend, so the CE build must not offer the button. Set by vite.config.js.
+const SSO_LOGIN_AVAILABLE = __EF_EDITION__ !== 'community';
+
 const normalizeRole = (role) => {
   const value = String(role || '').toLowerCase();
   if (value === 'platform_admin' || value === 'access_admin') return 'admin';
@@ -4122,7 +4126,7 @@ export default function App() {
           <button type="submit">
             {twoFARequired ? t('auth.verifyAndSignIn') : t('auth.signIn')}
           </button>
-          {!twoFARequired && (
+          {!twoFARequired && SSO_LOGIN_AVAILABLE && (
             <button type="button" className="ghost" onClick={onStartSsoLogin}>
               {locale === 'fr' ? 'Se connecter via SSO (OIDC)' : 'Sign in with SSO (OIDC)'}
             </button>
