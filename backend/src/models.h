@@ -267,6 +267,10 @@ struct SshConnection {
   std::string auth_user;
   std::string auth_role;
   bool command_guard_enabled = false;
+  // Mirror of the line the remote's editor is holding. Typed input arrives one
+  // keystroke per websocket event, so the guard has to reassemble the command
+  // before it can judge it. Only tracked while the guard is on.
+  std::string pending_command;
   // Session recording
   std::shared_ptr<SessionRecorder> recorder;
 };

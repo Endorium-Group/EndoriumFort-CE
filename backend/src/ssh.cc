@@ -106,7 +106,13 @@ bool ssh_connect(SshConnection &connection, const Session &session,
     return false;
   }
 
-  if (libssh2_channel_request_pty_ex(connection.channel, "xterm-256color", 13,
+  // The length must match the string exactly. It was one byte short, so the
+  // remote received "xterm-256colo", which has no terminfo entry: every
+  // ncurses program (nano, vi, top, less) refused to start with "Error
+  // opening terminal". sizeof keeps the two from drifting apart again.
+  static constexpr char kTermType[] = "xterm-256color";
+  if (libssh2_channel_request_pty_ex(connection.channel, kTermType,
+                                     sizeof(kTermType) - 1,
                                      nullptr, 0, cols, rows, 0, 0) != 0) {
     error = "SSH pty request failed";
     ssh_disconnect(connection);
@@ -650,13 +656,15 @@ void register_ssh_routes(CrowApp &app, AppContext &ctx) {
             static const std::regex allowed_chars(
                 R"(^[a-zA-Z0-9\s_./:\-\|&;<>='"()\[\]{}*+?,@!%#~`$\\]*$)");
 
+            // Any C0 control character is the line editor at work — Enter,
+            // backspace, Ctrl-C, Ctrl-U, Ctrl-W, an arrow key — not a command.
+            // Listing only a few of them meant Ctrl-C and Ctrl-U were reported
+            // as hostile input and swallowed, so a guarded session could not
+            // even abandon a line.
             const bool has_control_sequence =
-                input.find('\x1b') != std::string::npos ||
-                input.find('\r') != std::string::npos ||
-                input.find('\n') != std::string::npos ||
-                input.find('\t') != std::string::npos ||
-              input.find('\b') != std::string::npos ||
-              input.find('\x7f') != std::string::npos;
+                std::any_of(input.begin(), input.end(), [](unsigned char c) {
+                  return c < 0x20 || c == 0x7f;
+                });
             const bool safe_chars =
                 std::regex_match(input, allowed_chars) || has_control_sequence;
 
@@ -683,10 +691,37 @@ void register_ssh_routes(CrowApp &app, AppContext &ctx) {
             }
 
             // The blocklist is administrator-configurable; see ssh_guard.h.
+            // A paste or a snippet arrives whole, so check it as it stands:
+            // it must not reach the remote at all.
             const std::string matched = ssh_guard::first_match(input);
             if (!matched.empty()) {
+              connection->pending_command.clear();
               emit_guard_block(matched);
               return;
+            }
+
+            // Typed input is a different shape: xterm sends one event per
+            // keystroke, so the patterns above never see more than a single
+            // character. Mirror what the remote's line editor is holding and
+            // judge the command when it is submitted. The mirror is
+            // best-effort — anything that moves the cursor, recalls history or
+            // enters a full-screen program resets it rather than guessing.
+            std::string &line = connection->pending_command;
+            const bool submitted = ssh_guard::track_line(input, line);
+            if (submitted) {
+              const std::string hit = ssh_guard::first_match(line);
+              line.clear();
+              if (!hit.empty()) {
+                emit_guard_block(hit);
+                // The keystrokes already reached the remote as they were
+                // typed, so withholding the newline is not enough: clear the
+                // remote's line too, or the blocked command sits there waiting
+                // for another Enter.
+                std::lock_guard<std::mutex> wlock(connection->write_mutex);
+                if (connection->channel)
+                  libssh2_channel_write(connection->channel, "\x15", 1);
+                return;
+              }
             }
           }
 

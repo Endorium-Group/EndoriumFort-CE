@@ -81,6 +81,15 @@ int main() {
   expect(ssh_guard::command_to_pattern("").empty(), "empty command");
   expect(ssh_guard::command_to_pattern("   ").empty(), "whitespace-only command");
 
+  // ── Evasion: quoting and paths must not walk past a rule ──
+  expect(ssh_guard::unquote("r''m -rf /") == "rm -rf /", "empty quotes removed");
+  expect(ssh_guard::unquote("\"rm\" -rf /") == "rm -rf /", "double quotes removed");
+  expect(ssh_guard::unquote("r\\m -rf /") == "rm -rf /", "backslash escape removed");
+  expect(ssh_guard::unquote("echo 'it\\'s'") == "echo it\\'s" ||
+             !ssh_guard::unquote("echo 'it'").empty(),
+         "quoting inside quoting does not crash");
+  expect(ssh_guard::unquote("rm -rf /") == "rm -rf /", "a plain line is unchanged");
+
   // ── The live blocklist: does editing a rule change what gets blocked? ──
   AppContext ctx;
   std::string err;
@@ -96,6 +105,24 @@ int main() {
   expect(ssh_guard::first_match("reboot") == "power_command",
          "power_command blocks out of the box");
   expect(ssh_guard::first_match("ls -la").empty(), "an ordinary command passes");
+
+  // Quoting and path tricks, the point of this exercise.
+  expect(ssh_guard::first_match("r''m -rf /") == "wipe_root", "r''m is still rm");
+  expect(ssh_guard::first_match("\"rm\" -rf /") == "wipe_root", "\"rm\" is still rm");
+  expect(ssh_guard::first_match("r\\m -rf /") == "wipe_root", "r\\m is still rm");
+  expect(ssh_guard::first_match("/bin/rm -rf /") == "wipe_root", "/bin/rm is still rm");
+  expect(ssh_guard::first_match("sudo /usr/sbin/reboot") == "power_command",
+         "an absolute path does not hide a built-in");
+  expect(ssh_guard::first_match("ls; r''m -rf /") == "wipe_root",
+         "quoting after a separator is caught too");
+
+  // …and the near-misses must survive the new normalisation.
+  expect(ssh_guard::first_match("echo \"rm -rf /\"").empty(),
+         "a quoted command as an argument is not a command");
+  expect(ssh_guard::first_match("grep rm -rf /etc").empty(),
+         "rm as an argument to another command passes");
+  expect(ssh_guard::first_match("./rmdir-helper").empty(),
+         "a path to an unrelated program passes");
 
   // Disabling a built-in must actually stop it blocking.
   expect(ssh_guard::save(ctx, "power_command", "", false, err),
@@ -126,6 +153,56 @@ int main() {
   expect(!ssh_guard::save(ctx, "bad name", "ls", true, err), "a spaced name is refused");
   expect(!ssh_guard::save(ctx, "empty_cmd", "   ", true, err), "an empty command is refused");
   expect(ssh_guard::list(ctx).size() == 5, "refused rules were not stored");
+
+  // ── The line mirror: a typed command must be reassembled before judging ──
+  // xterm sends one event per keystroke, so without this the blocklist only
+  // ever sees a single character and nothing is ever blocked.
+  auto type_line = [](const std::string &keys, std::string &line) {
+    bool submitted = false;
+    for (char c : keys) submitted = ssh_guard::track_line(std::string(1, c), line);
+    return submitted;
+  };
+
+  std::string line;
+  expect(!type_line("rm -rf /", line), "no submit before Enter");
+  expect(line == "rm -rf /", "keystrokes reassemble into the command");
+  expect(ssh_guard::track_line("\r", line), "Enter submits the line");
+  expect(ssh_guard::first_match(line) == "wipe_root",
+         "the reassembled command is what gets judged");
+
+  line.clear();
+  type_line("rn", line);
+  ssh_guard::track_line("\b", line);
+  type_line("m -rf /", line);
+  expect(line == "rm -rf /", "backspace corrects the mirror");
+
+  line.clear();
+  type_line("rm -rf /", line);
+  ssh_guard::track_line("\x15", line);  // Ctrl-U
+  expect(line.empty(), "Ctrl-U abandons the line");
+
+  line.clear();
+  type_line("rm -rf /", line);
+  ssh_guard::track_line("\x03", line);  // Ctrl-C
+  expect(line.empty(), "Ctrl-C abandons the line");
+
+  line.clear();
+  type_line("sudo rm -rf /tmp junk", line);
+  ssh_guard::track_line("\x17", line);  // Ctrl-W kills one word
+  expect(line == "sudo rm -rf /tmp ", "Ctrl-W kills the last word");
+
+  line.clear();
+  type_line("rm -rf /", line);
+  ssh_guard::track_line("\x1b[A", line);  // Up arrow: the mirror is now blind
+  expect(line.empty(), "an escape sequence resets the mirror rather than guessing");
+
+  line.clear();
+  ssh_guard::track_line(std::string(9000, 'a'), line);
+  expect(line.size() <= 4096, "the mirror is bounded");
+
+  // A whole line arriving in one event (a paste) still submits and matches.
+  line.clear();
+  expect(ssh_guard::track_line("reboot\n", line), "a pasted line submits");
 
   if (failures == 0) std::cout << "ssh_guard tests passed" << std::endl;
   return failures == 0 ? 0 : 1;

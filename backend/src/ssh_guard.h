@@ -50,4 +50,18 @@ std::string first_match(const std::string &input);
 // The regex source a plain command is translated into. Exposed for tests.
 std::string command_to_pattern(const std::string &command);
 
+// The line as the shell would read it, with quoting removed: r''m, "rm" and
+// r\m all become rm. Variables ($IFS, ${x}) and command substitution are NOT
+// resolved — this raises the bar against casual evasion, it does not make the
+// guard a security boundary against a determined operator. Exposed for tests.
+std::string unquote(const std::string &line);
+
+// Mirrors the line the remote's editor is holding. A typed command reaches the
+// bastion one keystroke per websocket event, so it has to be reassembled
+// before the blocklist can judge it. Applies one input event to `line` and
+// returns true when that event submits it (Enter), leaving the command in
+// `line`. Best-effort by nature: anything that moves the cursor or recalls
+// history resets the mirror rather than guessing what the remote now holds.
+bool track_line(const std::string &input, std::string &line);
+
 }  // namespace ssh_guard

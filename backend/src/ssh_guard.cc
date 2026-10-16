@@ -17,19 +17,24 @@ constexpr size_t kMaxCommandChars = 200;
 
 struct Builtin {
   const char *name;
-  const char *pattern;
+  std::string pattern;
 };
 
 // The set that shipped hard-coded in ssh.cc. The sources are unchanged, so a
 // guard left at its defaults behaves exactly as before.
+// Start of the line or just after a shell separator, an optional sudo, and an
+// optional directory so /bin/rm reads as rm. One optional run, not a nested
+// quantifier: this is matched against every submitted line.
+constexpr const char *kCommandPrefix = R"((^|[;&|]\s*)(sudo\s+)?(?:[A-Za-z0-9_./-]*/)?)";
+
 const std::vector<Builtin> &builtins() {
   static const std::vector<Builtin> all = {
-      {"wipe_root", R"((^|[;&|]\s*)(sudo\s+)?rm\s+-rf\s+/($|\s))"},
+      {"wipe_root", std::string(kCommandPrefix) + R"(rm\s+-rf\s+/($|\s))"},
       {"fork_bomb", R"(:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;?\s*:)"},
-      {"disk_format", R"((^|[;&|]\s*)(sudo\s+)?mkfs(\.[a-z0-9]+)?\b)"},
-      {"raw_disk_dd", R"((^|[;&|]\s*)(sudo\s+)?dd\s+if=.*\s+of=/dev/)"},
+      {"disk_format", std::string(kCommandPrefix) + R"(mkfs(\.[a-z0-9]+)?\b)"},
+      {"raw_disk_dd", std::string(kCommandPrefix) + R"(dd\s+if=.*\s+of=/dev/)"},
       {"power_command",
-       R"((^|[;&|]\s*)(sudo\s+)?(shutdown|poweroff|reboot)\b)"}};
+       std::string(kCommandPrefix) + R"((shutdown|poweroff|reboot)\b)"}};
   return all;
 }
 
@@ -75,10 +80,9 @@ std::string command_to_pattern(const std::string &command) {
     body += regex_escape(token);
   }
   if (body.empty()) return "";
-  // Same shape as the built-ins: start of input or just after a shell
-  // separator, an optional sudo, and nothing word-like straight after — so
+  // Same shape as the built-ins, and nothing word-like straight after — so
   // "shutdown" does not fire on "shutdownctl", nor "rm -rf /" on "rm -rf /srv".
-  return R"((^|[;&|]\s*)(sudo\s+)?)" + body + R"((?![A-Za-z0-9_.\-/]))";
+  return std::string(kCommandPrefix) + body + R"((?![A-Za-z0-9_.\-/]))";
 }
 
 namespace {
@@ -250,10 +254,70 @@ bool remove(AppContext &ctx, const std::string &name, std::string &error) {
   return true;
 }
 
+bool track_line(const std::string &input, std::string &line) {
+  constexpr size_t kMaxTrackedLine = 4096;
+  for (char c : input) {
+    if (c == '\r' || c == '\n') return true;
+    switch (c) {
+      case '\b':
+      case '\x7f':  // backspace / delete
+        if (!line.empty()) line.pop_back();
+        break;
+      case '\x03':  // Ctrl-C: the line is abandoned
+      case '\x15':  // Ctrl-U: kill the whole line
+        line.clear();
+        break;
+      case '\x1b':
+        // An escape sequence — an arrow key, history recall, a full-screen
+        // program. Whatever the remote now holds, we no longer know it.
+        // Drop the rest of the event too, or its bytes ("[A" for Up) would be
+        // mistaken for typing and poison the next command.
+        line.clear();
+        return false;
+      case '\x17':  // Ctrl-W: kill the word before the cursor
+        while (!line.empty() && line.back() == ' ') line.pop_back();
+        while (!line.empty() && line.back() != ' ') line.pop_back();
+        break;
+      default:
+        // Printable only, and bounded: a paste of a megabyte must not grow
+        // the mirror without limit.
+        if (static_cast<unsigned char>(c) >= 0x20 && line.size() < kMaxTrackedLine)
+          line.push_back(c);
+    }
+  }
+  return false;
+}
+
+std::string unquote(const std::string &line) {
+  // Shell quoting is the cheapest way to walk past a literal blocklist:
+  // r''m, "rm" and r\m all run rm. Removing the quoting characters gives the
+  // reading the shell would get. Variables and command substitution are out of
+  // reach — see the limits in ssh_guard.h.
+  std::string out;
+  out.reserve(line.size());
+  bool in_single = false, in_double = false;
+  for (size_t i = 0; i < line.size(); ++i) {
+    const char c = line[i];
+    if (c == '\\' && !in_single && i + 1 < line.size()) {
+      out.push_back(line[++i]);  // drop the backslash, keep what it escaped
+      continue;
+    }
+    if (c == '\'' && !in_double) { in_single = !in_single; continue; }
+    if (c == '"' && !in_single) { in_double = !in_double; continue; }
+    out.push_back(c);
+  }
+  return out;
+}
+
 std::string first_match(const std::string &input) {
+  // Both readings are tried, and the raw one first: stripping quotes can only
+  // add detections, never hide one that the literal text would have caught.
+  const std::string stripped = unquote(input);
   std::shared_lock<std::shared_mutex> lock(g_mutex);
   for (const auto &rule : g_compiled) {
     if (std::regex_search(input, rule.second)) return rule.first;
+    if (stripped != input && std::regex_search(stripped, rule.second))
+      return rule.first;
   }
   return "";
 }
