@@ -96,10 +96,16 @@ export async function fetchAgents() {
 
 // Mint a short-lived token to embed in an endoriumfort:// deep link (deep links
 // leak via history/logs, so we never put the long-lived session token there).
-export async function mintAgentToken() {
+// The token is bound to `sessionId`, the session the tunnel runs under: the
+// server refuses agent tunnels that are not tied to one.
+export async function mintAgentToken(sessionId) {
   const response = await fetch('/api/auth/agent-token', {
     method: 'POST',
-    headers: withAuthHeaders()
+    headers: {
+      'Content-Type': 'application/json',
+      ...withAuthHeaders()
+    },
+    body: JSON.stringify({ sessionId })
   });
   await ensureResponseOk(response, 'Failed to mint agent token');
   return response.json();

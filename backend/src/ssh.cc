@@ -151,7 +151,8 @@ namespace {
 std::mutex g_detached_mutex;
 std::unordered_map<int, std::shared_ptr<SshConnection>> g_detached;
 
-// Output kept while detached and replayed on resume (the end of it).
+// The end of the shell's output, kept whether a browser is attached or not and
+// replayed on resume, so a reloaded page shows what was on screen before.
 constexpr size_t kBacklogMax = 64 * 1024;
 
 // ENDORIUMFORT_SSH_RESUME_GRACE_SECONDS: how long a detached shell waits
@@ -177,16 +178,19 @@ void audit_ssh_attach(AppContext &ctx, const std::string &type,
   ctx.append_audit(event);
 }
 
-// Send to the attached browser terminal, or keep for a later resume.
+// Send to the attached browser terminal (if any) and keep the end for a resume.
 void deliver_output(SshConnection &connection, const std::string &output) {
   std::lock_guard<std::mutex> lock(connection.client_mutex);
-  if (connection.client) {
-    connection.client->send_binary(output);
-    return;
-  }
+  if (connection.client) connection.client->send_binary(output);
   connection.backlog += output;
-  if (connection.backlog.size() > kBacklogMax)
-    connection.backlog.erase(0, connection.backlog.size() - kBacklogMax);
+  if (connection.backlog.size() > kBacklogMax) {
+    // Cut at a line start so the replay does not begin inside a UTF-8
+    // character or an escape sequence.
+    size_t cut = connection.backlog.size() - kBacklogMax;
+    const size_t newline = connection.backlog.find('\n', cut);
+    if (newline != std::string::npos) cut = newline + 1;
+    connection.backlog.erase(0, cut);
+  }
 }
 
 }  // namespace
@@ -422,13 +426,11 @@ void register_ssh_routes(CrowApp &app, AppContext &ctx) {
               libssh2_channel_request_pty_size(detached->channel, cols, rows);
             conn.send_text("{\"type\":\"status\",\"message\":\"Session resumed\"}");
             {
-              // Replay what was missed, then go live (same lock as the reader,
-              // so nothing is lost or reordered in between).
+              // Replay the end of the output (before and during the reload),
+              // then go live (same lock as the reader, so nothing is lost or
+              // reordered in between). Kept for a further reload.
               std::lock_guard<std::mutex> clock(detached->client_mutex);
-              if (!detached->backlog.empty()) {
-                conn.send_binary(detached->backlog);
-                detached->backlog.clear();
-              }
+              if (!detached->backlog.empty()) conn.send_binary(detached->backlog);
               detached->client = &conn;
             }
             audit_ssh_attach(ctx, "session.resumed", connection->auth_user,

@@ -178,6 +178,9 @@ struct AuthSession {
   std::string token;
   std::string issuedAt;
   std::string expiresAt;
+  // Agent deep-link tokens only: the session (opened through the access
+  // policy) that the tunnels started with this token run under. 0 = none.
+  int tunnelSessionId = 0;
 };
 
 struct AuditEvent {

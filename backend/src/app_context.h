@@ -36,6 +36,8 @@ struct TunnelTicket {
   std::string user;
   std::string role;
   int resourceId = 0;
+  // Session (opened through the access policy) this tunnel runs under.
+  int sessionId = 0;
   std::string issuedForIp;
   std::string issuedForUserAgent;
   std::string issuedAt;
@@ -52,6 +54,9 @@ struct TunnelCredential {
   std::string user;
   std::string role;
   int resourceId = 0;
+  // Session (opened through the access policy) this credential runs under:
+  // it stops minting tickets once that session ends or its grant expires.
+  int sessionId = 0;
   std::string issuedForIp;
   std::string issuedForUserAgent;
   std::string issuedAt;
@@ -443,7 +448,8 @@ struct AppContext {
   bool is_safe_target(const std::string &host, bool allow_loopback = false);
 
   // ── DB init ──
-  void init_database();
+  // Tests pass ":memory:" to get the real schema without a file.
+  void init_database(const std::string &path = "endoriumfort.db");
   void seed_default_admin();
 
   // ── Session CRUD ──

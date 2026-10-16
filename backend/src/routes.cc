@@ -9,6 +9,7 @@
 #include "iam_common.h"
 #include "route_common.h"
 #include "scim_query.h"
+#include "session_access.h"
 #include "totp.h"
 #include "utils.h"
 #include "version.h"
@@ -867,16 +868,42 @@ void register_auth_routes(CrowApp &app, AppContext &ctx) {
   // link. Deep links leak (browser history, logs), so this token expires in a
   // couple of minutes — long enough for the agent to fetch resources + obtain a
   // tunnel ticket, after which it is useless. Same identity as the caller.
+  // Optional body {"sessionId": N}: a session opened through POST
+  // /api/sessions (so through the access policy) that the agent tunnels
+  // started with this token are tied to. The tunnel routes refuse tokens
+  // without one.
   CROW_ROUTE(app, "/api/auth/agent-token").methods(crow::HTTPMethod::Post)(
       [&ctx](const crow::request &request) {
         auto auth = ctx.find_auth(request);
         if (!auth) return crow::response(401, "Unauthorized");
+
+        int tunnel_session_id = 0;
+        if (!request.body.empty()) {
+          auto body = crow::json::load(request.body);
+          if (!body) return crow::response(400, "Invalid JSON body");
+          if (body.has("sessionId")) {
+            if (body["sessionId"].t() != crow::json::type::Number) {
+              return crow::response(400, "Invalid sessionId");
+            }
+            tunnel_session_id = static_cast<int>(body["sessionId"].i());
+            int resource_id = 0;
+            {
+              std::lock_guard<std::mutex> lock(ctx.session_mutex);
+              auto it = ctx.sessions.find(tunnel_session_id);
+              if (it != ctx.sessions.end()) resource_id = it->second.resourceId;
+            }
+            const auto check = check_tunnel_session(
+                ctx, auth->user, tunnel_session_id, resource_id);
+            if (!check.ok) return crow::response(check.status, check.error);
+          }
+        }
 
         const int ttl_seconds = 180;  // 3 minutes
         AuthSession sess;
         sess.userId = auth->userId;
         sess.user = auth->user;
         sess.role = auth->role;
+        sess.tunnelSessionId = tunnel_session_id;
         sess.issuedAt = now_utc();
         sess.expiresAt = utc_from_epoch_seconds(now_epoch_seconds() + ttl_seconds);
         sess.token = ctx.generate_token();
@@ -892,7 +919,12 @@ void register_auth_routes(CrowApp &app, AppContext &ctx) {
         evt.role = auth->role;
         evt.createdAt = now_utc();
         evt.payloadJson = "{\"userId\":" + std::to_string(auth->userId) +
-                          ",\"ttlSeconds\":" + std::to_string(ttl_seconds) + "}";
+                          ",\"ttlSeconds\":" + std::to_string(ttl_seconds) +
+                          (tunnel_session_id > 0
+                               ? ",\"sessionId\":" +
+                                     std::to_string(tunnel_session_id)
+                               : std::string()) +
+                          "}";
         evt.payloadIsJson = true;
         ctx.append_audit(evt);
 
@@ -1439,6 +1471,10 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
         if (body.has("sshUsername")) ssh_username = body["sshUsername"].s();
         std::string ssh_password;
         if (body.has("sshPassword")) ssh_password = body["sshPassword"].s();
+        if ((!ssh_password.empty() || !http_password.empty()) &&
+            !crypto::vault_key_configured()) {
+          return crow::response(400, crypto::kNoVaultKeyError);
+        }
         std::string agent_protocol;
         if (body.has("agentProtocol")) agent_protocol = to_lower(body["agentProtocol"].s());
         bool require_access_justification = false;
@@ -1594,6 +1630,10 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
             if (body.has("sshUsername")) ssh_username = body["sshUsername"].s();
             std::string ssh_password;
             if (body.has("sshPassword")) ssh_password = body["sshPassword"].s();
+            if ((!ssh_password.empty() || !http_password.empty()) &&
+                !crypto::vault_key_configured()) {
+              return crow::response(400, crypto::kNoVaultKeyError);
+            }
             std::string agent_protocol;
             if (body.has("agentProtocol")) agent_protocol = to_lower(body["agentProtocol"].s());
             bool require_access_justification = false;
@@ -1758,6 +1798,481 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
 //  Sessions
 // ══════════════════════════════════════════════════════════════════════
 
+SessionOpenResult open_session_with_policy(AppContext &ctx,
+                                           const AuthSession &auth_session,
+                                           const SessionOpenRequest &request) {
+  const AuthSession *auth = &auth_session;
+  const std::string &target = request.target;
+  const std::string &user = request.user;
+  const std::string &protocol = request.protocol;
+  const std::string &justification = request.justification;
+  const std::string &ticket_id = request.ticketId;
+  const std::string &purpose = request.purpose;
+  const std::string &purpose_evidence = request.purposeEvidence;
+  std::string mission_ref = request.missionRef;
+  const int resource_id = request.resourceId;
+  const int access_request_id = request.accessRequestId;
+  const int port = request.port;
+  if (target.empty() || user.empty() || protocol.empty())
+    return SessionOpenResult::failure(400, "Missing target, user, or protocol");
+  if (port <= 0 || port > 65535)
+    return SessionOpenResult::failure(400, "Invalid port");
+  if (justification.size() > 280)
+    return SessionOpenResult::failure(400, "justification is too long (max 280 chars)");
+  if (ticket_id.size() > 80)
+    return SessionOpenResult::failure(400, "ticketId is too long (max 80 chars)");
+  if (purpose.size() > 120)
+    return SessionOpenResult::failure(400, "purpose is too long (max 120 chars)");
+  if (purpose_evidence.size() > 280)
+    return SessionOpenResult::failure(400, "purposeEvidence is too long (max 280 chars)");
+
+  Resource resource;
+  bool has_resource = false;
+  AccessDecision decision;
+  UserAccount account;
+  std::string risk_level = "low";
+  if (resource_id > 0) {
+    {
+      std::lock_guard<std::mutex> lock(ctx.resource_mutex);
+      auto it = ctx.resources.find(resource_id);
+      if (it == ctx.resources.end()) {
+        return SessionOpenResult::failure(404, "Resource not found");
+      }
+      resource = it->second;
+      has_resource = true;
+    }
+
+    // Non-admin users can only open sessions on assigned resources.
+    if (!has_permission(ctx, *auth, "resources.manage")) {
+      auto allowed = ctx.get_resource_permissions(auth->userId);
+      if (std::find(allowed.begin(), allowed.end(), resource_id) ==
+          allowed.end()) {
+        return SessionOpenResult::failure(403, "Forbidden");
+      }
+    }
+
+    if (resource.target != target || resource.protocol != protocol ||
+        resource.port != port) {
+      return SessionOpenResult::failure(
+          400,
+          "resourceId does not match target/protocol/port payload");
+    }
+    const auto maybe_account = find_user_account_snapshot(ctx, auth->userId);
+    if (maybe_account) account = *maybe_account;
+    decision = build_access_decision(
+        ctx, *auth, account, resource, query_access_policies(ctx),
+        query_user_access_profiles(ctx, auth->userId));
+    risk_level = to_lower(resource.riskLevel);
+  } else {
+    account = find_user_account_snapshot(ctx, auth->userId).value_or(UserAccount{});
+    decision.maxDurationSeconds = 3600;
+    decision.mfaRequirement = "any";
+  }
+  if (mission_ref.empty() && !purpose.empty()) {
+    mission_ref = purpose;
+  }
+
+  auto emit_policy_decision = [&](const std::string &type,
+                                  const std::string &reason) {
+    AuditEvent decision_event;
+    decision_event.id = ctx.next_audit_id.fetch_add(1);
+    decision_event.type = type;
+    decision_event.actor = auth->user;
+    decision_event.role = auth->role;
+    decision_event.createdAt = now_utc();
+    std::ostringstream oss;
+    oss << "{\"resourceId\":" << resource_id
+        << ",\"reason\":\"" << json_escape(reason) << "\"";
+    if (!decision.matchedPolicyIds.empty()) {
+      oss << ",\"policyIds\":[";
+      for (size_t i = 0; i < decision.matchedPolicyIds.size(); ++i) {
+        if (i) oss << ',';
+        oss << decision.matchedPolicyIds[i];
+      }
+      oss << "]";
+    }
+    oss << '}';
+    decision_event.payloadJson = oss.str();
+    decision_event.payloadIsJson = true;
+    ctx.append_audit(decision_event);
+  };
+
+  if (decision.timeWindowDenied) {
+    emit_policy_decision("policy.decision.deny", "time_window");
+    // Dedicated event: surfaced as a security alert.
+    AuditEvent window_event;
+    window_event.id = ctx.next_audit_id.fetch_add(1);
+    window_event.type = "access.denied.time_window";
+    window_event.actor = auth->user;
+    window_event.role = auth->role;
+    window_event.createdAt = now_utc();
+    window_event.payloadJson =
+        "{\"resourceId\":" + std::to_string(resource_id) +
+        ",\"policy\":\"" + json_escape(decision.timeWindowPolicy) +
+        "\",\"timeWindow\":\"" + json_escape(decision.timeWindow) +
+        "\",\"target\":\"" + json_escape(target) + "\"}";
+    window_event.payloadIsJson = true;
+    ctx.append_audit(window_event);
+    return SessionOpenResult::failure(
+        403, "Access is only allowed during " + decision.timeWindow +
+                 " UTC (policy " + decision.timeWindowPolicy + ")");
+  }
+
+  if (decision.requireJustification && justification.empty()) {
+    emit_policy_decision("policy.decision.deny", "missing_justification");
+    return SessionOpenResult::failure(
+        400,
+        "This resource requires an access justification before connect");
+  }
+
+  if (decision.approvalRequired &&
+      !has_permission(ctx, *auth, "access_requests.review")) {
+    if (access_request_id <= 0) {
+      emit_policy_decision("policy.decision.deny", "approval_required");
+      return SessionOpenResult::failure(
+          400,
+          "This resource requires dual approval: provide an approved accessRequestId");
+    }
+    AccessRequest req;
+    {
+      std::lock_guard<std::mutex> lock(ctx.access_request_mutex);
+      auto it = ctx.access_requests.find(access_request_id);
+      if (it == ctx.access_requests.end()) {
+        return SessionOpenResult::failure(404, "Access request not found");
+      }
+      req = it->second;
+    }
+
+    if (req.status == "approved") {
+      const int64_t now_epoch = now_epoch_seconds();
+      const auto approved_at =
+          parse_utc_epoch_seconds(req.reviewedAt);
+      if (approved_at && (now_epoch - *approved_at) >
+                             kApprovedAccessTtlSeconds) {
+        req.status = "expired";
+        {
+          std::lock_guard<std::mutex> lock(ctx.access_request_mutex);
+          auto it = ctx.access_requests.find(access_request_id);
+          if (it != ctx.access_requests.end()) {
+            it->second = req;
+          }
+        }
+        ctx.update_access_request(req);
+
+        AuditEvent expire_event;
+        expire_event.id = ctx.next_audit_id.fetch_add(1);
+        expire_event.type = "access_request.expire";
+        expire_event.actor = "system";
+        expire_event.role = "system";
+        expire_event.createdAt = now_utc();
+        expire_event.payloadJson =
+            "{\"id\":" + std::to_string(req.id) +
+            ",\"resourceId\":" + std::to_string(req.resourceId) +
+            "}";
+        expire_event.payloadIsJson = true;
+        ctx.append_audit(expire_event);
+      }
+    }
+
+    if (req.status != "approved") {
+      emit_policy_decision("policy.decision.deny", "approval_not_approved");
+      return SessionOpenResult::failure(403, "Access request is not approved");
+    }
+    if (req.requester != auth->user || req.resourceId != resource_id) {
+      emit_policy_decision("policy.decision.deny", "approval_scope_mismatch");
+      return SessionOpenResult::failure(403, "Access request does not match requester/resource");
+    }
+  }
+
+  if (decision.ticketRequired && ticket_id.empty()) {
+    emit_policy_decision("policy.decision.deny", "ticket_required");
+    return SessionOpenResult::failure(
+        400,
+        "This access path requires a ticketId under JIT policy");
+  }
+  // With a ticketing system configured (premium), the ticket must exist
+  // and still be open there.
+  if (!ticket_id.empty() && ctx.itsm_ticket_check) {
+    std::string ticket_detail;
+    if (!ctx.itsm_ticket_check(ticket_id, ticket_detail)) {
+      emit_policy_decision("policy.decision.deny", "ticket_rejected");
+      return SessionOpenResult::failure(
+          403, "Ticket " + ticket_id + " was refused: " + ticket_detail);
+    }
+  }
+  if (decision.purposeRequired && purpose.empty()) {
+    emit_policy_decision("policy.decision.deny", "purpose_required");
+    return SessionOpenResult::failure(
+        400,
+        "High-risk resources require a purpose (purpose-bound session)");
+  }
+  if (!user_meets_mfa_requirement(account, decision.mfaRequirement)) {
+    emit_policy_decision("policy.decision.deny", "mfa_requirement_unmet");
+    return SessionOpenResult::failure(403, "Additional MFA posture is required for this access");
+  }
+  if (decision.routingConstraint == "relay") {
+    std::lock_guard<std::mutex> lock(ctx.relay_mutex);
+    if (!ctx.resource_relay_bindings.count(resource_id) ||
+        ctx.resource_relay_bindings[resource_id].empty()) {
+      emit_policy_decision("policy.decision.deny", "relay_required");
+      return SessionOpenResult::failure(403, "This access policy requires a relay route");
+    }
+  }
+
+  bool containment_enabled = false;
+  std::string containment_reason;
+  {
+    std::lock_guard<std::mutex> lock(ctx.containment_mutex);
+    containment_enabled = ctx.containment_mode_enabled;
+    containment_reason = ctx.containment_reason;
+  }
+  if (containment_enabled && justification.empty()) {
+    AuditEvent blocked_event;
+    blocked_event.id = ctx.next_audit_id.fetch_add(1);
+    blocked_event.type = "session.create.blocked.containment";
+    blocked_event.actor = auth->user;
+    blocked_event.role = auth->role;
+    blocked_event.createdAt = now_utc();
+    blocked_event.payloadJson =
+        "{\"resourceId\":" + std::to_string(resource_id) +
+        ",\"target\":\"" + json_escape(target) + "\"" +
+        ",\"reason\":\"missing_justification\"" +
+        ",\"containmentReason\":\"" +
+        json_escape(containment_reason) + "\"}";
+    blocked_event.payloadIsJson = true;
+    ctx.append_audit(blocked_event);
+    emit_policy_decision("policy.decision.deny", "containment_justification_required");
+    return SessionOpenResult::failure(
+        400,
+        "Containment mode is enabled: provide a justification to open this session");
+  }
+
+  emit_policy_decision("policy.decision.allow", "granted");
+
+  AccessGrant grant;
+  if (has_resource) {
+    grant.id = next_table_numeric_id(ctx, "access_grants");
+    grant.policyId = decision.selectedPolicyId;
+    grant.profileId = decision.selectedProfileId;
+    grant.resourceId = resource.id;
+    grant.approvalRef = access_request_id;
+    grant.subject = auth->user;
+    grant.resourceScope = resource.name.empty()
+                              ? std::to_string(resource.id)
+                              : resource.name;
+    grant.grantedAt = now_utc();
+    const auto grant_expires_at = checked_epoch_seconds_after(
+        now_epoch_seconds(),
+        std::max<int64_t>(300, decision.maxDurationSeconds));
+    if (!grant_expires_at) {
+      return SessionOpenResult::failure(500, "Invalid access grant TTL");
+    }
+    grant.expiresAt = utc_from_epoch_seconds(*grant_expires_at);
+    grant.missionRef = mission_ref;
+    grant.status = "issued";
+    grant.credentialSource = resource.credentialSource;
+    grant.routingConstraint = decision.routingConstraint;
+    grant.ticketId = ticket_id;
+    grant.purpose = purpose;
+    grant.justification = justification;
+    grant.mfaRequirement = decision.mfaRequirement;
+    if (!insert_access_grant_db(ctx, grant)) {
+      return SessionOpenResult::failure(500, "Failed to persist access grant");
+    }
+
+    AuditEvent grant_event;
+    grant_event.id = ctx.next_audit_id.fetch_add(1);
+    grant_event.type = "access.grant.issued";
+    grant_event.actor = auth->user;
+    grant_event.role = auth->role;
+    grant_event.createdAt = now_utc();
+    grant_event.payloadJson = access_grant_to_json(grant).dump();
+    grant_event.payloadIsJson = true;
+    ctx.append_audit(grant_event);
+  }
+
+  Session session;
+  session.id = ctx.next_session_id.fetch_add(1);
+  session.resourceId = resource_id;
+  session.accessGrantId = grant.id;
+  session.target = target;
+  session.user = user;
+  session.protocol = protocol;
+  session.port = port;
+  session.status = "active";
+  session.missionRef = mission_ref;
+  session.credentialSource =
+      has_resource ? resource.credentialSource : std::string("vaulted");
+  session.maxDurationSeconds = decision.maxDurationSeconds;
+  session.createdAt = now_utc();
+
+  {
+    std::lock_guard<std::mutex> lock(ctx.session_mutex);
+    ctx.sessions.emplace(session.id, session);
+  }
+  if (!ctx.insert_session(session))
+    return SessionOpenResult::failure(500, "Failed to persist session");
+  if (grant.id > 0) {
+    update_access_grant_session_binding(ctx, grant.id, session.id);
+  }
+
+  AuditEvent event;
+  event.id = ctx.next_audit_id.fetch_add(1);
+  event.type = "session.create";
+  event.actor = auth->user;
+  event.role = auth->role;
+  event.createdAt = now_utc();
+  event.payloadJson = build_session_payload_json(session);
+  if (!justification.empty() || !ticket_id.empty() || !purpose.empty() ||
+      !purpose_evidence.empty()) {
+    if (!event.payloadJson.empty() && event.payloadJson.back() == '}') {
+      event.payloadJson.pop_back();
+    }
+    if (!justification.empty()) {
+      event.payloadJson += ",\"justification\":\"" +
+                           json_escape(justification) + "\"";
+    }
+    if (!ticket_id.empty()) {
+      event.payloadJson +=
+          ",\"ticketId\":\"" + json_escape(ticket_id) + "\"";
+    }
+    if (!purpose.empty()) {
+      event.payloadJson +=
+          ",\"purpose\":\"" + json_escape(purpose) + "\"";
+    }
+    if (!purpose_evidence.empty()) {
+      event.payloadJson += ",\"purposeEvidence\":\"" +
+                           json_escape(purpose_evidence) + "\"";
+    }
+    event.payloadJson += "}";
+  }
+  if (access_request_id > 0) {
+    if (!event.payloadJson.empty() && event.payloadJson.back() == '}') {
+      event.payloadJson.pop_back();
+    }
+    event.payloadJson += ",\"accessRequestId\":" +
+                         std::to_string(access_request_id) + "}";
+  }
+  event.payloadIsJson = true;
+  ctx.append_audit(event);
+  ctx.append_session_dna_entry(session.id, event.id, event.type,
+                               event.payloadJson, event.createdAt);
+  ctx.append_session_event("session.create", session);
+
+  if (!purpose.empty()) {
+    AuditEvent purpose_event;
+    purpose_event.id = ctx.next_audit_id.fetch_add(1);
+    purpose_event.type = "session.purpose.bound";
+    purpose_event.actor = auth->user;
+    purpose_event.role = auth->role;
+    purpose_event.createdAt = now_utc();
+    purpose_event.payloadJson =
+        "{\"sessionId\":" + std::to_string(session.id) +
+        ",\"purpose\":\"" + json_escape(purpose) + "\"}";
+    purpose_event.payloadIsJson = true;
+    ctx.append_audit(purpose_event);
+    ctx.append_session_dna_entry(session.id, purpose_event.id,
+                                 purpose_event.type,
+                                 purpose_event.payloadJson,
+                                 purpose_event.createdAt);
+  }
+
+  // Compliance signal: track sessions opened without explicit reason.
+  if (justification.empty()) {
+    AuditEvent reason_event;
+    reason_event.id = ctx.next_audit_id.fetch_add(1);
+    reason_event.type = "session.create.unjustified";
+    reason_event.actor = auth->user;
+    reason_event.role = auth->role;
+    reason_event.createdAt = now_utc();
+    reason_event.payloadJson = "{\"sessionId\":" +
+                               std::to_string(session.id) + "}";
+    reason_event.payloadIsJson = true;
+    ctx.append_audit(reason_event);
+    ctx.append_session_dna_entry(session.id, reason_event.id,
+                                 reason_event.type,
+                                 reason_event.payloadJson,
+                                 reason_event.createdAt);
+  }
+
+  SessionOpenResult result;
+  result.ok = true;
+  result.status = 200;
+  result.session = session;
+  return result;
+}
+
+TunnelSessionCheck check_tunnel_session(AppContext &ctx, const std::string &user,
+                                        int session_id, int resource_id) {
+  TunnelSessionCheck check;
+  if (session_id <= 0) {
+    check.error =
+        "Agent tunnels must be tied to a session: open the resource from the "
+        "EndoriumFort portal, which checks its access rules (reason, ticket, "
+        "purpose, approval) first";
+    return check;
+  }
+  Session session;
+  {
+    std::lock_guard<std::mutex> lock(ctx.session_mutex);
+    auto it = ctx.sessions.find(session_id);
+    if (it == ctx.sessions.end()) {
+      check.status = 404;
+      check.error = "Session not found";
+      return check;
+    }
+    session = it->second;
+  }
+  if (session.status != "active") {
+    check.error = "The session behind this tunnel has ended";
+    return check;
+  }
+  if (session.resourceId != resource_id || session.accessGrantId <= 0) {
+    check.error = "The session does not match this resource";
+    return check;
+  }
+
+  std::string subject;
+  std::string status;
+  std::string expires_at;
+  int policy_id = 0;
+  if (ctx.sqlite.is_open()) {
+    std::lock_guard<std::mutex> lock(ctx.sqlite.mutex);
+    auto stmt = ctx.sqlite.prepare(
+        "SELECT subject, status, expires_at, policy_id FROM access_grants "
+        "WHERE id=?");
+    stmt.bind_int(1, session.accessGrantId);
+    if (stmt.step()) {
+      subject = stmt.column_text(0);
+      status = stmt.column_text(1);
+      expires_at = stmt.column_text(2);
+      policy_id = stmt.column_int(3);
+    }
+  }
+  // Someone else's session (or one whose grant is unknown) is not usable.
+  if (subject.empty() || subject != user) {
+    check.error = "The session does not belong to this user";
+    return check;
+  }
+  if (status != "issued") {
+    check.error = "The access grant behind this session is no longer valid";
+    return check;
+  }
+  // A JIT policy bounds how long the access lasts; without one a session
+  // stays usable until it is terminated, as an SSH session does.
+  if (policy_id > 0) {
+    const auto expires_epoch = parse_utc_epoch_seconds(expires_at);
+    if (!expires_epoch || *expires_epoch <= now_epoch_seconds()) {
+      check.error = "The access grant behind this session has expired";
+      return check;
+    }
+    check.grantExpiresEpoch = *expires_epoch;
+  }
+  check.ok = true;
+  check.status = 200;
+  return check;
+}
+
 void register_session_routes(CrowApp &app, AppContext &ctx) {
   // GET /api/sessions
   CROW_ROUTE(app, "/api/sessions")([&ctx](const crow::request &request) {
@@ -1851,413 +2366,23 @@ void register_session_routes(CrowApp &app, AppContext &ctx) {
         auto body = crow::json::load(request.body);
         if (!body) return crow::response(400, "Invalid JSON body");
 
-        std::string target = body["target"].s();
-        std::string user = body["user"].s();
-        std::string protocol = body["protocol"].s();
-        std::string justification = body.has("justification")
-                                        ? std::string(body["justification"].s())
-                                        : "";
-        std::string ticket_id = body.has("ticketId")
-                                    ? std::string(body["ticketId"].s())
-                                    : "";
-        std::string purpose = body.has("purpose")
-                ? std::string(body["purpose"].s())
-                : "";
-        std::string purpose_evidence = body.has("purposeEvidence")
-                   ? std::string(body["purposeEvidence"].s())
-                   : "";
-        std::string mission_ref = body.has("missionRef")
-                                      ? std::string(body["missionRef"].s())
-                                      : "";
-        int resource_id = 0;
-        if (body.has("resourceId")) resource_id = body["resourceId"].i();
-        int access_request_id = 0;
-        if (body.has("accessRequestId")) access_request_id = body["accessRequestId"].i();
-        int port = 22;
-        if (body.has("port")) port = body["port"].i();
-        if (target.empty() || user.empty() || protocol.empty())
-          return crow::response(400, "Missing target, user, or protocol");
-        if (port <= 0 || port > 65535)
-          return crow::response(400, "Invalid port");
-        if (justification.size() > 280)
-          return crow::response(400, "justification is too long (max 280 chars)");
-        if (ticket_id.size() > 80)
-          return crow::response(400, "ticketId is too long (max 80 chars)");
-        if (purpose.size() > 120)
-          return crow::response(400, "purpose is too long (max 120 chars)");
-        if (purpose_evidence.size() > 280)
-          return crow::response(400, "purposeEvidence is too long (max 280 chars)");
+        SessionOpenRequest open;
+        open.target = body["target"].s();
+        open.user = body["user"].s();
+        open.protocol = body["protocol"].s();
+        if (body.has("justification")) open.justification = body["justification"].s();
+        if (body.has("ticketId")) open.ticketId = body["ticketId"].s();
+        if (body.has("purpose")) open.purpose = body["purpose"].s();
+        if (body.has("purposeEvidence")) open.purposeEvidence = body["purposeEvidence"].s();
+        if (body.has("missionRef")) open.missionRef = body["missionRef"].s();
+        if (body.has("resourceId")) open.resourceId = body["resourceId"].i();
+        if (body.has("accessRequestId")) open.accessRequestId = body["accessRequestId"].i();
+        if (body.has("port")) open.port = body["port"].i();
 
-        Resource resource;
-        bool has_resource = false;
-        AccessDecision decision;
-        UserAccount account;
-        std::string risk_level = "low";
-        if (resource_id > 0) {
-          {
-            std::lock_guard<std::mutex> lock(ctx.resource_mutex);
-            auto it = ctx.resources.find(resource_id);
-            if (it == ctx.resources.end()) {
-              return crow::response(404, "Resource not found");
-            }
-            resource = it->second;
-            has_resource = true;
-          }
+        const auto opened = open_session_with_policy(ctx, *auth, open);
+        if (!opened.ok) return crow::response(opened.status, opened.error);
 
-          // Non-admin users can only open sessions on assigned resources.
-          if (!has_permission(ctx, *auth, "resources.manage")) {
-            auto allowed = ctx.get_resource_permissions(auth->userId);
-            if (std::find(allowed.begin(), allowed.end(), resource_id) ==
-                allowed.end()) {
-              return crow::response(403, "Forbidden");
-            }
-          }
-
-          if (resource.target != target || resource.protocol != protocol ||
-              resource.port != port) {
-            return crow::response(
-                400,
-                "resourceId does not match target/protocol/port payload");
-          }
-          const auto maybe_account = find_user_account_snapshot(ctx, auth->userId);
-          if (maybe_account) account = *maybe_account;
-          decision = build_access_decision(
-              ctx, *auth, account, resource, query_access_policies(ctx),
-              query_user_access_profiles(ctx, auth->userId));
-          risk_level = to_lower(resource.riskLevel);
-        } else {
-          account = find_user_account_snapshot(ctx, auth->userId).value_or(UserAccount{});
-          decision.maxDurationSeconds = 3600;
-          decision.mfaRequirement = "any";
-        }
-        if (mission_ref.empty() && !purpose.empty()) {
-          mission_ref = purpose;
-        }
-
-        auto emit_policy_decision = [&](const std::string &type,
-                                        const std::string &reason) {
-          AuditEvent decision_event;
-          decision_event.id = ctx.next_audit_id.fetch_add(1);
-          decision_event.type = type;
-          decision_event.actor = auth->user;
-          decision_event.role = auth->role;
-          decision_event.createdAt = now_utc();
-          std::ostringstream oss;
-          oss << "{\"resourceId\":" << resource_id
-              << ",\"reason\":\"" << json_escape(reason) << "\"";
-          if (!decision.matchedPolicyIds.empty()) {
-            oss << ",\"policyIds\":[";
-            for (size_t i = 0; i < decision.matchedPolicyIds.size(); ++i) {
-              if (i) oss << ',';
-              oss << decision.matchedPolicyIds[i];
-            }
-            oss << "]";
-          }
-          oss << '}';
-          decision_event.payloadJson = oss.str();
-          decision_event.payloadIsJson = true;
-          ctx.append_audit(decision_event);
-        };
-
-        if (decision.timeWindowDenied) {
-          emit_policy_decision("policy.decision.deny", "time_window");
-          // Dedicated event: surfaced as a security alert.
-          AuditEvent window_event;
-          window_event.id = ctx.next_audit_id.fetch_add(1);
-          window_event.type = "access.denied.time_window";
-          window_event.actor = auth->user;
-          window_event.role = auth->role;
-          window_event.createdAt = now_utc();
-          window_event.payloadJson =
-              "{\"resourceId\":" + std::to_string(resource_id) +
-              ",\"policy\":\"" + json_escape(decision.timeWindowPolicy) +
-              "\",\"timeWindow\":\"" + json_escape(decision.timeWindow) +
-              "\",\"target\":\"" + json_escape(target) + "\"}";
-          window_event.payloadIsJson = true;
-          ctx.append_audit(window_event);
-          return crow::response(
-              403, "Access is only allowed during " + decision.timeWindow +
-                       " UTC (policy " + decision.timeWindowPolicy + ")");
-        }
-
-        if (decision.requireJustification && justification.empty()) {
-          emit_policy_decision("policy.decision.deny", "missing_justification");
-          return crow::response(
-              400,
-              "This resource requires an access justification before connect");
-        }
-
-        if (decision.approvalRequired &&
-            !has_permission(ctx, *auth, "access_requests.review")) {
-          if (access_request_id <= 0) {
-            emit_policy_decision("policy.decision.deny", "approval_required");
-            return crow::response(
-                400,
-                "This resource requires dual approval: provide an approved accessRequestId");
-          }
-          AccessRequest req;
-          {
-            std::lock_guard<std::mutex> lock(ctx.access_request_mutex);
-            auto it = ctx.access_requests.find(access_request_id);
-            if (it == ctx.access_requests.end()) {
-              return crow::response(404, "Access request not found");
-            }
-            req = it->second;
-          }
-
-          if (req.status == "approved") {
-            const int64_t now_epoch = now_epoch_seconds();
-            const auto approved_at =
-                parse_utc_epoch_seconds(req.reviewedAt);
-            if (approved_at && (now_epoch - *approved_at) >
-                                   kApprovedAccessTtlSeconds) {
-              req.status = "expired";
-              {
-                std::lock_guard<std::mutex> lock(ctx.access_request_mutex);
-                auto it = ctx.access_requests.find(access_request_id);
-                if (it != ctx.access_requests.end()) {
-                  it->second = req;
-                }
-              }
-              ctx.update_access_request(req);
-
-              AuditEvent expire_event;
-              expire_event.id = ctx.next_audit_id.fetch_add(1);
-              expire_event.type = "access_request.expire";
-              expire_event.actor = "system";
-              expire_event.role = "system";
-              expire_event.createdAt = now_utc();
-              expire_event.payloadJson =
-                  "{\"id\":" + std::to_string(req.id) +
-                  ",\"resourceId\":" + std::to_string(req.resourceId) +
-                  "}";
-              expire_event.payloadIsJson = true;
-              ctx.append_audit(expire_event);
-            }
-          }
-
-          if (req.status != "approved") {
-            emit_policy_decision("policy.decision.deny", "approval_not_approved");
-            return crow::response(403, "Access request is not approved");
-          }
-          if (req.requester != auth->user || req.resourceId != resource_id) {
-            emit_policy_decision("policy.decision.deny", "approval_scope_mismatch");
-            return crow::response(403, "Access request does not match requester/resource");
-          }
-        }
-
-        if (decision.ticketRequired && ticket_id.empty()) {
-          emit_policy_decision("policy.decision.deny", "ticket_required");
-          return crow::response(
-              400,
-              "This access path requires a ticketId under JIT policy");
-        }
-        // With a ticketing system configured (premium), the ticket must exist
-        // and still be open there.
-        if (!ticket_id.empty() && ctx.itsm_ticket_check) {
-          std::string ticket_detail;
-          if (!ctx.itsm_ticket_check(ticket_id, ticket_detail)) {
-            emit_policy_decision("policy.decision.deny", "ticket_rejected");
-            return crow::response(
-                403, "Ticket " + ticket_id + " was refused: " + ticket_detail);
-          }
-        }
-        if (decision.purposeRequired && purpose.empty()) {
-          emit_policy_decision("policy.decision.deny", "purpose_required");
-          return crow::response(
-              400,
-              "High-risk resources require a purpose (purpose-bound session)");
-        }
-        if (!user_meets_mfa_requirement(account, decision.mfaRequirement)) {
-          emit_policy_decision("policy.decision.deny", "mfa_requirement_unmet");
-          return crow::response(403, "Additional MFA posture is required for this access");
-        }
-        if (decision.routingConstraint == "relay") {
-          std::lock_guard<std::mutex> lock(ctx.relay_mutex);
-          if (!ctx.resource_relay_bindings.count(resource_id) ||
-              ctx.resource_relay_bindings[resource_id].empty()) {
-            emit_policy_decision("policy.decision.deny", "relay_required");
-            return crow::response(403, "This access policy requires a relay route");
-          }
-        }
-
-        bool containment_enabled = false;
-        std::string containment_reason;
-        {
-          std::lock_guard<std::mutex> lock(ctx.containment_mutex);
-          containment_enabled = ctx.containment_mode_enabled;
-          containment_reason = ctx.containment_reason;
-        }
-        if (containment_enabled && justification.empty()) {
-          AuditEvent blocked_event;
-          blocked_event.id = ctx.next_audit_id.fetch_add(1);
-          blocked_event.type = "session.create.blocked.containment";
-          blocked_event.actor = auth->user;
-          blocked_event.role = auth->role;
-          blocked_event.createdAt = now_utc();
-          blocked_event.payloadJson =
-              "{\"resourceId\":" + std::to_string(resource_id) +
-              ",\"target\":\"" + json_escape(target) + "\"" +
-              ",\"reason\":\"missing_justification\"" +
-              ",\"containmentReason\":\"" +
-              json_escape(containment_reason) + "\"}";
-          blocked_event.payloadIsJson = true;
-          ctx.append_audit(blocked_event);
-          emit_policy_decision("policy.decision.deny", "containment_justification_required");
-          return crow::response(
-              400,
-              "Containment mode is enabled: provide a justification to open this session");
-        }
-
-        emit_policy_decision("policy.decision.allow", "granted");
-
-        AccessGrant grant;
-        if (has_resource) {
-          grant.id = next_table_numeric_id(ctx, "access_grants");
-          grant.policyId = decision.selectedPolicyId;
-          grant.profileId = decision.selectedProfileId;
-          grant.resourceId = resource.id;
-          grant.approvalRef = access_request_id;
-          grant.subject = auth->user;
-          grant.resourceScope = resource.name.empty()
-                                    ? std::to_string(resource.id)
-                                    : resource.name;
-          grant.grantedAt = now_utc();
-          const auto grant_expires_at = checked_epoch_seconds_after(
-              now_epoch_seconds(),
-              std::max<int64_t>(300, decision.maxDurationSeconds));
-          if (!grant_expires_at) {
-            return crow::response(500, "Invalid access grant TTL");
-          }
-          grant.expiresAt = utc_from_epoch_seconds(*grant_expires_at);
-          grant.missionRef = mission_ref;
-          grant.status = "issued";
-          grant.credentialSource = resource.credentialSource;
-          grant.routingConstraint = decision.routingConstraint;
-          grant.ticketId = ticket_id;
-          grant.purpose = purpose;
-          grant.justification = justification;
-          grant.mfaRequirement = decision.mfaRequirement;
-          if (!insert_access_grant_db(ctx, grant)) {
-            return crow::response(500, "Failed to persist access grant");
-          }
-
-          AuditEvent grant_event;
-          grant_event.id = ctx.next_audit_id.fetch_add(1);
-          grant_event.type = "access.grant.issued";
-          grant_event.actor = auth->user;
-          grant_event.role = auth->role;
-          grant_event.createdAt = now_utc();
-          grant_event.payloadJson = access_grant_to_json(grant).dump();
-          grant_event.payloadIsJson = true;
-          ctx.append_audit(grant_event);
-        }
-
-        Session session;
-        session.id = ctx.next_session_id.fetch_add(1);
-        session.resourceId = resource_id;
-        session.accessGrantId = grant.id;
-        session.target = target;
-        session.user = user;
-        session.protocol = protocol;
-        session.port = port;
-        session.status = "active";
-        session.missionRef = mission_ref;
-        session.credentialSource =
-            has_resource ? resource.credentialSource : std::string("vaulted");
-        session.maxDurationSeconds = decision.maxDurationSeconds;
-        session.createdAt = now_utc();
-
-        {
-          std::lock_guard<std::mutex> lock(ctx.session_mutex);
-          ctx.sessions.emplace(session.id, session);
-        }
-        if (!ctx.insert_session(session))
-          return crow::response(500, "Failed to persist session");
-        if (grant.id > 0) {
-          update_access_grant_session_binding(ctx, grant.id, session.id);
-        }
-
-        AuditEvent event;
-        event.id = ctx.next_audit_id.fetch_add(1);
-        event.type = "session.create";
-        event.actor = auth->user;
-        event.role = auth->role;
-        event.createdAt = now_utc();
-        event.payloadJson = build_session_payload_json(session);
-        if (!justification.empty() || !ticket_id.empty() || !purpose.empty() ||
-            !purpose_evidence.empty()) {
-          if (!event.payloadJson.empty() && event.payloadJson.back() == '}') {
-            event.payloadJson.pop_back();
-          }
-          if (!justification.empty()) {
-            event.payloadJson += ",\"justification\":\"" +
-                                 json_escape(justification) + "\"";
-          }
-          if (!ticket_id.empty()) {
-            event.payloadJson +=
-                ",\"ticketId\":\"" + json_escape(ticket_id) + "\"";
-          }
-          if (!purpose.empty()) {
-            event.payloadJson +=
-                ",\"purpose\":\"" + json_escape(purpose) + "\"";
-          }
-          if (!purpose_evidence.empty()) {
-            event.payloadJson += ",\"purposeEvidence\":\"" +
-                                 json_escape(purpose_evidence) + "\"";
-          }
-          event.payloadJson += "}";
-        }
-        if (access_request_id > 0) {
-          if (!event.payloadJson.empty() && event.payloadJson.back() == '}') {
-            event.payloadJson.pop_back();
-          }
-          event.payloadJson += ",\"accessRequestId\":" +
-                               std::to_string(access_request_id) + "}";
-        }
-        event.payloadIsJson = true;
-        ctx.append_audit(event);
-        ctx.append_session_dna_entry(session.id, event.id, event.type,
-                                     event.payloadJson, event.createdAt);
-        ctx.append_session_event("session.create", session);
-
-        if (!purpose.empty()) {
-          AuditEvent purpose_event;
-          purpose_event.id = ctx.next_audit_id.fetch_add(1);
-          purpose_event.type = "session.purpose.bound";
-          purpose_event.actor = auth->user;
-          purpose_event.role = auth->role;
-          purpose_event.createdAt = now_utc();
-          purpose_event.payloadJson =
-              "{\"sessionId\":" + std::to_string(session.id) +
-              ",\"purpose\":\"" + json_escape(purpose) + "\"}";
-          purpose_event.payloadIsJson = true;
-          ctx.append_audit(purpose_event);
-          ctx.append_session_dna_entry(session.id, purpose_event.id,
-                                       purpose_event.type,
-                                       purpose_event.payloadJson,
-                                       purpose_event.createdAt);
-        }
-
-        // Compliance signal: track sessions opened without explicit reason.
-        if (justification.empty()) {
-          AuditEvent reason_event;
-          reason_event.id = ctx.next_audit_id.fetch_add(1);
-          reason_event.type = "session.create.unjustified";
-          reason_event.actor = auth->user;
-          reason_event.role = auth->role;
-          reason_event.createdAt = now_utc();
-          reason_event.payloadJson = "{\"sessionId\":" +
-                                     std::to_string(session.id) + "}";
-          reason_event.payloadIsJson = true;
-          ctx.append_audit(reason_event);
-          ctx.append_session_dna_entry(session.id, reason_event.id,
-                                       reason_event.type,
-                                       reason_event.payloadJson,
-                                       reason_event.createdAt);
-        }
-
-        crow::json::wvalue payload = session_to_json(session);
+        crow::json::wvalue payload = session_to_json(opened.session);
         payload["operator"] = auth->user;
         return crow::response{payload};
       });

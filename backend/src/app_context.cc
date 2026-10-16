@@ -691,15 +691,14 @@ void AppContext::append_session_event(const std::string &type,
 
 // ── Database initialization ─────────────────────────────────────────────
 
-void AppContext::init_database() {
+void AppContext::init_database(const std::string &path) {
   std::string err;
   // ENDORIUMFORT_DB_DSN selects the store: a "postgresql://" URI uses the
   // PostgreSQL backend (production, lets several nodes share one database),
-  // anything else is a SQLite file path. Defaults to the embedded file so an
-  // existing single-node install keeps working untouched.
+  // anything else is a SQLite file path. Defaults to `path` (the embedded file)
+  // so an existing single-node install keeps working untouched.
   const char *dsn_env = std::getenv("ENDORIUMFORT_DB_DSN");
-  const std::string dsn =
-      (dsn_env && *dsn_env) ? std::string(dsn_env) : std::string("endoriumfort.db");
+  const std::string dsn = (dsn_env && *dsn_env) ? std::string(dsn_env) : path;
   if (!sqlite.open(dsn, err)) {
     // Fail closed. A bastion with no database has no users, no resource
     // permissions and no audit trail; carrying on would be far worse than not
@@ -1368,13 +1367,13 @@ bool AppContext::insert_resource(const Resource &r) {
   // Secrets are encrypted before they ever reach the database.
   stmt.bind_text_or_null(
       12, r.httpPassword.empty() ? std::string()
-                                 : crypto::aes256_encrypt(r.httpPassword));
+                                 : crypto::seal_secret(r.httpPassword));
   stmt.bind_text(13, r.createdAt);
   stmt.bind_text(14, r.updatedAt);
   stmt.bind_text_or_null(15, r.sshUsername);
   stmt.bind_text_or_null(
       16, r.sshPassword.empty() ? std::string()
-                                : crypto::aes256_encrypt(r.sshPassword));
+                                : crypto::seal_secret(r.sshPassword));
   stmt.bind_int(17, r.requireAccessJustification ? 1 : 0);
   stmt.bind_int(18, r.requireDualApproval ? 1 : 0);
   stmt.bind_int(19, r.enableCommandGuard ? 1 : 0);
@@ -1415,12 +1414,12 @@ bool AppContext::update_resource_db(const Resource &r) {
   stmt.bind_text_or_null(10, r.httpUsername);
   stmt.bind_text_or_null(
       11, r.httpPassword.empty() ? std::string()
-                                 : crypto::aes256_encrypt(r.httpPassword));
+                                 : crypto::seal_secret(r.httpPassword));
   stmt.bind_text(12, r.updatedAt);
   stmt.bind_text_or_null(13, r.sshUsername);
   stmt.bind_text_or_null(
       14, r.sshPassword.empty() ? std::string()
-                                : crypto::aes256_encrypt(r.sshPassword));
+                                : crypto::seal_secret(r.sshPassword));
   stmt.bind_int(15, r.requireAccessJustification ? 1 : 0);
   stmt.bind_int(16, r.requireDualApproval ? 1 : 0);
   stmt.bind_int(17, r.enableCommandGuard ? 1 : 0);

@@ -502,6 +502,34 @@ if (BUILD_TESTING)
   add_test(NAME backend_scim_query_test COMMAND endoriumfort_backend_scim_query_tests)
   add_test(NAME backend_audit_query_test COMMAND endoriumfort_backend_audit_query_tests)
   add_test(NAME backend_device_test COMMAND endoriumfort_backend_device_tests)
+
+  # Resource secrets survive a restart and an edit, with or without vault key.
+  add_executable(endoriumfort_backend_resource_secret_tests
+    tests/resource_secret_test.cc
+    src/app_context.cc
+    src/http_proxy.cc
+    src/scim_query.cc
+    src/audit_query.cc
+    src/route_common.cc
+    src/settings.cc
+    src/iam_common.cc
+    src/license.cc
+  )
+  target_include_directories(endoriumfort_backend_resource_secret_tests
+    PRIVATE
+      ${crow_SOURCE_DIR}/include
+      ${asio_SOURCE_DIR}/asio/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_definitions(endoriumfort_backend_resource_secret_tests
+    PRIVATE ASIO_STANDALONE
+  )
+  target_link_libraries(endoriumfort_backend_resource_secret_tests
+    PRIVATE endoriumfort_db OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
+  if (WIN32)
+    target_link_libraries(endoriumfort_backend_resource_secret_tests PRIVATE ws2_32 mswsock)
+  endif()
+  add_test(NAME backend_resource_secret_test COMMAND endoriumfort_backend_resource_secret_tests)
   add_test(NAME backend_settings_test COMMAND endoriumfort_backend_settings_tests)
   add_test(NAME backend_ssh_guard_test COMMAND endoriumfort_backend_ssh_guard_tests)
   if (ENDORIUMFORT_PRO)  # pro tests
@@ -510,6 +538,36 @@ if (BUILD_TESTING)
   add_test(NAME backend_siem_test COMMAND endoriumfort_backend_siem_tests)
   add_test(NAME backend_vault_gen_test COMMAND endoriumfort_backend_vault_gen_tests)
   add_test(NAME backend_itdr_geo_test COMMAND endoriumfort_backend_itdr_geo_tests)
+
+  # Agent tunnels follow the session access policy (pro/tunnel.cc).
+  add_executable(endoriumfort_backend_agent_tunnel_jit_tests
+    tests/agent_tunnel_jit_test.cc
+    src/app_context.cc
+    src/http_proxy.cc
+    src/scim_query.cc
+    src/audit_query.cc
+    src/routes.cc
+    src/route_common.cc
+    src/settings.cc
+    src/iam_common.cc
+    src/license.cc
+    src/pro/tunnel.cc
+  )
+  target_include_directories(endoriumfort_backend_agent_tunnel_jit_tests
+    PRIVATE
+      ${crow_SOURCE_DIR}/include
+      ${asio_SOURCE_DIR}/asio/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_definitions(endoriumfort_backend_agent_tunnel_jit_tests
+    PRIVATE ASIO_STANDALONE
+  )
+  target_link_libraries(endoriumfort_backend_agent_tunnel_jit_tests
+    PRIVATE endoriumfort_db OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
+  if (WIN32)
+    target_link_libraries(endoriumfort_backend_agent_tunnel_jit_tests PRIVATE ws2_32 mswsock)
+  endif()
+  add_test(NAME backend_agent_tunnel_jit_test COMMAND endoriumfort_backend_agent_tunnel_jit_tests)
   endif()
   add_test(NAME backend_license_test COMMAND endoriumfort_backend_license_tests)
 endif()

@@ -13,6 +13,11 @@ const proStub = fileURLToPath(new URL('./src/pro-stub/index.jsx', import.meta.ur
 const forceStub = process.env.EF_EDITION === 'community';
 const proEntry = !forceStub && existsSync(proReal) ? proReal : proStub;
 
+// Backend the dev server proxies to (the end-to-end tests point it at a
+// throwaway bastion) and the dev server port.
+const apiTarget = process.env.EF_API_TARGET || 'http://localhost:8080';
+const devPort = Number(process.env.EF_DEV_PORT) || 5173;
+
 export default defineConfig({
   plugins: [react()],
   resolve: {
@@ -21,18 +26,18 @@ export default defineConfig({
     }
   },
   server: {
-    port: 5173,
+    port: devPort,
     proxy: {
       '/api': {
-        target: 'http://localhost:8080',
+        target: apiTarget,
         ws: true
       },
       '/ws': {
-        target: 'http://localhost:8080',
+        target: apiTarget,
         ws: true
       },
       '/proxy': {
-        target: 'http://localhost:8080'
+        target: apiTarget
       }
     }
   }

@@ -3,6 +3,7 @@
 // all route groups, and starts the server.
 
 #include "app_context.h"
+#include "crypto.h"
 #include "http_proxy.h"
 #include "runtime_config.h"
 #include "settings.h"
@@ -46,6 +47,10 @@ int main() {
   settings::init(ctx);
   ssh_guard::init(ctx);
   log_runtime_config(runtime_config);
+  if (!crypto::get_vault_encryption_key()) {
+    std::cerr << "[vault] WARNING: ENDORIUMFORT_VAULT_KEY is not set (64 hex "
+                 "chars): new passwords and secrets are refused\n";
+  }
 
   // ── License (freemium open-core): load + verify offline, then expose to gate ──
   ctx.reload_license();

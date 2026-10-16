@@ -2231,7 +2231,7 @@ export default function App() {
     };
   };
 
-  const buildAgentLaunchPayload = async (resource, localPort) => {
+  const buildAgentLaunchPayload = async (resource, localPort, sessionId) => {
     const normalizedOrigin = String(window.location.origin || '').replace(/\/$/, '');
     const resourceProtocol = String(resource?.protocol || '').toLowerCase();
     // For "agent" resources the tunnelled protocol + user are configured on the
@@ -2264,17 +2264,13 @@ export default function App() {
     } else {
       params.set('no-browser', '1');
     }
-    // Embed a SHORT-LIVED scoped token (not the long-lived session token) — deep
-    // links leak via browser history/logs. Falls back to the session token if the
-    // mint call fails (e.g. transient error), so the launch still works.
-    let linkToken = auth.token;
-    try {
-      const minted = await mintAgentToken();
-      if (minted?.token) linkToken = minted.token;
-    } catch (_) {}
-    if (linkToken) {
-      params.set('token', linkToken);
-    }
+    // Embed a SHORT-LIVED token bound to the session (never the long-lived
+    // session token): deep links leak via browser history/logs, and the server
+    // only lets the agent open tunnels under that session.
+    const minted = await mintAgentToken(sessionId);
+    const linkToken = minted?.token || '';
+    if (!linkToken) throw new Error(t('feedback.agentTokenUnavailable'));
+    params.set('token', linkToken);
 
     return {
       localUrl,
@@ -2418,13 +2414,43 @@ export default function App() {
       }
     }
 
-    // Handle protocols that should use local TCP tunnel through the agent
+    // Handle protocols that should use local TCP tunnel through the agent. The
+    // tunnel runs under a session opened here, so the server applies the same
+    // access rules (reason, ticket, purpose, approval) and records it.
     if (isAgentTunnelProtocol(resource.protocol)) {
-      const randomPort = 10000 + Math.floor(Math.random() * 50000);
-      const launchPayload = await buildAgentLaunchPayload(resource, randomPort);
-      setAgentModal({ resource, port: randomPort, copied: 'idle', linkCopied: 'idle', installCopied: 'idle', launchState: 'opening', ...launchPayload });
-      launchAgentDeepLink(launchPayload.deepLink);
-      return true;
+      try {
+        const payload = {
+          resourceId: resource.id,
+          target: resource.target,
+          user: resource.sshUsername || auth.user,
+          protocol: resource.protocol,
+          port: resource.port,
+          justification: (accessMeta.justification || '').trim(),
+          ticketId: (accessMeta.ticketId || '').trim(),
+          purpose: (accessMeta.purpose || '').trim(),
+          purposeEvidence: (accessMeta.purposeEvidence || '').trim(),
+          accessRequestId: accessMeta.accessRequestId || undefined
+        };
+        const created = await createSession(payload);
+        setSessions((prev) => [created, ...prev]);
+        if (created?.accessGrantId && jitLicensed) {
+          fetchAccessGrants()
+            .then((data) => {
+              setAccessGrants(Array.isArray(data?.items) ? data.items : []);
+            })
+            .catch(() => {});
+        }
+        const randomPort = 10000 + Math.floor(Math.random() * 50000);
+        const launchPayload = await buildAgentLaunchPayload(resource, randomPort, created.id);
+        setSessionError('');
+        setAgentModal({ resource, sessionId: created.id, port: randomPort, copied: 'idle', linkCopied: 'idle', installCopied: 'idle', launchState: 'opening', ...launchPayload });
+        launchAgentDeepLink(launchPayload.deepLink);
+        return true;
+      } catch (error) {
+        lastConnectErrorRef.current = error.message || '';
+        setSessionError(error.message || 'Unable to create session');
+        return false;
+      }
     }
 
     // Handle SSH/other protocols
@@ -2526,11 +2552,9 @@ export default function App() {
   };
 
   const onConnectResource = async (resource) => {
-    const protocol = String(resource?.protocol || '').toLowerCase();
-    // Every protocol that opens a session on the bastion (web ones included,
-    // through the isolated browser) can carry a reason, ticket and purpose.
-    // Agent tunnels do not create a session here.
-    const sessionBackedProtocol = !isAgentTunnelProtocol(protocol);
+    // Every protocol opens a session on the bastion (web ones through the
+    // isolated browser, agent tunnels before the deep link), so each can carry
+    // a reason, ticket and purpose.
 
     const needs = await accessNeeds(resource);
     if (needs.approval && !canManagePlatform) {
@@ -2576,7 +2600,7 @@ export default function App() {
       return;
     }
 
-    if (sessionBackedProtocol && !needs.prompt) {
+    if (!needs.prompt) {
       const connected = await connectToResource(resource);
       // The server asked for details the client did not foresee (a rule it
       // could not preview): ask for them rather than leaving an error.
@@ -2584,11 +2608,29 @@ export default function App() {
       return;
     }
 
-    if (sessionBackedProtocol) {
-      openConnectPrompt(resource);
+    openConnectPrompt(resource);
+  };
+
+  // "Resume" on one of the user's active sessions: back to the SSH terminal, or
+  // a fresh agent link for a tunnel (still tied to that session).
+  const resumeSession = async (session) => {
+    const protocol = String(session?.protocol || '').toLowerCase();
+    if (protocol === 'ssh') {
+      openTerminal(session);
       return;
     }
-    await connectToResource(resource);
+    if (!isAgentTunnelProtocol(protocol)) return;
+    const resource = resources.find((item) => Number(item.id) === Number(session.resourceId));
+    if (!resource) return;
+    try {
+      const randomPort = 10000 + Math.floor(Math.random() * 50000);
+      const launchPayload = await buildAgentLaunchPayload(resource, randomPort, session.id);
+      setSessionError('');
+      setAgentModal({ resource, sessionId: session.id, port: randomPort, copied: 'idle', linkCopied: 'idle', installCopied: 'idle', launchState: 'opening', ...launchPayload });
+      launchAgentDeepLink(launchPayload.deepLink);
+    } catch (error) {
+      setSessionError(error.message || t('feedback.agentTokenUnavailable'));
+    }
   };
 
   const openLiveSession = async (session) => {
@@ -3505,8 +3547,13 @@ export default function App() {
         onLaunch={launchAgentDeepLink}
         onNewPort={async () => {
           const randomPort = 10000 + Math.floor(Math.random() * 50000);
-          const launchPayload = await buildAgentLaunchPayload(agentModal.resource, randomPort);
-          setAgentModal((prev) => (prev ? { ...prev, port: randomPort, launchState: 'idle', ...launchPayload } : prev));
+          try {
+            const launchPayload = await buildAgentLaunchPayload(agentModal.resource, randomPort, agentModal.sessionId);
+            setAgentModal((prev) => (prev ? { ...prev, port: randomPort, launchState: 'idle', ...launchPayload } : prev));
+          } catch (error) {
+            // The session may have ended: a new connection must go through the access rules again.
+            setSessionError(error.message || t('feedback.agentTokenUnavailable'));
+          }
         }}
         onClose={() => {
           clearAgentLaunchWatcher();
@@ -3659,7 +3706,7 @@ export default function App() {
         }}
         onOpenSession={(session) => {
           navigate('/sessions');
-          if (String(session.protocol || '').toLowerCase() === 'ssh') openTerminal(session);
+          resumeSession(session);
         }}
         onEdit={(resource) => {
           setResourceEditFocus(resource.id);
@@ -3725,7 +3772,7 @@ export default function App() {
         }}
         onOpenSession={(session) => {
           navigate('/sessions');
-          if (String(session.protocol || '').toLowerCase() === 'ssh') openTerminal(session);
+          resumeSession(session);
         }}
         onOpenMap={() => navigate('/carte')}
         onUnlock={() => openUpsell(t('req.title'), 'pro')}
@@ -3803,7 +3850,7 @@ export default function App() {
         sessions={sessionsView}
         onOpenSession={(session) => {
           navigate('/sessions');
-          if (String(session.protocol || '').toLowerCase() === 'ssh') openTerminal(session);
+          resumeSession(session);
         }}
         onTerminateSession={onTerminate}
         darkMode={darkMode}

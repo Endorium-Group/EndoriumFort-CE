@@ -488,6 +488,24 @@ inline std::string aes256_encrypt(const std::string &plaintext) {
   return "aes256:v1:" + iv_hex + ":" + tag_hex + ":" + ciphertext_hex;
 }
 
+/// Routes refuse a new secret (resource password, kubeconfig, dynamic vault
+/// admin secret) while no vault key is configured.
+inline constexpr const char *kNoVaultKeyError =
+    "no vault key configured: set ENDORIUMFORT_VAULT_KEY before storing a secret";
+inline bool vault_key_configured() {
+  return get_vault_encryption_key().has_value();
+}
+
+/// What to store for a secret: AES-256-GCM when ENDORIUMFORT_VAULT_KEY is set.
+/// Without a key no new secret gets in (see kNoVaultKeyError), but one stored
+/// in clear before is written back as is when its resource is edited:
+/// aes256_encrypt alone returns "" without a key, which stored NULL and lost
+/// the secret on the next restart.
+inline std::string seal_secret(const std::string &plaintext) {
+  if (!get_vault_encryption_key()) return plaintext;
+  return aes256_encrypt(plaintext);
+}
+
 /// Decrypt ciphertext (format "aes256:v1:iv:tag:ciphertext") using AES-256-GCM.
 /// Returns plaintext on success, empty string on error.
 inline std::string aes256_decrypt(const std::string &ciphertext_packed) {
