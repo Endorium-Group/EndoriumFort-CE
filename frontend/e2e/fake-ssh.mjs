@@ -3,6 +3,7 @@
 //   who    -> "shell-id=<id>"            (tells whether it is the same shell)
 //   later  -> "delayed-output" after 2 s (arrives while no browser is attached)
 //   exit   -> closes the shell
+//   exit-later -> closes the shell after 1 s (while no browser is attached)
 import crypto from 'node:crypto';
 import ssh2 from 'ssh2';
 
@@ -42,6 +43,7 @@ export function startFakeSsh({ port, user, password }) {
               stream.write('\r\n');
               if (cmd === 'who') stream.write(`shell-id=${id}\r\n$ `);
               else if (cmd === 'later') setTimeout(() => { try { stream.write('delayed-output\r\n$ '); } catch { /* closed */ } }, 2000);
+              else if (cmd === 'exit-later') setTimeout(() => { try { stream.exit(0); stream.end(); } catch { /* closed */ } }, 1000);
               else if (cmd === 'exit') { stream.write('bye\r\n'); stream.exit(0); stream.end(); return; }
               else stream.write(`echo:${cmd}\r\n$ `);
             }

@@ -542,9 +542,15 @@ struct AppContext {
   // Journal readers (admins, auditors) see every session; others only theirs.
   bool may_see_session(int user_id, const std::string &user,
                        const std::string &role, const std::string &owner);
-  // Resource managers (admins) may act on any session; others only on theirs.
+  // Resource managers (admins) may act on any session (end it); others only
+  // on theirs.
   bool may_operate_session(int user_id, const std::string &user,
                            const std::string &role, const std::string &owner);
+  // Driving a session (typing in its shell, its VNC or RBI screen, a
+  // Kubernetes exec) is for its owner only, administrators included: the
+  // vaulted credential is injected for whoever drives it, so anyone else would
+  // act under the owner's name. Administrators observe or end instead.
+  bool may_drive_session(const std::string &user, const std::string &owner);
 
   // ── License / entitlement (defined in license.cc) ──
   void load_license_watermark();                  // read watermark from DB

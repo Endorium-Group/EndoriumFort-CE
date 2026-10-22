@@ -100,11 +100,13 @@ void AppContext::record_failed_login_attempt(const std::string &key) {
   entry.consecutive_failures++;
   entry.last_failure_time = now;
   
-  // Calculate exponential backoff delay based on failure count
+  // Exponential backoff once failures pile up. Below 10 there is no block: a
+  // single typo must not lock out the user, nor everyone behind the same IP
+  // (keys are per user and per IP). check_rate_limit still caps attempts.
   // 10-19 failures: 30 seconds
   // 20-29 failures: 5 minutes
   // 30+ failures: 30 minutes
-  int backoff_seconds = 30;
+  int backoff_seconds = 0;
   if (entry.consecutive_failures >= 30) {
     backoff_seconds = 1800;  // 30 minutes
   } else if (entry.consecutive_failures >= 20) {
@@ -112,8 +114,10 @@ void AppContext::record_failed_login_attempt(const std::string &key) {
   } else if (entry.consecutive_failures >= 10) {
     backoff_seconds = 30;    // 30 seconds
   }
-  
-  entry.block_until = now + std::chrono::seconds(backoff_seconds);
+
+  if (backoff_seconds > 0) {
+    entry.block_until = now + std::chrono::seconds(backoff_seconds);
+  }
 }
 
 void AppContext::clear_login_attempts(const std::string &key) {
@@ -1716,6 +1720,11 @@ bool AppContext::may_operate_session(int user_id, const std::string &user,
                                      const std::string &role,
                                      const std::string &owner) {
   if (has_permission(user_id, role, "resources.manage")) return true;
+  return !owner.empty() && owner == user;
+}
+
+bool AppContext::may_drive_session(const std::string &user,
+                                   const std::string &owner) {
   return !owner.empty() && owner == user;
 }
 

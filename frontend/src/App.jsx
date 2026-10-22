@@ -1,7 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Terminal } from '@xterm/xterm';
-import { FitAddon } from '@xterm/addon-fit';
-import QRCode from 'qrcode';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import {
   changePassword,
   fetchHealth,
@@ -54,16 +51,6 @@ import {
 } from './api.js';
 import LoginPage from './pages/LoginPage.jsx';
 import MapPage from './pages/MapPage.jsx';
-import SessionsPage from './pages/SessionsPage.jsx';
-import RequestsPage from './pages/RequestsPage.jsx';
-import JournalPage from './pages/JournalPage.jsx';
-import ZonesPage from './pages/ZonesPage.jsx';
-import UsersAdmin from './pages/admin/UsersAdmin.jsx';
-import ResourcesAdmin from './pages/admin/ResourcesAdmin.jsx';
-import SecurityAdmin from './pages/admin/SecurityAdmin.jsx';
-import MfaCard from './pages/account/MfaCard.jsx';
-import LicenseAdmin from './pages/admin/LicenseAdmin.jsx';
-import AccountPage from './pages/account/AccountPage.jsx';
 import FirstLoginDialog from './pages/account/FirstLoginDialog.jsx';
 import AccessDialog from './pages/AccessDialog.jsx';
 import UpsellDialog from './ui/UpsellDialog.jsx';
@@ -71,7 +58,6 @@ import Dialog from './ui/Dialog.jsx';
 import LiveAlerts from './ui/LiveAlerts.jsx';
 import IncidentBanner from './ui/IncidentBanner.jsx';
 import LicenseBar from './ui/LicenseBar.jsx';
-import AgentDialog from './pages/AgentDialog.jsx';
 import AdminLayout from './layout/AdminLayout.jsx';
 
 import { withOperators } from './ui/sessions.js';
@@ -79,13 +65,56 @@ import { versionText } from './ui/version.js';
 import { applyBranding } from './ui/branding.js';
 import AppShell, { SHELL_TABS, tabForPath } from './layout/AppShell.jsx';
 import GettingStarted from './ui/GettingStarted.jsx';
+import SessionExpiryBanner, { EXPIRY_WARNING_MS } from './ui/SessionExpiryBanner.jsx';
 import { EmptyState, SectionCard } from './components/ui/primitives.jsx';
 import { useI18n } from './i18n.jsx';
+import { translateServerMessage } from './serverMessages.js';
+
+// Sections, admin and Pro panels, viewers: loaded when first shown, so the
+// sign-in page and the map do not wait for the whole app.
+const SessionsPage = lazy(() => import('./pages/SessionsPage.jsx'));
+const RequestsPage = lazy(() => import('./pages/RequestsPage.jsx'));
+const JournalPage = lazy(() => import('./pages/JournalPage.jsx'));
+const ZonesPage = lazy(() => import('./pages/ZonesPage.jsx'));
+const UsersAdmin = lazy(() => import('./pages/admin/UsersAdmin.jsx'));
+const ResourcesAdmin = lazy(() => import('./pages/admin/ResourcesAdmin.jsx'));
+const SecurityAdmin = lazy(() => import('./pages/admin/SecurityAdmin.jsx'));
+const MfaCard = lazy(() => import('./pages/account/MfaCard.jsx'));
+const LicenseAdmin = lazy(() => import('./pages/admin/LicenseAdmin.jsx'));
+const AccountPage = lazy(() => import('./pages/account/AccountPage.jsx'));
+const AgentDialog = lazy(() => import('./pages/AgentDialog.jsx'));
+// Remote Browser Isolation viewer — core feature (present in CE too).
+const RbiViewerModal = lazy(() => import('./RbiViewerModal.jsx'));
 // Premium UI comes from the `@pro` overlay: real components in the EE build
 // (src/pro/), no-op stubs in the CE build (src/pro-stub/). See vite.config.js.
-import { AppearancePage, EvidencePage, IntegrationsPage, JitPage, KubernetesPage, RelaysPage, ThreatsPage, VaultPage, VncViewerModal } from '@pro';
-// Remote Browser Isolation viewer — core feature (present in CE too).
-import RbiViewerModal from './RbiViewerModal.jsx';
+const loadPro = () => import('@pro');
+const AppearancePage = lazy(() => loadPro().then((m) => ({ default: m.AppearancePage })));
+const EvidencePage = lazy(() => loadPro().then((m) => ({ default: m.EvidencePage })));
+const IntegrationsPage = lazy(() => loadPro().then((m) => ({ default: m.IntegrationsPage })));
+const JitPage = lazy(() => loadPro().then((m) => ({ default: m.JitPage })));
+const KubernetesPage = lazy(() => loadPro().then((m) => ({ default: m.KubernetesPage })));
+const RelaysPage = lazy(() => loadPro().then((m) => ({ default: m.RelaysPage })));
+const ThreatsPage = lazy(() => loadPro().then((m) => ({ default: m.ThreatsPage })));
+const VaultPage = lazy(() => loadPro().then((m) => ({ default: m.VaultPage })));
+const VncViewerModal = lazy(() => loadPro().then((m) => ({ default: m.VncViewerModal })));
+
+// Page to come back to after signing in again (token expired or the user chose
+// to sign in again before it did). Per tab, consumed by the next sign-in.
+const RETURN_TO_KEY = 'endoriumfort_return_to';
+const rememberReturnTo = (path) => {
+  try {
+    if (path && path.startsWith('/') && !path.startsWith('/login')) sessionStorage.setItem(RETURN_TO_KEY, path);
+  } catch (_) {}
+};
+const takeReturnTo = () => {
+  try {
+    const path = sessionStorage.getItem(RETURN_TO_KEY) || '';
+    sessionStorage.removeItem(RETURN_TO_KEY);
+    // Same-origin app paths only (never //host or a full URL).
+    if (path.startsWith('/') && !path.startsWith('//')) return path;
+  } catch (_) {}
+  return '/';
+};
 
 // SSH session whose terminal this tab has open, so a reload can resume it.
 // Per tab (sessionStorage): another tab must not grab the same shell.
@@ -497,7 +526,14 @@ export default function App() {
     webauthnEnabled: false
   });
   // Token expiry
-  const [tokenExpiresAt, setTokenExpiresAt] = useState('');
+  const [tokenExpiresAt, setTokenExpiresAt] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('endoriumfort_auth') || '{}').expiresAt || '';
+    } catch (_) {
+      return '';
+    }
+  });
+  const [expiryWarning, setExpiryWarning] = useState(false);
   const terminalRef = useRef(null);
   // Long-lived xterm host: pages move this node around instead of owning it, so
   // an open SSH terminal survives switching sections.
@@ -873,19 +909,29 @@ export default function App() {
     if (tab === 'journal' || (['carte', 'sessions'].includes(tab) && canViewAudit)) loadAudit();
   }, [route, auth.token, canViewAudit]);
 
-  // Token expiry auto-logout
+  // Token expiry: a warning during the last minutes, then sign-out. The page
+  // is remembered so signing in again comes back to it.
   useEffect(() => {
+    setExpiryWarning(false);
     if (!tokenExpiresAt || !auth.token) return;
     const remaining = new Date(tokenExpiresAt).getTime() - Date.now();
     if (remaining <= 0) {
+      rememberReturnTo(window.location.pathname);
       onLogout();
       return;
     }
+    // setTimeout overflows past ~24.8 days (it would fire at once).
+    if (remaining > 2147483647) return;
+    const warn = setTimeout(() => setExpiryWarning(true), Math.max(0, remaining - EXPIRY_WARNING_MS));
     const timer = setTimeout(() => {
+      rememberReturnTo(window.location.pathname);
       onLogout();
       setAuthError(t('auth.sessionExpired'));
     }, remaining);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(warn);
+      clearTimeout(timer);
+    };
   }, [tokenExpiresAt, auth.token, t]);
 
   useEffect(() => {
@@ -1581,10 +1627,11 @@ export default function App() {
         token: payload.token,
         user: payload.user,
         role: normalizeRole(payload.role),
-        permissions: Array.isArray(payload.permissions) ? payload.permissions : []
+        permissions: Array.isArray(payload.permissions) ? payload.permissions : [],
+        expiresAt: payload.expiresAt || ''
       }));
       setAuthError('');
-      navigate('/');
+      navigate(takeReturnTo());
     } catch (error) {
       setAuthError(error.message || t('auth.loginFailed'));
     }
@@ -1646,9 +1693,10 @@ export default function App() {
         token: payload.token,
         user: payload.user,
         role: normalizeRole(payload.role),
-        permissions: Array.isArray(payload.permissions) ? payload.permissions : []
+        permissions: Array.isArray(payload.permissions) ? payload.permissions : [],
+        expiresAt: payload.expiresAt || ''
       }));
-      navigate('/');
+      navigate(takeReturnTo());
     } catch (error) {
       setAuthError(error.message || t('auth.passkeySignInFailed'));
     } finally {
@@ -1772,62 +1820,72 @@ export default function App() {
       return undefined;
     }
 
-    const terminal = new Terminal({
-      fontFamily: '"Cascadia Mono", Consolas, "IBM Plex Mono", monospace',
-      fontSize: 13,
-      lineHeight: 1.25,
-      cursorBlink: true,
-      theme: {
-        background: '#101216',
-        foreground: '#d4d7dc',
-        cursor: '#d4d7dc',
-        selectionBackground: '#3a64f055'
+    // xterm is loaded on first use instead of with the whole app.
+    let cancelled = false;
+    let cleanup = () => {};
+    Promise.all([import('@xterm/xterm'), import('@xterm/addon-fit')]).then(([{ Terminal }, { FitAddon }]) => {
+      if (cancelled || !terminalRef.current) return;
+      const terminal = new Terminal({
+        fontFamily: '"Cascadia Mono", Consolas, "IBM Plex Mono", monospace',
+        fontSize: 13,
+        lineHeight: 1.25,
+        cursorBlink: true,
+        theme: {
+          background: '#101216',
+          foreground: '#d4d7dc',
+          cursor: '#d4d7dc',
+          selectionBackground: '#3a64f055'
+        }
+      });
+      const fitAddon = new FitAddon();
+      terminal.loadAddon(fitAddon);
+      terminal.open(terminalRef.current);
+      try {
+        fitAddon.fit();
+      } catch (_) {
+        // Host not on screen yet; TerminalSlot refits once it is attached.
       }
+
+      terminalInstanceRef.current = terminal;
+      fitAddonRef.current = fitAddon;
+      setTerminalReady(true);
+
+      const handleResize = () => {
+        if (!fitAddonRef.current || !terminalInstanceRef.current) {
+          return;
+        }
+        fitAddonRef.current.fit();
+        if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+          socketRef.current.send(
+            JSON.stringify({
+              type: 'resize',
+              cols: terminalInstanceRef.current.cols,
+              rows: terminalInstanceRef.current.rows
+            })
+          );
+        }
+      };
+      window.addEventListener('resize', handleResize);
+
+      cleanup = () => {
+        window.removeEventListener('resize', handleResize);
+        if (terminalInputListenerRef.current) {
+          terminalInputListenerRef.current.dispose();
+          terminalInputListenerRef.current = null;
+        }
+        if (socketRef.current) {
+          socketRef.current.close();
+          socketRef.current = null;
+        }
+        terminal.dispose();
+        terminalInstanceRef.current = null;
+        fitAddonRef.current = null;
+        setTerminalReady(false);
+      };
     });
-    const fitAddon = new FitAddon();
-    terminal.loadAddon(fitAddon);
-    terminal.open(terminalRef.current);
-    try {
-      fitAddon.fit();
-    } catch (_) {
-      // Host not on screen yet; TerminalSlot refits once it is attached.
-    }
-
-    terminalInstanceRef.current = terminal;
-    fitAddonRef.current = fitAddon;
-    setTerminalReady(true);
-
-    const handleResize = () => {
-      if (!fitAddonRef.current || !terminalInstanceRef.current) {
-        return;
-      }
-      fitAddonRef.current.fit();
-      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-        socketRef.current.send(
-          JSON.stringify({
-            type: 'resize',
-            cols: terminalInstanceRef.current.cols,
-            rows: terminalInstanceRef.current.rows
-          })
-        );
-      }
-    };
-    window.addEventListener('resize', handleResize);
-
     return () => {
-      window.removeEventListener('resize', handleResize);
-      if (terminalInputListenerRef.current) {
-        terminalInputListenerRef.current.dispose();
-        terminalInputListenerRef.current = null;
-      }
-      if (socketRef.current) {
-        socketRef.current.close();
-        socketRef.current = null;
-      }
-      terminal.dispose();
-      terminalInstanceRef.current = null;
-      fitAddonRef.current = null;
-      setTerminalReady(false);
+      cancelled = true;
+      cleanup();
     };
   }, [activeTerminalSession]);
 
@@ -2106,7 +2164,7 @@ export default function App() {
               'No SSH credential available for this session': 'feedback.sshNoCredential'
             };
             setTerminalStatus('error');
-            setTerminalError(known[payload.message] ? t(known[payload.message]) : payload.message || t('feedback.sshError'));
+            setTerminalError(known[payload.message] ? t(known[payload.message]) : translateServerMessage(payload.message) || t('feedback.sshError'));
           }
         } catch (error) {
           terminal.write(event.data);
@@ -3013,11 +3071,13 @@ export default function App() {
       setTotpQrDataUrl('');
       return;
     }
-    QRCode.toDataURL(totpSetupData.otpauthUri, {
-      errorCorrectionLevel: 'M',
-      margin: 1,
-      width: 220
-    })
+    // Loaded only when a QR code is needed (two-factor enrolment).
+    import('qrcode')
+      .then(({ default: QRCode }) => QRCode.toDataURL(totpSetupData.otpauthUri, {
+        errorCorrectionLevel: 'M',
+        margin: 1,
+        width: 220
+      }))
       .then((url) => {
         if (active) {
           setTotpQrDataUrl(url);
@@ -3859,11 +3919,22 @@ export default function App() {
         onLogout={onLogout}
       >
         <div className="ef-legacy">
+          {expiryWarning && (
+            <SessionExpiryBanner
+              expiresAt={tokenExpiresAt}
+              onReconnect={() => {
+                rememberReturnTo(route);
+                onLogout();
+              }}
+            />
+          )}
           {renderGlobalAlerts()}
-          {shellBody}
+          <Suspense fallback={<p className="ef-muted ef-page-loading" role="status">{t('common.loading')}…</p>}>
+            {shellBody}
+          </Suspense>
         </div>
       </AppShell>
-      {renderSessionOverlays()}
+      <Suspense fallback={null}>{renderSessionOverlays()}</Suspense>
       {renderLicenseUpsell()}
       {renderBootstrapOverlay()}
     </>

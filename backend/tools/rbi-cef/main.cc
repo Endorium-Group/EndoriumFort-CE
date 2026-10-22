@@ -543,6 +543,14 @@ uint32_t mouse_button_flag(const std::string& b) {
   if (b == "middle") return EVENTFLAG_MIDDLE_MOUSE_BUTTON;
   return 0;
 }
+// The MouseEvent.buttons bitmask the client reports, as CEF event flags.
+uint32_t held_button_flags(int buttons) {
+  uint32_t f = 0;
+  if (buttons & 1) f |= EVENTFLAG_LEFT_MOUSE_BUTTON;
+  if (buttons & 2) f |= EVENTFLAG_RIGHT_MOUSE_BUTTON;
+  if (buttons & 4) f |= EVENTFLAG_MIDDLE_MOUSE_BUTTON;
+  return f;
+}
 cef_mouse_button_type_t mouse_button_type(const std::string& b) {
   if (b == "right") return MBT_RIGHT;
   if (b == "middle") return MBT_MIDDLE;
@@ -596,17 +604,21 @@ void handle_line(const std::string& line) {
   }
   if (kind == 'M') {
     char ev[16] = {0}, button[16] = {0};
-    int x = 0, y = 0, cc = 0, dx = 0, dy = 0;
-    if (sscanf(line.c_str() + 1, "%15s %d %d %15s %d %d %d", ev, &x, &y, button, &cc, &dx, &dy) < 3)
+    int x = 0, y = 0, cc = 0, dx = 0, dy = 0, buttons = 0;
+    if (sscanf(line.c_str() + 1, "%15s %d %d %15s %d %d %d %d", ev, &x, &y, button,
+               &cc, &dx, &dy, &buttons) < 3)
       return;
     std::string e(ev), b(button);
-    post_ui([e, b, x, y, cc, dx, dy] {
+    post_ui([e, b, x, y, cc, dx, dy, buttons] {
       if (!g_browser) return;
       auto host = g_browser->GetHost();
       CefMouseEvent me;
       me.x = x;
       me.y = y;
-      me.modifiers = mouse_button_flag(b);
+      // A move must carry the buttons being held, or CEF treats it as a hover
+      // and a press-drag-release never selects anything. The bitmask comes
+      // from the browser's MouseEvent.buttons (1 left, 2 right, 4 middle).
+      me.modifiers = mouse_button_flag(b) | held_button_flags(buttons);
       if (e == "move") host->SendMouseMoveEvent(me, false);
       else if (e == "down") host->SendMouseClickEvent(me, mouse_button_type(b), false, cc <= 0 ? 1 : cc);
       else if (e == "up") host->SendMouseClickEvent(me, mouse_button_type(b), true, cc <= 0 ? 1 : cc);
@@ -649,6 +661,18 @@ void handle_line(const std::string& line) {
           ce.windows_key_code = '\r';
           ce.character = '\r';
           ce.unmodified_character = '\r';
+          host->SendKeyEvent(ce);
+        }
+        // Backspace likewise. On Windows the OS turns VK_BACK into a WM_CHAR
+        // of 0x08 and cefclient forwards it; an off-screen browser gets no
+        // such translation, so a RAWKEYDOWN on its own deletes nothing.
+        if (keyCode == 8) {
+          CefKeyEvent ce;
+          ce.type = KEYEVENT_CHAR;
+          ce.modifiers = flags;
+          ce.windows_key_code = 8;
+          ce.character = 8;
+          ce.unmodified_character = 8;
           host->SendKeyEvent(ce);
         }
       } else {

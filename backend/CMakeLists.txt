@@ -530,6 +530,34 @@ if (BUILD_TESTING)
     target_link_libraries(endoriumfort_backend_resource_secret_tests PRIVATE ws2_32 mswsock)
   endif()
   add_test(NAME backend_resource_secret_test COMMAND endoriumfort_backend_resource_secret_tests)
+
+  # Failed sign-ins: no block for a few typos, backoff from 10 failures.
+  add_executable(endoriumfort_backend_login_backoff_tests
+    tests/login_backoff_test.cc
+    src/app_context.cc
+    src/http_proxy.cc
+    src/scim_query.cc
+    src/audit_query.cc
+    src/route_common.cc
+    src/settings.cc
+    src/iam_common.cc
+    src/license.cc
+  )
+  target_include_directories(endoriumfort_backend_login_backoff_tests
+    PRIVATE
+      ${crow_SOURCE_DIR}/include
+      ${asio_SOURCE_DIR}/asio/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_definitions(endoriumfort_backend_login_backoff_tests
+    PRIVATE ASIO_STANDALONE
+  )
+  target_link_libraries(endoriumfort_backend_login_backoff_tests
+    PRIVATE endoriumfort_db OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
+  if (WIN32)
+    target_link_libraries(endoriumfort_backend_login_backoff_tests PRIVATE ws2_32 mswsock)
+  endif()
+  add_test(NAME backend_login_backoff_test COMMAND endoriumfort_backend_login_backoff_tests)
   add_test(NAME backend_settings_test COMMAND endoriumfort_backend_settings_tests)
   add_test(NAME backend_ssh_guard_test COMMAND endoriumfort_backend_ssh_guard_tests)
   if (ENDORIUMFORT_PRO)  # pro tests

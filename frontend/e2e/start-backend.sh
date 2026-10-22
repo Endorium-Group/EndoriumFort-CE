@@ -23,5 +23,7 @@ export ENDORIUMFORT_WEBAUTHN_ORIGIN="http://localhost:${E2E_UI_PORT:-5175}"
 if [ -n "${E2E_LICENSE_FILE:-}" ]; then export ENDORIUMFORT_LICENSE_FILE="$E2E_LICENSE_FILE"; fi
 # Resource passwords are refused without a vault key: use a throwaway one.
 export ENDORIUMFORT_VAULT_KEY="$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')"
+# Short resume grace, so a test can watch a detached shell expire.
+export ENDORIUMFORT_SSH_RESUME_GRACE_SECONDS="${E2E_RESUME_GRACE:-10}"
 echo "Fresh bastion on :$PORT (data in $DATA, removed on exit)"
 "$BIN"

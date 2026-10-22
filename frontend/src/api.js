@@ -1,3 +1,5 @@
+import { translateServerMessage } from './serverMessages.js';
+
 let authToken = (() => {
   try {
     const saved = localStorage.getItem('endoriumfort_auth');
@@ -40,10 +42,31 @@ function notifyLicenseRequired(detail) {
   } catch (_) {}
 }
 
+// The error shown to the user: the server's message (or a JSON body's error /
+// message field) in the interface language. The original text stays on
+// err.serverMessage for code that needs to recognise it.
+function serverError(message, status) {
+  let text = String(message || '').trim();
+  if (text.startsWith('{')) {
+    try {
+      const body = JSON.parse(text);
+      text = String(body.error || body.message || text);
+    } catch (_) {}
+  }
+  const error = new Error(translateServerMessage(text));
+  error.serverMessage = text;
+  if (status) error.status = status;
+  return error;
+}
+
+async function readError(response, fallbackMessage) {
+  return serverError((await response.text()) || fallbackMessage, response.status);
+}
+
 async function ensureResponseOk(response, fallbackMessage) {
   if (response.status === 401) {
     notifyUnauthorized();
-    throw new Error('Session expired. Please login again.');
+    throw serverError('Session expired. Please login again.', 401);
   }
   if (response.status === 403 && response.headers.get('X-EndoriumFort-License-Required') === '1') {
     let detail = {};
@@ -51,11 +74,10 @@ async function ensureResponseOk(response, fallbackMessage) {
       detail = await response.clone().json();
     } catch (_) {}
     notifyLicenseRequired(detail);
-    throw new Error(detail.feature ? `License required for ${detail.feature}` : 'License required');
+    throw serverError(detail.feature ? `License required for ${detail.feature}` : 'License required', 403);
   }
   if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || fallbackMessage);
+    throw await readError(response, fallbackMessage);
   }
 }
 
@@ -260,8 +282,7 @@ export async function login(payload) {
     body: JSON.stringify(payload)
   });
   if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || 'Login failed');
+    throw await readError(response, 'Login failed');
   }
   return response.json();
 }
@@ -303,7 +324,7 @@ export async function fetchBootstrapStatus() {
 export async function fetchHealth() {
   const response = await fetch('/api/health');
   if (!response.ok) {
-    throw new Error('Health check failed');
+    throw serverError('Health check failed', response.status);
   }
   return response.json();
 }
@@ -465,7 +486,7 @@ export async function fetchAuditPage(params = {}) {
   });
   const response = await fetch(`/api/audit?${query}`, { headers: withAuthHeaders() });
   if (response.status === 410) {
-    const error = new Error(await response.text());
+    const error = await readError(response, 'This page of the audit log is no longer available');
     error.expired = true;
     throw error;
   }

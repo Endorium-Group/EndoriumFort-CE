@@ -221,7 +221,13 @@ function SessionDetails({ session, resource, route, relaysEnabled, onUnlockRelay
             <button type="button" className="ef-btn ef-btn--sm" onClick={() => onOpenRecordings(session.id)}>{t('sess.recordings')}</button>
           )}
           {active && canEnd && (
-            <ConfirmButton className="ef-btn ef-btn--sm ef-btn--danger" confirmLabel={t('sess.confirmEnd')} onConfirm={() => onTerminate(session.id)}>
+            <ConfirmButton
+              className="ef-btn ef-btn--sm ef-btn--danger"
+              title={t('confirm.endSession', { id: session.id })}
+              message={t('confirm.endSessionMsgUser', { user: session.operator, target: resource?.name || session.target })}
+              confirmLabel={t('sess.end')}
+              onConfirm={() => onTerminate(session.id)}
+            >
               {t('sess.end')}
             </ConfirmButton>
           )}
@@ -374,6 +380,11 @@ export default function SessionsPage({
     resources.find((r) => r.target === session?.target && Number(r.port) === Number(session?.port)) ||
     null;
   const nameOf = (session) => resourceOf(session)?.name || session.target;
+  const endSessionConfirm = (session) => ({
+    title: t('confirm.endSession', { id: session.id }),
+    message: t('confirm.endSessionMsgUser', { user: session.operator, target: nameOf(session) }),
+    confirmLabel: t('sess.end')
+  });
 
   const activeCount = sessions.filter((s) => s.status === 'active').length;
   // Operators present in the current tab, with their session count. Only
@@ -439,7 +450,7 @@ export default function SessionsPage({
           </button>
         )}
         {active && canEnd(session) && (
-          <ConfirmButton className="ef-btn ef-btn--sm ef-btn--danger" confirmLabel={t('sess.confirmEnd')} onConfirm={() => onTerminate(session.id)}>
+          <ConfirmButton className="ef-btn ef-btn--sm ef-btn--danger" {...endSessionConfirm(session)} onConfirm={() => onTerminate(session.id)}>
             {t('sess.end')}
           </ConfirmButton>
         )}
@@ -667,7 +678,7 @@ export default function SessionsPage({
                 </button>
               )}
               {canEnd(current) && (
-                <ConfirmButton confirmLabel={t('sess.confirmEnd')} onConfirm={() => onTerminate(current.id)}>
+                <ConfirmButton {...endSessionConfirm(current)} onConfirm={() => onTerminate(current.id)}>
                   {t('sess.end')}
                 </ConfirmButton>
               )}

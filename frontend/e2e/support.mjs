@@ -53,17 +53,20 @@ export async function apiLogin(user, password, secret) {
 }
 
 // What the app keeps in localStorage after signing in (see App.jsx onLogin).
-export const storedAuth = (login) => JSON.stringify({
+// `expiresAt` overrides when the app believes the token ends (the server's
+// own expiry is unchanged), to exercise the expiry warning.
+export const storedAuth = (login, expiresAt = login.expiresAt) => JSON.stringify({
   token: login.token,
   user: login.user,
   role: login.role,
-  permissions: Array.isArray(login.permissions) ? login.permissions : []
+  permissions: Array.isArray(login.permissions) ? login.permissions : [],
+  expiresAt: expiresAt || ''
 });
 
 // Opens the app already signed in as `login` (an apiLogin result). The
 // terminal WebSocket authenticates with the session cookie the login sets
 // (utils.h), so it is added next to the localStorage entry.
-export async function signedIn(page, login, route = '/carte') {
+export async function signedIn(page, login, route = '/carte', { expiresAt } = {}) {
   const ui = `http://localhost:${process.env.E2E_UI_PORT || 5175}`;
   await page.context().addCookies([
     { name: 'endoriumfort_token', value: login.token, url: ui, httpOnly: true, sameSite: 'Strict' }
@@ -73,6 +76,6 @@ export async function signedIn(page, login, route = '/carte') {
       localStorage.setItem('endoriumfort_auth', value);
       sessionStorage.setItem('__e2e_auth_set', '1');
     }
-  }, storedAuth(login));
+  }, storedAuth(login, expiresAt));
   await page.goto(route);
 }

@@ -71,6 +71,8 @@ export default function MfaCard({
                   aria-label={t('mfa.currentCode')}
                 />
                 <ConfirmButton
+                  title={t('confirm.disableTotp')}
+                  message={t('confirm.disableTotpMsg')}
                   confirmLabel={t('mfa.confirmDisable')}
                   disabled={totpLocked || totpDisableCode.length !== 6}
                   onConfirm={onDisable2FA}
@@ -140,6 +142,8 @@ export default function MfaCard({
                   </div>
                   <ConfirmButton
                     className="ef-btn ef-btn--sm ef-btn--danger"
+                    title={t('confirm.removeKey', { name: key.label || key.id })}
+                    message={t('confirm.removeKeyMsg')}
                     confirmLabel={t('mfa.confirmRemove')}
                     disabled={webauthnBusy || lastKeyLocked}
                     onConfirm={() => onDeletePasskey(key.id)}

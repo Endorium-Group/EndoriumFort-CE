@@ -130,9 +130,20 @@ bool ssh_connect(SshConnection &connection, const Session &session,
   return true;
 }
 
+SshConnection::~SshConnection() { ssh_disconnect(*this); }
+
+// Safe from any thread and more than once. The reader thread can end up
+// running this itself (it may hold the last reference, see ~SshConnection):
+// a thread cannot join itself, so it detaches instead.
 void ssh_disconnect(SshConnection &connection) {
   connection.running = false;
-  if (connection.reader.joinable()) connection.reader.join();
+  if (connection.reader.joinable()) {
+    if (connection.reader.get_id() == std::this_thread::get_id()) {
+      connection.reader.detach();
+    } else {
+      connection.reader.join();
+    }
+  }
   if (connection.channel) {
     libssh2_channel_close(connection.channel);
     libssh2_channel_free(connection.channel);
@@ -160,6 +171,11 @@ std::unordered_map<int, std::shared_ptr<SshConnection>> g_detached;
 // The end of the shell's output, kept whether a browser is attached or not and
 // replayed on resume, so a reloaded page shows what was on screen before.
 constexpr size_t kBacklogMax = 64 * 1024;
+
+// Refusal sent to someone who may see a session but not drive it.
+constexpr const char *kNotYourSession =
+    "{\"type\":\"error\",\"message\":\"This session belongs to another user: "
+    "use Observe to follow it\"}";
 
 // ENDORIUMFORT_SSH_RESUME_GRACE_SECONDS: how long a detached shell waits
 // (default 120 s, max 3600). 0 ends the session as soon as the page goes away.
@@ -401,27 +417,49 @@ void register_ssh_routes(CrowApp &app, AppContext &ctx) {
             }
             target_session = it->second;
           }
-          // Only the person who opened the session (or an admin) may drive it:
-          // the vaulted credential is injected for whoever starts the shell.
-          if (!ctx.may_operate_session(connection->auth_user_id,
-                                       connection->auth_user,
-                                       connection->auth_role,
-                                       ctx.session_owner(target_session))) {
-            conn.send_text(
-                "{\"type\":\"error\",\"message\":\"Session not found\"}");
+          // Only the person who opened the session may drive it, administrators
+          // included: the vaulted credential is injected for whoever starts the
+          // shell (see may_drive_session). Those who can see every session are
+          // told why; anyone else learns nothing about it.
+          const std::string owner = ctx.session_owner(target_session);
+          if (!ctx.may_drive_session(connection->auth_user, owner)) {
+            const bool sees_it =
+                ctx.may_see_session(connection->auth_user_id, connection->auth_user,
+                                    connection->auth_role, owner);
+            if (sees_it) {
+              audit_ssh_attach(ctx, "security.session.drive.denied",
+                               connection->auth_user, connection->auth_role,
+                               session_id, 0);
+            }
+            conn.send_text(sees_it ? kNotYourSession
+                                   : "{\"type\":\"error\",\"message\":\"Session not found\"}");
             return;
           }
 
           // The page was reloaded while this shell kept running: attach this
           // terminal to it instead of opening a second SSH connection.
+          // Same rule for a shell kept after a reload: it is live and logged
+          // in, so only the user who had it takes it back.
           std::shared_ptr<SshConnection> detached;
+          bool owned_by_someone_else = false;
           {
             std::lock_guard<std::mutex> lock(g_detached_mutex);
             auto it = g_detached.find(session_id);
             if (it != g_detached.end() && it->second->running) {
-              detached = it->second;
-              g_detached.erase(it);
+              if (it->second->auth_user_id != connection->auth_user_id) {
+                owned_by_someone_else = true;
+              } else {
+                detached = it->second;
+                g_detached.erase(it);
+              }
             }
+          }
+          if (owned_by_someone_else) {
+            audit_ssh_attach(ctx, "security.session.resume.denied",
+                             connection->auth_user, connection->auth_role,
+                             session_id, 0);
+            conn.send_text(kNotYourSession);
+            return;
           }
           if (detached) {
             {

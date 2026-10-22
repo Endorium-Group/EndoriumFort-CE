@@ -14,6 +14,8 @@ point to, so SSH sessions are real without any real host.
 | `access-request` (Pro) | critical resource: request with a reason, approval, purpose asked at connection; web resource asks for the reason |
 | `appearance` (Pro) | tab title and pre-sign-in message reach the login page |
 | `getting-started` | the map's guide shows only what is left; operators never see it |
+| `session-expiry` | a banner warns before the sign-in token ends; signing in again (before or after) comes back to the same page; server errors show in French |
+| `confirm-dialog` | sensitive actions confirm in a dialog: a double click or Enter never confirms, Escape cancels, a server error stays in the dialog, deleting a resource asks to type its name |
 
 ## Running
 

@@ -41,10 +41,6 @@ const formFrom = (resource) => {
   };
 };
 
-// The bastion refuses to store a password without a vault key (crypto.h).
-const saveErrorText = (err, t, fallback) =>
-  /no vault key configured/i.test(err?.message || '') ? t('resAdmin.noVaultKey') : err?.message || t(fallback);
-
 function Field({ id, label, hint, children, full }) {
   return (
     <div className={full ? 'ef-rfield is-full' : 'ef-rfield'}>
@@ -141,12 +137,12 @@ function ResourceEditor({ resource, initialProtocol, zones, onSaved, onDeleted, 
         try {
           await configureK8sResource(saved.id, { namespace: (form.k8sNamespace || 'default').trim(), kubeconfig: form.k8sKubeconfig || '' });
         } catch (err) {
-          setError(saveErrorText(err, t, 'resAdmin.k8sError'));
+          setError(err.message || t('resAdmin.k8sError'));
         }
       }
       onSaved(saved, isNew);
     } catch (err) {
-      setError(saveErrorText(err, t, 'resAdmin.saveError'));
+      setError(err.message || t('resAdmin.saveError'));
     } finally {
       setBusy(false);
     }
@@ -328,15 +324,17 @@ function ResourceEditor({ resource, initialProtocol, zones, onSaved, onDeleted, 
       <div className="ef-upanel__foot">
         {!isNew && (
           <ConfirmButton
+            title={t('confirm.deleteResource', { name: resource.name })}
+            message={t('confirm.deleteResourceMsg')}
+            requireText={resource.name}
             confirmLabel={t('resAdmin.confirmDelete')}
             disabled={busy}
             onConfirm={async () => {
               setBusy(true);
+              // An error stays in the confirmation dialog (ConfirmButton).
               try {
                 await deleteResource(resource.id);
                 onDeleted(resource.id);
-              } catch (err) {
-                setError(err.message || t('resAdmin.deleteError'));
               } finally {
                 setBusy(false);
               }

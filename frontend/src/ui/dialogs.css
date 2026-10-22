@@ -229,3 +229,9 @@
   transform: translateX(-50%);
   pointer-events: none;
 }
+
+/* Confirmation dialog (ui/ConfirmButton.jsx) */
+.ef-confirm__msg { margin: 0 0 12px; line-height: 1.5; color: var(--ef-text); }
+.ef-confirm__type { display: grid; gap: 6px; margin-bottom: 12px; }
+.ef-confirm__type label { font-size: 13px; color: var(--ef-text-2); }
+.ef-confirm .ef-alert { margin: 0; }

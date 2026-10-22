@@ -123,6 +123,9 @@ export default function SshGuardRules() {
                   {!rule.builtin && (
                     <ConfirmButton
                       className="ef-btn ef-btn--danger ef-btn--sm"
+                      title={t('confirm.removeRule', { name: rule.name })}
+                      message={t('confirm.removeRuleMsg')}
+                      confirmLabel={t('sshGuard.remove')}
                       disabled={busy === rule.name}
                       onConfirm={() => remove(rule)}
                     >

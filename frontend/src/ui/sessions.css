@@ -41,8 +41,6 @@
 .ef-sessempty { padding: 28px 16px; text-align: center; color: var(--ef-text-2); }
 .ef-sessempty p { margin: 0 0 12px; }
 .ef-rowacts { display: inline-flex; gap: 6px; justify-content: flex-end; }
-.ef .ef-btn.is-armed { background: var(--ef-danger); border-color: var(--ef-danger); color: #fff; }
-.ef .ef-btn.is-armed:hover:not(:disabled) { background: var(--ef-danger); filter: brightness(1.06); }
 
 .ef-workbar {
   display: flex;

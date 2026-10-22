@@ -273,6 +273,14 @@ struct SshConnection {
   std::string pending_command;
   // Session recording
   std::shared_ptr<SessionRecorder> recorder;
+
+  // Whoever drops the last reference (the websocket, the resume grace timer
+  // or the reader thread itself) releases the reader, the channel and the
+  // socket: destroying a still-joinable std::thread aborts the process.
+  SshConnection() = default;
+  SshConnection(const SshConnection &) = delete;
+  SshConnection &operator=(const SshConnection &) = delete;
+  ~SshConnection();  // ssh.cc
 };
 #endif
 #endif

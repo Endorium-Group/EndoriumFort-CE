@@ -1,7 +1,6 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.jsx';
-import RbiViewerModal from './RbiViewerModal.jsx';
 import { terminateSession } from './api.js';
 import { I18nProvider } from './i18n.jsx';
 import '@xterm/xterm/css/xterm.css';
@@ -31,11 +30,14 @@ if (rbiSessionId) {
     if (id) terminateSession(id).catch(() => {});
     window.close();
   };
-  createRoot(root).render(
-    <I18nProvider>
-      <RbiViewerModal session={{ id: Number(rbiSessionId) }} fullscreen onClose={closeRbiTab} />
-    </I18nProvider>
-  );
+  // Loaded only in this tab: the main app does not need it up front.
+  import('./RbiViewerModal.jsx').then(({ default: RbiViewerModal }) => {
+    createRoot(root).render(
+      <I18nProvider>
+        <RbiViewerModal session={{ id: Number(rbiSessionId) }} fullscreen onClose={closeRbiTab} />
+      </I18nProvider>
+    );
+  });
 } else {
   createRoot(root).render(
     <I18nProvider>

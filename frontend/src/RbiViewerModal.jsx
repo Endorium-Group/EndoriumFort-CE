@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useI18n } from './i18n.jsx';
 import ViewerFrame from './ui/ViewerFrame.jsx';
+import { translateServerMessage } from './serverMessages.js';
 
 // Remote Browser Isolation viewer (core / CE). Streams a server-side headless
 // Chromium as JPEG frames over /api/ws/rbi and forwards mouse/keyboard back as
@@ -23,6 +24,16 @@ function cdpButton(button) {
   if (button === 0) return 'left';
   if (button === 1) return 'middle';
   if (button === 2) return 'right';
+  return 'none';
+}
+
+// The primary button held during a move, from the MouseEvent `buttons` bitmask
+// (1 = left, 2 = right, 4 = middle). Reported on every move so the remote can
+// tell a drag from a hover.
+function heldButton(buttons) {
+  if (buttons & 1) return 'left';
+  if (buttons & 2) return 'right';
+  if (buttons & 4) return 'middle';
   return 'none';
 }
 
@@ -94,13 +105,13 @@ export default function RbiViewerModal({ session, onClose, fullscreen = false })
           const msg = JSON.parse(event.data);
           if (msg.type === 'error') {
             setStatus('error');
-            setStatusMessage(SERVER_MESSAGES[msg.message] ? t(SERVER_MESSAGES[msg.message]) : msg.message || t('viewer.error'));
+            setStatusMessage(SERVER_MESSAGES[msg.message] ? t(SERVER_MESSAGES[msg.message]) : translateServerMessage(msg.message) || t('viewer.error'));
           } else if (msg.type === 'status') {
             if (msg.message === 'connected') {
               setStatus('connected');
               setStatusMessage('');
             } else {
-              setStatusMessage(SERVER_MESSAGES[msg.message] ? t(SERVER_MESSAGES[msg.message]) : msg.message || '');
+              setStatusMessage(SERVER_MESSAGES[msg.message] ? t(SERVER_MESSAGES[msg.message]) : translateServerMessage(msg.message) || '');
             }
           }
         } catch (_) {
@@ -403,17 +414,25 @@ export default function RbiViewerModal({ session, onClose, fullscreen = false })
     if (now - lastMoveRef.current < 16) return;
     lastMoveRef.current = now;
     const { x, y } = normPoint(e);
-    send({ type: 'mouse', event: 'move', x, y, button: 'none' });
+    // The held buttons have to travel with the move. Without them the remote
+    // browser reads every move as a hover, so a press-drag-release never
+    // becomes a selection — it just moves the cursor.
+    send({ type: 'mouse', event: 'move', x, y, button: heldButton(e.buttons), buttons: e.buttons });
   };
   const onMouseDown = (e) => {
     focusKeyInput();
     clickCountRef.current = e.detail || 1;
+    // Keep receiving moves when the drag runs past the edge of the canvas,
+    // and the release even if it happens outside: otherwise the remote is
+    // left believing the button is still down.
+    try { e.currentTarget.setPointerCapture?.(e.nativeEvent?.pointerId ?? 1); } catch (_) { /* not a pointer event */ }
     const { x, y } = normPoint(e);
-    send({ type: 'mouse', event: 'down', x, y, button: cdpButton(e.button), clickCount: clickCountRef.current });
+    send({ type: 'mouse', event: 'down', x, y, button: cdpButton(e.button), buttons: e.buttons, clickCount: clickCountRef.current });
   };
   const onMouseUp = (e) => {
+    try { e.currentTarget.releasePointerCapture?.(e.nativeEvent?.pointerId ?? 1); } catch (_) { /* not a pointer event */ }
     const { x, y } = normPoint(e);
-    send({ type: 'mouse', event: 'up', x, y, button: cdpButton(e.button), clickCount: clickCountRef.current });
+    send({ type: 'mouse', event: 'up', x, y, button: cdpButton(e.button), buttons: e.buttons, clickCount: clickCountRef.current });
   };
   const onWheel = (e) => {
     const { x, y } = normPoint(e);

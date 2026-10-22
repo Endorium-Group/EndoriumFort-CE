@@ -823,9 +823,9 @@ void register_rbi_routes(CrowApp &app, AppContext &ctx) {
             conn.send_text("{\"type\":\"error\",\"message\":\"Forbidden\"}");
             return;
           }
-          // ...and the session must be this person's own (or the viewer an admin).
-          if (!ctx.may_operate_session(s->auth_user_id, s->auth_user, s->role,
-                                       ctx.session_owner(found))) {
+          // ...and the session must be this person's own, administrators
+          // included (see may_drive_session).
+          if (!ctx.may_drive_session(s->auth_user, ctx.session_owner(found))) {
             conn.send_text("{\"type\":\"error\",\"message\":\"Session not found\"}");
             return;
           }
@@ -1009,7 +1009,8 @@ void register_rbi_routes(CrowApp &app, AppContext &ctx) {
         // lines (trivially parseable in the helper, no JSON dep). We pass pixel
         // coords scaled from the client's normalized ones (the helper owns the
         // surface). Formats:
-        //   M <event> <x> <y> <button> <clickCount> <dx> <dy>   event=move|down|up|wheel
+        //   M <event> <x> <y> <button> <clickCount> <dx> <dy> <buttons>
+        //                                                    event=move|down|up|wheel
         //   K <event> <keyCode> <modifiers> <textB64>           event=down|up|char
         //   R <w> <h>
         if (cfg.engine == "tiles") {
@@ -1023,9 +1024,11 @@ void register_rbi_routes(CrowApp &app, AppContext &ctx) {
             const int cc = j.has("clickCount") ? j["clickCount"].i() : 0;
             const int dx = j.has("deltaX") ? static_cast<int>(j["deltaX"].d()) : 0;
             const int dy = j.has("deltaY") ? static_cast<int>(j["deltaY"].d()) : 0;
+            // Which buttons are held, so the helper can tell a drag from a hover.
+            const int buttons = j.has("buttons") ? j["buttons"].i() : 0;
             std::ostringstream o;
             o << "M " << ev << ' ' << x << ' ' << y << ' ' << button << ' ' << cc
-              << ' ' << dx << ' ' << dy;
+              << ' ' << dx << ' ' << dy << ' ' << buttons;
             send_helper_input(s, o.str());
           } else if (type == "key") {
             std::string ev = j.has("event") ? std::string(j["event"].s()) : "";
@@ -1066,9 +1069,15 @@ void register_rbi_routes(CrowApp &app, AppContext &ctx) {
               button != "none")
             button = "none";
           const int click_count = j.has("clickCount") ? j["clickCount"].i() : 0;
+          // `buttons` is what tells Chromium a move is a drag; without it every
+          // mouseMoved reads as a hover and text can never be selected.
+          const int buttons = j.has("buttons") ? j["buttons"].i() : 0;
+          const int modifiers = j.has("modifiers") ? j["modifiers"].i() : 0;
           std::ostringstream p;
           p << "{\"type\":\"" << cdp_type << "\",\"x\":" << x << ",\"y\":" << y
-            << ",\"button\":\"" << button << "\",\"clickCount\":" << click_count;
+            << ",\"button\":\"" << button << "\",\"buttons\":" << buttons
+            << ",\"modifiers\":" << modifiers
+            << ",\"clickCount\":" << click_count;
           if (cdp_type == "mouseWheel") {
             const double dx = j.has("deltaX") ? j["deltaX"].d() : 0.0;
             const double dy = j.has("deltaY") ? j["deltaY"].d() : 0.0;
@@ -1096,7 +1105,14 @@ void register_rbi_routes(CrowApp &app, AppContext &ctx) {
           if (!key.empty()) p << ",\"key\":\"" << json_escape(key) << "\"";
           if (!code.empty()) p << ",\"code\":\"" << json_escape(code) << "\"";
           if (!text.empty()) p << ",\"text\":\"" << json_escape(text) << "\"";
-          if (vk > 0) p << ",\"windowsVirtualKeyCode\":" << vk;
+          if (vk > 0)
+            p << ",\"windowsVirtualKeyCode\":" << vk
+              << ",\"nativeVirtualKeyCode\":" << vk;
+          // Enter carries no text from the client (it is a control key), but
+          // Chromium only inserts a newline or submits a form when the event
+          // carries one. Supply it here rather than trusting every caller.
+          if (text.empty() && vk == 13 && cdp_type != "keyUp")
+            p << ",\"text\":\"\\r\",\"unmodifiedText\":\"\\r\"";
           p << "}";
           cdp(s, "Input.dispatchKeyEvent", p.str(), true);
           return;

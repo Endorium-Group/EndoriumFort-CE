@@ -355,6 +355,9 @@ export default function UsersAdmin({
         {mode !== 'edit' && (
           <div className="ef-upanel__foot">
             <ConfirmButton
+              title={t('confirm.deleteUser', { name: selected.username })}
+              message={t('confirm.deleteUserMsg')}
+              requireText={selected.username}
               confirmLabel={t('users.confirmDelete')}
               disabled={!!deleteBlocked || busy}
               onConfirm={async () => {

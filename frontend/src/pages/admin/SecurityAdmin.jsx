@@ -118,7 +118,7 @@ export default function SecurityAdmin({
         ) : containment.status.enabled ? (
           <button type="button" className="ef-btn" disabled={containment.busy} onClick={() => containment.onToggle(false)}>{t('sec.containStop')}</button>
         ) : (
-          <ConfirmButton confirmLabel={t('sec.containConfirm')} disabled={containment.busy} onConfirm={() => containment.onToggle(true)}>{t('sec.containStart')}</ConfirmButton>
+          <ConfirmButton title={t('confirm.contain')} message={t('sec.containText')} confirmLabel={t('sec.containStart')} disabled={containment.busy} onConfirm={() => containment.onToggle(true)}>{t('sec.containStart')}</ConfirmButton>
         )}
       </section>
 
