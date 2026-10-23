@@ -61,9 +61,38 @@ std::string AppContext::generate_token() {
 
 // ── Rate limiting ───────────────────────────────────────────────────────
 
+namespace {
+// Failure history is forgotten after this long without activity (the longest
+// backoff block is 30 minutes, so an entry this quiet carries no block).
+constexpr std::chrono::seconds kRateLimitIdleForget{3600};
+// A sweep runs every this many checks, so the cost stays amortised.
+constexpr unsigned kRateLimitSweepEvery = 256;
+}  // namespace
+
+void AppContext::sweep_rate_limits_locked(
+    std::chrono::steady_clock::time_point now) {
+  // Every distinct username / IP / account tried leaves an entry: without this
+  // the map grows for as long as the process lives.
+  for (auto it = rate_limit_map.begin(); it != rate_limit_map.end();) {
+    const RateLimitEntry &entry = it->second;
+    const bool attempts_expired =
+        entry.attempts.empty() ||
+        (now - entry.attempts.back()) > rate_limit_window;
+    const bool failures_forgotten =
+        entry.consecutive_failures == 0 ||
+        (now - entry.last_failure_time) > kRateLimitIdleForget;
+    if (attempts_expired && failures_forgotten && entry.block_until <= now)
+      it = rate_limit_map.erase(it);
+    else
+      ++it;
+  }
+}
+
 bool AppContext::check_rate_limit(const std::string &key) {
   std::lock_guard<std::mutex> lock(rate_limit_mutex);
   auto now = std::chrono::steady_clock::now();
+  if (++rate_limit_checks % kRateLimitSweepEvery == 0)
+    sweep_rate_limits_locked(now);
 
   auto &entry = rate_limit_map[key];
   
@@ -88,9 +117,10 @@ bool AppContext::check_rate_limit(const std::string &key) {
 
 bool AppContext::is_login_blocked(const std::string &key) {
   std::lock_guard<std::mutex> lock(rate_limit_mutex);
-  auto now = std::chrono::steady_clock::now();
-  auto &entry = rate_limit_map[key];
-  return entry.block_until > now;
+  // find, not operator[]: a lookup must not create an entry.
+  const auto it = rate_limit_map.find(key);
+  return it != rate_limit_map.end() &&
+         it->second.block_until > std::chrono::steady_clock::now();
 }
 
 void AppContext::record_failed_login_attempt(const std::string &key) {
@@ -123,21 +153,14 @@ void AppContext::record_failed_login_attempt(const std::string &key) {
 
 void AppContext::clear_login_attempts(const std::string &key) {
   std::lock_guard<std::mutex> lock(rate_limit_mutex);
-  
-  auto &entry = rate_limit_map[key];
-  // Clear the attempt queue
-  while (!entry.attempts.empty()) {
-    entry.attempts.pop();
-  }
-  // Reset failure counter and blocks
-  entry.consecutive_failures = 0;
-  entry.block_until = std::chrono::steady_clock::now();  // Clear any block
+  // Nothing left to remember: drop the entry rather than keep an empty one.
+  rate_limit_map.erase(key);
 }
 
 int AppContext::get_consecutive_failures(const std::string &key) {
   std::lock_guard<std::mutex> lock(rate_limit_mutex);
-  auto &entry = rate_limit_map[key];
-  return entry.consecutive_failures;
+  const auto it = rate_limit_map.find(key);
+  return it == rate_limit_map.end() ? 0 : it->second.consecutive_failures;
 }
 
 int AppContext::record_anomaly_signal(const std::string &key,

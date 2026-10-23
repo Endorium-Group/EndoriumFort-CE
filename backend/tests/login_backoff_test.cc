@@ -4,7 +4,9 @@
 
 #include "app_context.h"
 
+#include <chrono>
 #include <iostream>
+#include <mutex>
 #include <string>
 
 namespace {
@@ -55,6 +57,35 @@ int main() {
   int allowed = 0;
   for (int i = 0; i < 12; ++i) allowed += capped.check_rate_limit(user) ? 1 : 0;
   expect(allowed == capped.rate_limit_max_attempts, "attempt cap not enforced");
+
+  // Lookups and a successful sign-in leave no entry behind, and a sweep drops
+  // what has nothing left to enforce while keeping live blocks.
+  AppContext swept;
+  const auto entries = [&swept] { return swept.rate_limit_map.size(); };
+  expect(!swept.is_login_blocked("login:nobody") &&
+             swept.get_consecutive_failures("login:nobody") == 0 &&
+             entries() == 0,
+         "lookup created an entry");
+  swept.check_rate_limit("login:bob");
+  swept.clear_login_attempts("login:bob");
+  expect(entries() == 0, "cleared entry kept");
+
+  swept.check_rate_limit("login:stale");
+  const std::string blocked = "login_ip:198.51.100.9";
+  for (int i = 0; i < 10; ++i) swept.record_failed_login_attempt(blocked);
+  const auto later = std::chrono::steady_clock::now() + std::chrono::seconds(400);
+  {
+    std::lock_guard<std::mutex> lock(swept.rate_limit_mutex);
+    swept.sweep_rate_limits_locked(later);  // past the 5 min window
+  }
+  expect(swept.rate_limit_map.count("login:stale") == 0, "stale entry not swept");
+  expect(swept.rate_limit_map.count(blocked) == 1,
+         "recent failure history swept too early");
+  {
+    std::lock_guard<std::mutex> lock(swept.rate_limit_mutex);
+    swept.sweep_rate_limits_locked(later + std::chrono::hours(2));
+  }
+  expect(entries() == 0, "idle failure history never forgotten");
 
   if (failures == 0) std::cout << "login backoff tests passed" << std::endl;
   return failures == 0 ? 0 : 1;

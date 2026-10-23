@@ -260,6 +260,9 @@ struct AppContext {
   std::unordered_map<std::string, RateLimitEntry> rate_limit_map;
   int rate_limit_max_attempts = 10;  // max attempts per window
   std::chrono::seconds rate_limit_window{300};  // 5 minute window
+  unsigned rate_limit_checks = 0;  // drives the periodic sweep (rate_limit_mutex)
+  // Drops entries with nothing left to enforce; caller holds rate_limit_mutex.
+  void sweep_rate_limits_locked(std::chrono::steady_clock::time_point now);
 
   // ── Database ──
   SqliteDb sqlite;

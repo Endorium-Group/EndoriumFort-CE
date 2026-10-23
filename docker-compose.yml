@@ -25,6 +25,7 @@ services:
       - ef-certbot-www:/var/www/certbot
     environment:
       - TZ=${TZ:-Europe/Paris}
+      - ENDORIUMFORT_TRUSTED_PROXIES=${ENDORIUMFORT_TRUSTED_PROXIES:-}
       - ACME_ENABLED=${ACME_ENABLED:-0}
       - ACME_DOMAIN=${ACME_DOMAIN:-}
       - ACME_EMAIL=${ACME_EMAIL:-}

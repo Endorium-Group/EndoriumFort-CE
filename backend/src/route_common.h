@@ -25,6 +25,11 @@ bool has_permission(AppContext &ctx, const AuthSession &auth,
 bool has_any_permission(AppContext &ctx, const AuthSession &auth,
                         const std::vector<std::string> &permissions);
 
+// Crow exception handler (installed in main.cc): a handler that reads a request
+// body field that is missing or of the wrong type (crow::json throws) answers
+// 400 instead of 500; anything else keeps Crow's default (500 + error log).
+void handle_route_exception(crow::response &res);
+
 // TTL after which an approved-but-unused access request is treated as expired.
 inline constexpr int64_t kApprovedAccessTtlSeconds = 3600;
 

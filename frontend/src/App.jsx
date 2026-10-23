@@ -1805,7 +1805,9 @@ export default function App() {
   };
 
   const loadAudit = async () => {
-    if (!auth.token) {
+    // Without audit.read the server answers 403: do not ask (e.g. after an
+    // operator ends their own session).
+    if (!auth.token || !canViewAudit) {
       setAuditError(t('app.auditorRoleHint'));
       return;
     }
@@ -3668,7 +3670,10 @@ export default function App() {
     );
   };
 
-  if (route === '/login') {
+  // Without a token the effect above sends the route to /login, but only after
+  // a first render: answer with the login page straight away instead of
+  // flashing an empty, signed-out shell.
+  if (route === '/login' || !auth.token) {
     return renderLogin();
   }
 

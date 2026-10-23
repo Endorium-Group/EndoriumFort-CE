@@ -104,6 +104,30 @@ while [ "$i" -lt 30 ]; do
   sleep 1
 done
 
+# Trusted reverse proxies (ingress, load balancer) in front of this container.
+# Their X-Forwarded-For is believed, so nginx (and the backend after it, through
+# X-Real-IP) sees the real client address instead of the proxy's. Empty = trust
+# nobody: a client cannot pick the address used for rate limits and audit.
+REAL_IP_CONF=/etc/nginx/endoriumfort-real-ip.conf
+: > "$REAL_IP_CONF"
+if [ -n "${ENDORIUMFORT_TRUSTED_PROXIES:-}" ]; then
+  for proxy in $(printf '%s' "$ENDORIUMFORT_TRUSTED_PROXIES" | tr ',' ' '); do
+    # Addresses / CIDRs only: anything else would be injected into nginx.conf.
+    case "$proxy" in
+      *[!0-9A-Fa-f.:/]* | "")
+        echo "[entrypoint] ERROR: invalid ENDORIUMFORT_TRUSTED_PROXIES entry: $proxy" >&2
+        exit 1
+        ;;
+    esac
+    echo "set_real_ip_from $proxy;" >> "$REAL_IP_CONF"
+  done
+  {
+    echo "real_ip_header X-Forwarded-For;"
+    echo "real_ip_recursive on;"
+  } >> "$REAL_IP_CONF"
+  echo "[entrypoint] Trusting X-Forwarded-For from: $ENDORIUMFORT_TRUSTED_PROXIES"
+fi
+
 # Start Nginx in background
 echo "[entrypoint] Starting Nginx on :443 (TLS) and :80 (redirect)..."
 nginx -g "daemon off;" &

@@ -198,6 +198,7 @@ COPY docker/nginx.conf /etc/nginx/sites-available/default
 
 # Default TLS certificate (self-signed) generated at build time
 RUN mkdir -p /etc/nginx/tls \
+  && touch /etc/nginx/endoriumfort-real-ip.conf \
   && openssl req -x509 -nodes -newkey rsa:2048 \
     -keyout /etc/nginx/tls/tls.key \
     -out /etc/nginx/tls/tls.crt \

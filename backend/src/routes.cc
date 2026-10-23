@@ -48,6 +48,23 @@ bool json_fields_are_bools(const crow::json::rvalue &body,
   return true;
 }
 
+// Re-authentication checks made with a valid token (current password, TOTP
+// code) get the same throttling as the login form: a stolen token must not be
+// enough to brute-force the 6-digit code or the password behind it. Keyed per
+// account; 429 (body set) when the account is currently throttled.
+std::optional<crow::response> reauth_throttled(AppContext &ctx,
+                                               const std::string &key) {
+  if (ctx.check_rate_limit(key)) return std::nullopt;
+  return crow::response(429, "Too many attempts. Try again later.");
+}
+
+void record_reauth_result(AppContext &ctx, const std::string &key, bool ok) {
+  if (ok)
+    ctx.clear_login_attempts(key);
+  else
+    ctx.record_failed_login_attempt(key);
+}
+
 // kApprovedAccessTtlSeconds moved to route_common.h (shared with pro/).
 constexpr int64_t kEphemeralLeaseTtlSeconds = 120;
 
@@ -540,6 +557,23 @@ void register_auth_routes(CrowApp &app, AppContext &ctx) {
         // Extract client IP for IP-based rate limiting
         std::string client_ip = get_client_ip(request);
 
+        // IP first: a blocked address must not get to create one username
+        // entry per name it tries (brute-force protection across usernames).
+        if (!ctx.check_rate_limit("login_ip:" + client_ip)) {
+          AuditEvent rl_evt;
+          rl_evt.id = ctx.next_audit_id.fetch_add(1);
+          rl_evt.type = "auth.login.rate_limited";
+          rl_evt.actor = user;
+          rl_evt.role = "";
+          rl_evt.createdAt = now_utc();
+          rl_evt.payloadJson = "{\"username\":\"" + json_escape(user) + "\",\"reason\":\"ip_rate_limit\",\"ip\":\"" + json_escape(client_ip) + "\"}";
+          rl_evt.payloadIsJson = true;
+          ctx.append_audit(rl_evt);
+          maybe_emit_auth_failure_burst_anomaly(ctx, user, client_ip,
+                                                rl_evt.type);
+          return crow::response(429, "Too many login attempts from this IP. Try again later.");
+        }
+
         // Check username-based rate limiting
         if (!ctx.check_rate_limit("login:" + user)) {
           AuditEvent rl_evt;
@@ -554,22 +588,6 @@ void register_auth_routes(CrowApp &app, AppContext &ctx) {
           maybe_emit_auth_failure_burst_anomaly(ctx, user, client_ip,
                                                 rl_evt.type);
           return crow::response(429, "Too many login attempts. Try again later.");
-        }
-
-        // Check IP-based rate limiting (brute-force protection across different usernames)
-        if (!ctx.check_rate_limit("login_ip:" + client_ip)) {
-          AuditEvent rl_evt;
-          rl_evt.id = ctx.next_audit_id.fetch_add(1);
-          rl_evt.type = "auth.login.rate_limited";
-          rl_evt.actor = user;
-          rl_evt.role = "";
-          rl_evt.createdAt = now_utc();
-          rl_evt.payloadJson = "{\"username\":\"" + json_escape(user) + "\",\"reason\":\"ip_rate_limit\",\"ip\":\"" + json_escape(client_ip) + "\"}";
-          rl_evt.payloadIsJson = true;
-          ctx.append_audit(rl_evt);
-          maybe_emit_auth_failure_burst_anomaly(ctx, user, client_ip,
-                                                rl_evt.type);
-          return crow::response(429, "Too many login attempts from this IP. Try again later.");
         }
 
         // Optional MFA payloads for 2FA
@@ -1025,7 +1043,13 @@ void register_auth_routes(CrowApp &app, AppContext &ctx) {
             return crow::response(404, "User not found");
           stored = it->second.password;
         }
-        if (!crypto::verify_password(current_password, stored))
+        const std::string reauth_key =
+            "reauth_password:" + std::to_string(auth->userId);
+        if (auto throttled = reauth_throttled(ctx, reauth_key))
+          return std::move(*throttled);
+        const bool password_ok = crypto::verify_password(current_password, stored);
+        record_reauth_result(ctx, reauth_key, password_ok);
+        if (!password_ok)
           return crow::response(401, "Current password is incorrect");
 
         // Validate new password
@@ -3040,7 +3064,13 @@ void register_totp_routes(CrowApp &app, AppContext &ctx) {
             if (secret.empty())
               return crow::response(400, "Call /api/auth/setup-2fa first");
 
-            if (!totp::verify_code(secret, code))
+            const std::string reauth_key =
+                "reauth_totp:" + std::to_string(auth->userId);
+            if (auto throttled = reauth_throttled(ctx, reauth_key))
+              return std::move(*throttled);
+            const bool code_ok = totp::verify_code(secret, code);
+            record_reauth_result(ctx, reauth_key, code_ok);
+            if (!code_ok)
               return crow::response(401, "Invalid TOTP code");
 
             // Enable 2FA
@@ -3118,7 +3148,13 @@ void register_totp_routes(CrowApp &app, AppContext &ctx) {
                   403,
                   "Admin accounts need at least one MFA method before TOTP can be disabled");
 
-            if (!totp::verify_code(secret, code))
+            const std::string reauth_key =
+                "reauth_totp:" + std::to_string(auth->userId);
+            if (auto throttled = reauth_throttled(ctx, reauth_key))
+              return std::move(*throttled);
+            const bool code_ok = totp::verify_code(secret, code);
+            record_reauth_result(ctx, reauth_key, code_ok);
+            if (!code_ok)
               return crow::response(401, "Invalid TOTP code");
 
             ctx.update_user_totp(auth->userId, false, "");

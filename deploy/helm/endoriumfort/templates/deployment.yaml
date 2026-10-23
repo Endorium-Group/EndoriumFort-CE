@@ -66,6 +66,10 @@ spec:
           env:
             - name: TZ
               value: {{ .Values.config.timezone | quote }}
+            {{- with .Values.config.trustedProxies }}
+            - name: ENDORIUMFORT_TRUSTED_PROXIES
+              value: {{ join "," . | quote }}
+            {{- end }}
             - name: ENDORIUMFORT_PORT
               value: {{ .Values.config.backendPort | quote }}
             - name: ENDORIUMFORT_TOKEN_TTL_SECONDS

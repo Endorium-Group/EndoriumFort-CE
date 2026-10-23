@@ -133,6 +133,11 @@ resources:
 # Application configuration (mapped to ENDORIUMFORT_* / ACME_* env vars).
 config:
   timezone: "Europe/Paris"
+  # Addresses / CIDRs of the ingress or load balancer in front of the pod. Their
+  # X-Forwarded-For is trusted so rate limits and the audit trail see the real
+  # client IP; left empty, every request appears to come from the ingress.
+  # Use your pod CIDR for an in-cluster ingress, e.g. ["10.42.0.0/16"].
+  trustedProxies: []
   backendPort: 8080
   tokenTtlSeconds: 3600
   webauthn:

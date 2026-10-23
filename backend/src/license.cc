@@ -281,6 +281,16 @@ bool gate_before(const crow::request &req, crow::response &res) {
 
   if (ctx->license_allows_feature(feature)) return false;  // entitled -> allow
 
+  // The login page asks this before anyone is signed in: "no SSO" is the
+  // answer, not an error (which every visitor's console would show). Also
+  // covers Community, where the premium route itself is absent.
+  if (path == "/api/auth/sso/login-options") {
+    res.code = 200;
+    res.set_header("Content-Type", "application/json");
+    res.body = "{\"available\":false}";
+    return true;
+  }
+
   const FeatureEntitlement *entry = find_feature(feature);
   const auto st = ctx->current_license_status();
   crow::json::wvalue body;

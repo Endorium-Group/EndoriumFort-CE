@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <stdexcept>
 #include <string>
 
 bool has_permission(AppContext &ctx, const AuthSession &auth,
@@ -326,3 +327,26 @@ bool gate_before(const crow::request &req, crow::response &res) {
 }
 
 }  // namespace security_setup
+
+// ─── Request-body errors -> 400 ──────────────────────────────────────────────
+void handle_route_exception(crow::response &res) {
+  try {
+    throw;
+  } catch (const std::runtime_error &e) {
+    // The messages crow::json::rvalue throws on a bad access (json.h).
+    static const char *const kJsonAccessErrors[] = {
+        "cannot find key",        "value is not",
+        "expected number, got",   "list out of bound",
+        "invalid json object",    "json type container"};
+    const std::string what = e.what();
+    for (const char *prefix : kJsonAccessErrors) {
+      if (what.rfind(prefix, 0) == 0) {
+        res = crow::response(400, "Invalid JSON body");
+        return;
+      }
+    }
+    crow::Router::default_exception_handler(res);
+  } catch (...) {
+    crow::Router::default_exception_handler(res);
+  }
+}

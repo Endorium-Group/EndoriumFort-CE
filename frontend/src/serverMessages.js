@@ -16,6 +16,8 @@ const FR = {
   'No access to this resource': 'Vous n’avez pas accès à cette ressource.',
   'Invalid JSON': 'Requête invalide (JSON).',
   'Invalid JSON body': 'Requête invalide (JSON).',
+  'Invalid field type': 'Requête invalide : un champ n’a pas le bon type.',
+  'Too many attempts. Try again later.': 'Trop de tentatives. Réessayez plus tard.',
   'Missing fields': 'Champs manquants.',
   'Field too long': 'Un champ est trop long.',
   'Too many values': 'Trop de valeurs.',
@@ -38,6 +40,11 @@ const FR = {
 
   // ── Sign-in, password, MFA ───────────────────────────────────────────────
   'Invalid credentials': 'Identifiant ou mot de passe incorrect.',
+  'Invalid username': 'Nom d’utilisateur invalide (128 caractères maximum, sans caractère de contrôle).',
+  'Cannot delete your own account': 'Vous ne pouvez pas supprimer votre propre compte.',
+  'Cannot delete the last admin': 'Impossible de supprimer le dernier administrateur.',
+  'Cannot demote the last admin': 'Impossible de rétrograder le dernier administrateur.',
+  'resourceId is required': 'Une ressource doit être indiquée pour ouvrir une session.',
   'Security setup required': 'Changez d’abord le mot de passe initial et ajoutez un second facteur.',
   'Missing username or password': 'Saisissez l’identifiant et le mot de passe.',
   'Missing user or password': 'Saisissez l’identifiant et le mot de passe.',

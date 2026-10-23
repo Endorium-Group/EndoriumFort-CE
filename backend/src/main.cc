@@ -7,6 +7,7 @@
 #include "http_proxy.h"
 #include "runtime_config.h"
 #include "settings.h"
+#include "route_common.h"
 #include "routes.h"
 #include "ssh_guard.h"
 #include "security_middleware.h"
@@ -63,6 +64,9 @@ int main() {
   }
 #endif
 #endif
+
+  // Missing/mistyped JSON fields: 400, not 500 (see handle_route_exception).
+  app.exception_handler(handle_route_exception);
 
   // ── Register all route groups ──
   register_health_routes(app, ctx);
