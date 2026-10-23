@@ -18,6 +18,7 @@
 #include <direct.h>
 #else
 #include <arpa/inet.h>
+#include <netinet/in.h>
 #endif
 
 namespace {
@@ -172,36 +173,58 @@ void AppContext::clear_anomaly_signal(const std::string &key) {
 
 // ── SSRF protection ─────────────────────────────────────────────────────
 
-bool AppContext::is_safe_target(const std::string &host, bool allow_loopback) {
-  // Block obvious loopback unless explicitly allowed (e.g. SSH dev jump hosts).
-  if (!allow_loopback &&
-      (host == "localhost" || host == "127.0.0.1" || host == "::1")) {
-    return false;
-  }
+bool is_blocked_ipv4_target(uint32_t ip, bool allow_loopback) {
+  if ((ip >> 24) == 0) return true;                       // 0.0.0.0/8
+  if ((ip >> 16) == 0xA9FE) return true;                  // 169.254.0.0/16
+  if (!allow_loopback && (ip >> 24) == 127) return true;  // 127.0.0.0/8
+  return false;
+}
 
-  // Always block unspecified address.
-  if (host == "0.0.0.0") {
+bool AppContext::is_safe_target(const std::string &raw_host, bool allow_loopback) {
+  // Resolvers are case-insensitive, accept a trailing dot and bracketed IPv6,
+  // so normalise before comparing or "LOCALHOST" / "localhost." slip through.
+  std::string host = to_lower(trim_copy(raw_host));
+  if (host.size() >= 2 && host.front() == '[' && host.back() == ']')
+    host = host.substr(1, host.size() - 2);
+  while (!host.empty() && host.back() == '.') host.pop_back();
+  if (host.empty()) return false;
+
+  const auto ends_with = [&host](const std::string &suffix) {
+    return host.size() >= suffix.size() &&
+           host.compare(host.size() - suffix.size(), suffix.size(), suffix) == 0;
+  };
+  if (!allow_loopback && (host == "localhost" || ends_with(".localhost")))
     return false;
-  }
 
   // Block metadata endpoints (cloud providers)
-  if (host == "169.254.169.254" || host == "metadata.google.internal" ||
-      host == "metadata.internal") {
+  if (host == "metadata.google.internal" || host == "metadata.internal") {
     return false;
   }
 
 #ifndef _WIN32
-  // Check if it's an IP address in blocked ranges
+  // inet_aton (unlike inet_pton) takes every IPv4 spelling the resolver takes:
+  // "127.1", "0x7f000001", "2130706433", "0177.0.0.1".
   struct in_addr addr;
-  if (inet_pton(AF_INET, host.c_str(), &addr) == 1) {
-    uint32_t ip = ntohl(addr.s_addr);
-    // 127.0.0.0/8 (loopback)
-    if (!allow_loopback && (ip >> 24) == 127) return false;
-    // 169.254.0.0/16 (link-local)
-    if ((ip >> 16) == 0xA9FE) return false;
-    // 0.0.0.0/8
-    if ((ip >> 24) == 0) return false;
+  if (inet_aton(host.c_str(), &addr) == 1) {
+    return !is_blocked_ipv4_target(ntohl(addr.s_addr), allow_loopback);
   }
+  struct in6_addr addr6;
+  if (inet_pton(AF_INET6, host.c_str(), &addr6) == 1) {
+    const unsigned char *b = addr6.s6_addr;
+    if (IN6_IS_ADDR_UNSPECIFIED(&addr6)) return false;
+    if (IN6_IS_ADDR_LINKLOCAL(&addr6)) return false;
+    if (IN6_IS_ADDR_LOOPBACK(&addr6)) return allow_loopback;
+    // IPv4-mapped (::ffff:a.b.c.d) reaches the embedded IPv4 address.
+    if (IN6_IS_ADDR_V4MAPPED(&addr6)) {
+      const uint32_t ip = (uint32_t(b[12]) << 24) | (uint32_t(b[13]) << 16) |
+                          (uint32_t(b[14]) << 8) | uint32_t(b[15]);
+      return !is_blocked_ipv4_target(ip, allow_loopback);
+    }
+  }
+#else
+  if (host == "0.0.0.0" || host == "169.254.169.254" ||
+      (!allow_loopback && (host == "127.0.0.1" || host == "::1")))
+    return false;
 #endif
 
   return true;
@@ -213,33 +236,51 @@ std::optional<AuthSession> AppContext::find_auth(const crow::request &request) {
   auto token = extract_auth_token_from_request(request);
 
   if (!token) return std::nullopt;
-  std::lock_guard<std::mutex> lock(auth_mutex);
-  auto it = auth_sessions.find(*token);
-  if (it == auth_sessions.end()) return std::nullopt;
-
-  // Check expiration
-  if (!it->second.expiresAt.empty() && it->second.expiresAt < now_utc()) {
-    auth_sessions.erase(it);
-    return std::nullopt;
-  }
-
-  return it->second;
+  return find_auth_by_token(*token);
 }
 
 std::optional<AuthSession> AppContext::find_auth_by_token(
     const std::string &token) {
   if (token.empty()) return std::nullopt;
-  std::lock_guard<std::mutex> lock(auth_mutex);
-  auto it = auth_sessions.find(token);
-  if (it == auth_sessions.end()) return std::nullopt;
+  AuthSession session;
+  {
+    std::lock_guard<std::mutex> lock(auth_mutex);
+    auto it = auth_sessions.find(token);
+    if (it == auth_sessions.end()) return std::nullopt;
 
-  // Check expiration
-  if (!it->second.expiresAt.empty() && it->second.expiresAt < now_utc()) {
-    auth_sessions.erase(it);
-    return std::nullopt;
+    // Check expiration
+    if (!it->second.expiresAt.empty() && it->second.expiresAt < now_utc()) {
+      auth_sessions.erase(it);
+      return std::nullopt;
+    }
+    session = it->second;
   }
 
-  return it->second;
+  // The token only snapshots the identity at login: re-read the account so a
+  // deleted user loses access and a role change (demotion) applies at once.
+  // Checked after releasing auth_mutex so the two locks are never nested.
+  std::optional<std::string> current_role;
+  {
+    std::lock_guard<std::mutex> lock(user_mutex);
+    auto user_it = users.find(session.userId);
+    if (user_it != users.end() && user_it->second.username == session.user) {
+      current_role = user_it->second.role;
+      session.securitySetupPending =
+          user_it->second.bootstrapPasswordChangeRequired ||
+          user_it->second.bootstrapMfaRequired;
+    }
+  }
+  if (!current_role) {
+    invalidate_token(token);
+    return std::nullopt;
+  }
+  if (*current_role != session.role) {
+    session.role = *current_role;
+    std::lock_guard<std::mutex> lock(auth_mutex);
+    auto it = auth_sessions.find(token);
+    if (it != auth_sessions.end()) it->second.role = session.role;
+  }
+  return session;
 }
 
 // ── Token management ────────────────────────────────────────────────────
@@ -1061,6 +1102,22 @@ void AppContext::init_database(const std::string &path) {
   load_recordings_from_db();
   load_access_requests_from_db();
   load_ephemeral_credentials_from_db();
+
+  // Grants left behind by deletes from older versions (which did not cascade)
+  // would attach to whichever account or resource reuses the id: purge them.
+  if (sqlite.is_open()) {
+    std::lock_guard<std::mutex> lock(sqlite.mutex);
+    std::string purge_err;
+    for (const char *sql :
+         {"DELETE FROM user_resource_permissions WHERE "
+          "user_id NOT IN (SELECT id FROM users) OR "
+          "resource_id NOT IN (SELECT id FROM resources);",
+          "DELETE FROM user_access_profiles WHERE "
+          "user_id NOT IN (SELECT id FROM users);"}) {
+      if (!sqlite.exec(sql, purge_err))
+        std::cerr << "SQLite orphan grant purge failed: " << purge_err << '\n';
+    }
+  }
 }
 
 void AppContext::seed_default_admin() {
@@ -1440,6 +1497,15 @@ bool AppContext::update_resource_db(const Resource &r) {
 bool AppContext::delete_resource_db(int resource_id) {
   if (!sqlite.is_open()) return true;
   std::lock_guard<std::mutex> lock(sqlite.mutex);
+  // SQLite does not enforce the declared foreign keys: drop the grants by hand,
+  // or they would apply to the next resource handed this id (ids restart at
+  // MAX(id)+1 after a restart).
+  auto grants = sqlite.prepare(
+      "DELETE FROM user_resource_permissions WHERE resource_id = ?1");
+  if (grants) {
+    grants.bind_int(1, resource_id);
+    grants.execute();
+  }
   auto stmt = sqlite.prepare("DELETE FROM resources WHERE id = ?1");
   if (!stmt) {
     std::cerr << "SQLite resource delete failed: " << sqlite.last_error() << '\n';
@@ -1550,6 +1616,17 @@ bool AppContext::delete_user_db(int user_id) {
   if (cleanup) {
     cleanup.bind_int(1, user_id);
     cleanup.execute();
+  }
+  // Same for resource grants and access profiles: a later account reusing the
+  // id must not inherit them.
+  for (const char *sql :
+       {"DELETE FROM user_resource_permissions WHERE user_id = ?1",
+        "DELETE FROM user_access_profiles WHERE user_id = ?1"}) {
+    auto dependent = sqlite.prepare(sql);
+    if (dependent) {
+      dependent.bind_int(1, user_id);
+      dependent.execute();
+    }
   }
   auto stmt = sqlite.prepare("DELETE FROM users WHERE id = ?1");
   if (!stmt) {

@@ -755,22 +755,25 @@ inline std::optional<int> parse_int_param(const char *value) {
 }
 
 inline std::string get_client_ip(const crow::request &request) {
-  // Check X-Forwarded-For header first (for reverse proxy scenarios)
-  if (request.get_header_value("X-Forwarded-For") != "") {
-    std::string forwarded_for = request.get_header_value("X-Forwarded-For");
-    // X-Forwarded-For can contain comma-separated IPs; take the first (original client)
-    size_t comma_pos = forwarded_for.find(',');
-    if (comma_pos != std::string::npos) {
-      std::string first_ip = forwarded_for.substr(0, comma_pos);
-      first_ip = trim_copy(first_ip);
-      if (!first_ip.empty()) return first_ip;
-    } else {
-      std::string trimmed = trim_copy(forwarded_for);
-      if (!trimmed.empty()) return trimmed;
-    }
+  const std::string remote_ip = request.remote_ip_address;
+  // Forwarding headers are only as trustworthy as the hop that set them: honour
+  // them only from the co-located reverse proxy (nginx in the image talks to the
+  // backend over loopback). Anyone reaching the backend directly could
+  // otherwise name any address and dodge the per-IP login limit.
+  const bool from_local_proxy = remote_ip == "127.0.0.1" || remote_ip == "::1" ||
+                                remote_ip == "::ffff:127.0.0.1";
+  if (from_local_proxy) {
+    // nginx overwrites X-Real-IP with the peer it saw ...
+    const std::string real_ip = trim_copy(request.get_header_value("X-Real-IP"));
+    if (!real_ip.empty()) return real_ip;
+    // ... whereas X-Forwarded-For starts with whatever the client sent: only
+    // the last entry, appended by the proxy itself, is reliable.
+    const std::string forwarded_for = request.get_header_value("X-Forwarded-For");
+    const size_t comma_pos = forwarded_for.rfind(',');
+    const std::string last_ip = trim_copy(comma_pos == std::string::npos
+                                              ? forwarded_for
+                                              : forwarded_for.substr(comma_pos + 1));
+    if (!last_ip.empty()) return last_ip;
   }
-  
-  // Fall back to direct connection IP
-  std::string remote_ip = request.remote_ip_address;
   return remote_ip.empty() ? "unknown" : remote_ip;
 }

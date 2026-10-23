@@ -181,6 +181,9 @@ struct AuthSession {
   // Agent deep-link tokens only: the session (opened through the access
   // policy) that the tunnels started with this token run under. 0 = none.
   int tunnelSessionId = 0;
+  // First-login password rotation or MFA enrolment still outstanding: the
+  // token may only reach the security-setup endpoints (see bootstrap gate).
+  bool securitySetupPending = false;
 };
 
 struct AuditEvent {

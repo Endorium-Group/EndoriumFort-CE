@@ -27,6 +27,27 @@
 #include <sstream>
 
 namespace {
+// True when every listed key that is present holds a JSON string: .s() on any
+// other type throws, which Crow turns into a 500.
+bool json_fields_are_strings(const crow::json::rvalue &body,
+                             std::initializer_list<const char *> keys) {
+  for (const char *key : keys) {
+    if (body.has(key) && body[key].t() != crow::json::type::String) return false;
+  }
+  return true;
+}
+
+// Same for booleans: .b() on anything but true/false throws as well.
+bool json_fields_are_bools(const crow::json::rvalue &body,
+                           std::initializer_list<const char *> keys) {
+  for (const char *key : keys) {
+    if (body.has(key) && body[key].t() != crow::json::type::True &&
+        body[key].t() != crow::json::type::False)
+      return false;
+  }
+  return true;
+}
+
 // kApprovedAccessTtlSeconds moved to route_common.h (shared with pro/).
 constexpr int64_t kEphemeralLeaseTtlSeconds = 120;
 
@@ -502,7 +523,15 @@ void register_auth_routes(CrowApp &app, AppContext &ctx) {
   CROW_ROUTE(app, "/api/auth/login").methods(crow::HTTPMethod::Post)(
       [&ctx](const crow::request &request) {
         auto body = crow::json::load(request.body);
-        if (!body) return crow::response(400, "Invalid JSON body");
+        if (!body || body.t() != crow::json::type::Object)
+          return crow::response(400, "Invalid JSON body");
+        if (!json_fields_are_strings(body, {"user", "password", "totpCode",
+                                            "webauthnRequestId",
+                                            "webauthnCredentialId",
+                                            "webauthnClientDataJSON",
+                                            "webauthnAuthenticatorData",
+                                            "webauthnSignature"}))
+          return crow::response(400, "Invalid field type");
         std::string user = body["user"].s();
         std::string password = body["password"].s();
         if (user.empty() || password.empty())
@@ -973,7 +1002,13 @@ void register_auth_routes(CrowApp &app, AppContext &ctx) {
         if (!auth) return crow::response(401, "Unauthorized");
 
         auto body = crow::json::load(request.body);
-        if (!body) return crow::response(400, "Invalid JSON body");
+        if (!body || body.t() != crow::json::type::Object)
+          return crow::response(400, "Invalid JSON body");
+        if (!body.has("currentPassword") || !body.has("newPassword"))
+          return crow::response(400, "Missing currentPassword or newPassword");
+        if (!json_fields_are_strings(body, {"currentPassword", "newPassword"}) ||
+            !json_fields_are_bools(body, {"keepCurrentSession"}))
+          return crow::response(400, "Invalid field type");
         std::string current_password = body["currentPassword"].s();
         std::string new_password = body["newPassword"].s();
         bool keep_current_session = body.has("keepCurrentSession") &&
@@ -1076,6 +1111,15 @@ void register_auth_routes(CrowApp &app, AppContext &ctx) {
 //  Users
 // ══════════════════════════════════════════════════════════════════════
 
+namespace {
+// Number of admin accounts; the caller holds ctx.user_mutex.
+int count_admins_locked(const AppContext &ctx) {
+  return static_cast<int>(std::count_if(
+      ctx.users.begin(), ctx.users.end(),
+      [](const auto &entry) { return entry.second.role == "admin"; }));
+}
+}  // namespace
+
 void register_user_routes(CrowApp &app, AppContext &ctx) {
   // GET /api/users
   CROW_ROUTE(app, "/api/users").methods(crow::HTTPMethod::Get)(
@@ -1112,9 +1156,13 @@ void register_user_routes(CrowApp &app, AppContext &ctx) {
         if (!has_permission(ctx, *auth, "users.manage"))
           return crow::response(403, "Forbidden");
         auto body = crow::json::load(request.body);
-        if (!body) return crow::response(400, "Invalid JSON body");
+        if (!body || body.t() != crow::json::type::Object)
+          return crow::response(400, "Invalid JSON body");
+        if (!json_fields_are_strings(body, {"username", "password", "role"}) ||
+            !json_fields_are_bools(body, {"forcePasswordRotation"}))
+          return crow::response(400, "Invalid field type");
 
-        std::string username = body["username"].s();
+        std::string username = trim_copy(body["username"].s());
         std::string password = body["password"].s();
         std::string role = body["role"].s();
         bool force_password_rotation =
@@ -1123,6 +1171,12 @@ void register_user_routes(CrowApp &app, AppContext &ctx) {
                 : normalize_user_role(role) == "admin";
         if (username.empty() || password.empty() || role.empty())
           return crow::response(400, "Missing username, password, or role");
+        // Control characters forge lines in the audit trail and logs.
+        if (username.size() > 128 ||
+            std::any_of(username.begin(), username.end(), [](unsigned char c) {
+              return c < 0x20 || c == 0x7f;
+            }))
+          return crow::response(400, "Invalid username");
         if (!is_allowed_user_role(role, {"operator", "admin", "auditor"}))
           return crow::response(400, "Invalid role");
 
@@ -1131,16 +1185,7 @@ void register_user_routes(CrowApp &app, AppContext &ctx) {
         if (!policy.valid)
           return crow::response(400, policy.message);
 
-        {
-          std::lock_guard<std::mutex> lock(ctx.user_mutex);
-          for (const auto &entry : ctx.users) {
-            if (entry.second.username == username)
-              return crow::response(409, "User already exists");
-          }
-        }
-
         UserAccount user;
-        user.id = ctx.next_user_id.fetch_add(1);
         user.username = username;
         user.password = crypto::hash_password(password);
         user.role = normalize_user_role(role);
@@ -1150,11 +1195,24 @@ void register_user_routes(CrowApp &app, AppContext &ctx) {
         user.bootstrapMfaRequired = user.role == "admin";
 
         {
+          // Check and claim the name under one lock: two concurrent requests
+          // must not both pass the check and both land in memory.
           std::lock_guard<std::mutex> lock(ctx.user_mutex);
+          // Case-insensitive, so "Admin" cannot pose as "admin" in the UI/audit.
+          const std::string wanted = to_lower(username);
+          for (const auto &entry : ctx.users) {
+            if (to_lower(entry.second.username) == wanted)
+              return crow::response(409, "User already exists");
+          }
+          user.id = ctx.next_user_id.fetch_add(1);
           ctx.users[user.id] = user;
         }
-        if (!ctx.insert_user(user))
+        if (!ctx.insert_user(user)) {
+          // Not persisted: it must not stay able to sign in until the restart.
+          std::lock_guard<std::mutex> lock(ctx.user_mutex);
+          ctx.users.erase(user.id);
           return crow::response(500, "Failed to persist user");
+        }
 
         AuditEvent event;
         event.id = ctx.next_audit_id.fetch_add(1);
@@ -1179,7 +1237,11 @@ void register_user_routes(CrowApp &app, AppContext &ctx) {
             if (!has_permission(ctx, *auth, "users.manage"))
               return crow::response(403, "Forbidden");
             auto body = crow::json::load(request.body);
-            if (!body) return crow::response(400, "Invalid JSON body");
+            if (!body || body.t() != crow::json::type::Object)
+              return crow::response(400, "Invalid JSON body");
+            if (!json_fields_are_strings(body, {"password", "role"}) ||
+                !json_fields_are_bools(body, {"forcePasswordRotation"}))
+              return crow::response(400, "Invalid field type");
 
             std::string password = body["password"].s();
             std::string role = body["role"].s();
@@ -1205,6 +1267,9 @@ void register_user_routes(CrowApp &app, AppContext &ctx) {
               if (it == ctx.users.end())
                 return crow::response(404, "User not found");
               user = it->second;
+              if (user.role == "admin" && normalized_role != "admin" &&
+                  count_admins_locked(ctx) <= 1)
+                return crow::response(409, "Cannot demote the last admin");
               user.password = crypto::hash_password(password);
               user.role = normalized_role;
               user.updatedAt = now_utc();
@@ -1216,6 +1281,12 @@ void register_user_routes(CrowApp &app, AppContext &ctx) {
             }
             if (!ctx.update_user_db(user))
               return crow::response(500, "Failed to persist user");
+            // The password was reset: sessions opened with the old one end,
+            // except the caller's own when editing themselves.
+            if (user_id == auth->userId)
+              ctx.invalidate_user_tokens_except(user_id, auth->token);
+            else
+              ctx.invalidate_user_tokens(user_id);
 
             AuditEvent event;
             event.id = ctx.next_audit_id.fetch_add(1);
@@ -1247,10 +1318,15 @@ void register_user_routes(CrowApp &app, AppContext &ctx) {
               if (it == ctx.users.end())
                 return crow::response(404, "User not found");
               user = it->second;
+              if (user_id == auth->userId)
+                return crow::response(409, "Cannot delete your own account");
+              if (user.role == "admin" && count_admins_locked(ctx) <= 1)
+                return crow::response(409, "Cannot delete the last admin");
               ctx.users.erase(it);
             }
             if (!ctx.delete_user_db(user_id))
               return crow::response(500, "Failed to delete user");
+            ctx.invalidate_user_tokens(user_id);
 
             AuditEvent event;
             event.id = ctx.next_audit_id.fetch_add(1);
@@ -1295,6 +1371,18 @@ void register_user_routes(CrowApp &app, AppContext &ctx) {
             if (!auth) return crow::response(401, "Unauthorized");
             if (!has_permission(ctx, *auth, "resources.assign"))
               return crow::response(403, "Forbidden");
+            // A grant for an id that does not exist yet would silently apply
+            // to whichever account or resource is created with it later.
+            {
+              std::lock_guard<std::mutex> lock(ctx.user_mutex);
+              if (!ctx.users.count(user_id))
+                return crow::response(404, "User not found");
+            }
+            {
+              std::lock_guard<std::mutex> lock(ctx.resource_mutex);
+              if (!ctx.resources.count(resource_id))
+                return crow::response(404, "Resource not found");
+            }
             if (!ctx.grant_resource_permission(user_id, resource_id))
               return crow::response(500, "Failed to grant permission");
 
@@ -1359,6 +1447,11 @@ void register_user_routes(CrowApp &app, AppContext &ctx) {
                                return item.id == profile_id;
                              })) {
               return crow::response(404, "Access profile not found");
+            }
+            {
+              std::lock_guard<std::mutex> lock(ctx.user_mutex);
+              if (!ctx.users.count(user_id))
+                return crow::response(404, "User not found");
             }
             if (!assign_access_profile_to_user(ctx, user_id, profile_id))
               return crow::response(500, "Failed to assign access profile");
@@ -1439,13 +1532,26 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
         if (!has_permission(ctx, *auth, "resources.manage"))
           return crow::response(403, "Forbidden");
         auto body = crow::json::load(request.body);
-        if (!body) return crow::response(400, "Invalid JSON body");
+        if (!body || body.t() != crow::json::type::Object)
+          return crow::response(400, "Invalid JSON body");
+        if (!body.has("name") || !body.has("target") || !body.has("protocol"))
+          return crow::response(400, "Missing name, target, or protocol");
+        if (!json_fields_are_strings(
+                body, {"name", "target", "protocol", "description", "imageUrl",
+                       "imageData", "tagsCsv", "credentialSource", "httpUsername",
+                       "httpPassword", "sshUsername", "sshPassword"}))
+          return crow::response(400, "Invalid field type");
 
         std::string name = body["name"].s();
         std::string target = body["target"].s();
         std::string protocol = body["protocol"].s();
         int port = 22;
-        if (body.has("port")) port = body["port"].i();
+        if (body.has("port")) {
+          if (body["port"].t() == crow::json::type::Number &&
+              (body["port"].d() < 1 || body["port"].d() > 65535))
+            return crow::response(400, "Invalid port");
+          port = body["port"].i();
+        }
         int tunnel_ticket_rate_limit_max_attempts = 0;
         if (body.has("tunnelTicketRateLimitMaxAttempts")) {
           tunnel_ticket_rate_limit_max_attempts =
@@ -1596,13 +1702,26 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
             if (!has_permission(ctx, *auth, "resources.manage"))
               return crow::response(403, "Forbidden");
             auto body = crow::json::load(request.body);
-            if (!body) return crow::response(400, "Invalid JSON body");
+            if (!body || body.t() != crow::json::type::Object)
+              return crow::response(400, "Invalid JSON body");
+            if (!body.has("name") || !body.has("target") || !body.has("protocol"))
+              return crow::response(400, "Missing name, target, or protocol");
+            if (!json_fields_are_strings(
+                    body, {"name", "target", "protocol", "description", "imageUrl",
+                           "imageData", "tagsCsv", "credentialSource", "httpUsername",
+                           "httpPassword", "sshUsername", "sshPassword"}))
+              return crow::response(400, "Invalid field type");
 
             std::string name = body["name"].s();
             std::string target = body["target"].s();
             std::string protocol = body["protocol"].s();
             int port = 22;
-            if (body.has("port")) port = body["port"].i();
+            if (body.has("port")) {
+              if (body["port"].t() == crow::json::type::Number &&
+                  (body["port"].d() < 1 || body["port"].d() > 65535))
+                return crow::response(400, "Invalid port");
+              port = body["port"].i();
+            }
             int tunnel_ticket_rate_limit_max_attempts = 0;
             if (body.has("tunnelTicketRateLimitMaxAttempts")) {
               tunnel_ticket_rate_limit_max_attempts =
@@ -1864,9 +1983,10 @@ SessionOpenResult open_session_with_policy(AppContext &ctx,
         query_user_access_profiles(ctx, auth->userId));
     risk_level = to_lower(resource.riskLevel);
   } else {
-    account = find_user_account_snapshot(ctx, auth->userId).value_or(UserAccount{});
-    decision.maxDurationSeconds = 3600;
-    decision.mfaRequirement = "any";
+    // A session outside any resource escapes resource assignment, the access
+    // policies and the SSRF guard, and is issued no grant, so nobody owns it:
+    // it could never be driven, seen or ended by whoever opened it.
+    return SessionOpenResult::failure(400, "resourceId is required");
   }
   if (mission_ref.empty() && !purpose.empty()) {
     mission_ref = purpose;
@@ -2364,7 +2484,19 @@ void register_session_routes(CrowApp &app, AppContext &ctx) {
         if (!has_permission(ctx, *auth, "sessions.create"))
           return crow::response(403, "Forbidden");
         auto body = crow::json::load(request.body);
-        if (!body) return crow::response(400, "Invalid JSON body");
+        if (!body || body.t() != crow::json::type::Object)
+          return crow::response(400, "Invalid JSON body");
+        if (!body.has("target") || !body.has("user") || !body.has("protocol"))
+          return crow::response(400, "Missing target, user, or protocol");
+        if (!json_fields_are_strings(body, {"target", "user", "protocol",
+                                            "justification", "ticketId",
+                                            "purpose", "purposeEvidence",
+                                            "missionRef"}))
+          return crow::response(400, "Invalid field type");
+        for (const char *key : {"resourceId", "accessRequestId", "port"}) {
+          if (body.has(key) && body[key].t() != crow::json::type::Number)
+            return crow::response(400, "Invalid field type");
+        }
 
         SessionOpenRequest open;
         open.target = body["target"].s();
@@ -2889,7 +3021,9 @@ void register_totp_routes(CrowApp &app, AppContext &ctx) {
             if (!auth) return crow::response(401, "Unauthorized");
 
             auto body = crow::json::load(request.body);
-            if (!body) return crow::response(400, "Invalid JSON body");
+            if (!body || body.t() != crow::json::type::Object ||
+                !json_fields_are_strings(body, {"code"}))
+              return crow::response(400, "Invalid JSON body");
             std::string code;
             if (body.has("code")) code = body["code"].s();
             if (code.empty())
@@ -2952,7 +3086,9 @@ void register_totp_routes(CrowApp &app, AppContext &ctx) {
             if (!auth) return crow::response(401, "Unauthorized");
 
             auto body = crow::json::load(request.body);
-            if (!body) return crow::response(400, "Invalid JSON body");
+            if (!body || body.t() != crow::json::type::Object ||
+                !json_fields_are_strings(body, {"code"}))
+              return crow::response(400, "Invalid JSON body");
             std::string code;
             if (body.has("code")) code = body["code"].s();
             if (code.empty())
@@ -3069,7 +3205,9 @@ void register_totp_routes(CrowApp &app, AppContext &ctx) {
             if (!auth) return crow::response(401, "Unauthorized");
 
             auto body = crow::json::load(request.body);
-            if (!body) return crow::response(400, "Invalid JSON body");
+            if (!body || body.t() != crow::json::type::Object ||
+                !json_fields_are_strings(body, {"method"}))
+              return crow::response(400, "Invalid JSON body");
 
             const std::string method =
                 body.has("method") ? std::string(body["method"].s()) : std::string();

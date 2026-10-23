@@ -697,7 +697,7 @@ void register_rbi_routes(CrowApp &app, AppContext &ctx) {
         auto token = extract_auth_token_from_request(request);
         if (!token || token->empty()) return false;
         auto auth = ctx.find_auth_by_token(*token);
-        if (!auth) return false;
+        if (!auth || auth->securitySetupPending) return false;
         if (!ctx.has_permission(auth->userId, auth->role, "sessions.create"))
           return false;
         if (userdata) *userdata = new RbiAccept{auth->userId, auth->user, auth->role};
@@ -715,7 +715,7 @@ void register_rbi_routes(CrowApp &app, AppContext &ctx) {
         std::lock_guard<std::mutex> lock(g_conns_mutex);
         g_conns[&conn] = s;
       })
-      .onclose([&ctx](crow::websocket::connection &conn, const std::string &) {
+      .onclose([&ctx](crow::websocket::connection &conn, const std::string &, uint16_t) {
         std::shared_ptr<RbiSession> s;
         {
           std::lock_guard<std::mutex> lock(g_conns_mutex);

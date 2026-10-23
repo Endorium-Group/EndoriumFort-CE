@@ -17,8 +17,8 @@ export default function WebProxyViewer({ resourceId, token, resourceName, onNavi
   }, [resourceId, token, onNavigate]);
 
   // Use relative proxy URL (cookie-based auth, no token in URL)
-  const iframeUrl = `/proxy/${resourceId}/`;
-  const backendProxyUrl = `/proxy/${resourceId}/`;
+  const iframeUrl = `/proxy/${resourceId}`;
+  const backendProxyUrl = `/proxy/${resourceId}`;
 
   const openInNewTab = () => {
     window.open(backendProxyUrl, '_blank', 'noopener,noreferrer');

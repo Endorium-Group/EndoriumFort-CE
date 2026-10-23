@@ -2,6 +2,7 @@
 #include "route_common.h"
 
 #include "app_context.h"
+#include "routes.h"  // g_license_ctx
 #include "settings.h"
 
 #include "utils.h"  // to_lower, trim_copy
@@ -292,3 +293,36 @@ std::optional<ParsedEndpointUrl> parse_endpoint_url(const std::string &raw_url) 
   if (parsed.host.empty()) return std::nullopt;
   return parsed;
 }
+
+// ─── First-login security gate (called from SecurityHeadersMiddleware) ──────
+namespace security_setup {
+
+bool gate_before(const crow::request &req, crow::response &res) {
+  AppContext *ctx = g_license_ctx;
+  if (!ctx) return false;
+
+  const std::string &path = req.url;
+  const auto starts_with = [&path](const char *prefix) {
+    return path.rfind(prefix, 0) == 0;
+  };
+  if (!starts_with("/api/") && !starts_with("/ws/") && !starts_with("/proxy/"))
+    return false;
+  // What the first-login dialog itself needs: sign-in/out, password rotation,
+  // MFA enrolment and the page chrome. Minting an agent token is not part of it.
+  if ((starts_with("/api/auth/") && !starts_with("/api/auth/agent-token")) ||
+      path == "/api/health" || starts_with("/api/branding") ||
+      path == "/api/license/status")
+    return false;
+
+  // No (valid) token: let the route answer 401 itself.
+  const auto token = extract_auth_token_from_request(req);
+  if (!token) return false;
+  const auto auth = ctx->find_auth_by_token(*token);
+  if (!auth || !auth->securitySetupPending) return false;
+
+  res.code = 403;
+  res.body = "Security setup required";
+  return true;
+}
+
+}  // namespace security_setup

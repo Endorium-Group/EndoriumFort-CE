@@ -36,7 +36,8 @@ HttpProxyResponse http_proxy_request(
     const std::string &request_body,
     const std::unordered_map<std::string, std::string> &request_headers,
   std::string &error,
-  bool use_tls) {
+  bool use_tls,
+  bool block_internal_targets) {
 
   HttpProxyResponse response;
 
@@ -56,6 +57,18 @@ HttpProxyResponse http_proxy_request(
     close(sock);
     if (result) freeaddrinfo(result);
     return response;
+  }
+
+  // Checked on the address actually dialled, so a DNS name pointing at
+  // loopback (or rebinding after the resource was saved) is refused too.
+  if (block_internal_targets && result->ai_family == AF_INET) {
+    const auto *in = reinterpret_cast<const sockaddr_in *>(result->ai_addr);
+    if (is_blocked_ipv4_target(ntohl(in->sin_addr.s_addr), false)) {
+      error = "Target address is not allowed";
+      close(sock);
+      freeaddrinfo(result);
+      return response;
+    }
   }
 
   int conn_err = connect(sock, result->ai_addr, result->ai_addrlen);
@@ -612,6 +625,8 @@ crow::response handle_proxy_request(
 
   auto auth = ctx.find_auth_by_token(token);
   if (!auth) return crow::response(401, "Unauthorized");
+  if (auth->securitySetupPending)
+    return crow::response(403, "Security setup required");
 
   const std::string proxy_cookie_key = token + ":" + std::to_string(resource_id);
   const bool use_proxy_cookie_jar = false;
@@ -807,7 +822,8 @@ crow::response handle_proxy_request(
   HttpProxyResponse proxy_response = http_proxy_request(
       method_name, target_host, target_port, target_url,
       request.body, proxy_headers, error,
-      to_lower(target_resource.protocol) == "https");
+      to_lower(target_resource.protocol) == "https",
+      /*block_internal_targets=*/true);
 
   if (!error.empty()) {
     AuditEvent event;
@@ -1161,7 +1177,7 @@ void register_web_resource_routes(CrowApp &app, AppContext &ctx) {
         payload["status"] = "ok";
         payload["resourceId"] = resource_id;
         payload["resourceName"] = target_resource.name;
-        payload["proxyUrl"] = "/proxy/" + std::to_string(resource_id) + "/";
+        payload["proxyUrl"] = "/proxy/" + std::to_string(resource_id);
         // Token is NOT included in response — use cookie-based auth instead
         return crow::response{payload};
       });

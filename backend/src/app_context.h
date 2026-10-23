@@ -97,6 +97,11 @@ struct WebAuthnChallenge {
   int64_t expiresAtEpoch = 0;
 };
 
+// SSRF guard for an already-resolved IPv4 address (host byte order):
+// true when it is unspecified, link-local (cloud metadata) or — unless
+// allow_loopback — loopback.
+bool is_blocked_ipv4_target(uint32_t ip, bool allow_loopback);
+
 struct AppContext {
   // ── Session state ──
   std::mutex session_mutex;

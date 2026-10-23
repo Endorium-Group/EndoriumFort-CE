@@ -610,6 +610,17 @@ export default function App() {
     }
   ]), [raw, t]);
 
+  // Until the first-login setup is done the server answers 403 to everything
+  // but that setup, so the data loaded behind the dialog came back empty.
+  // Reload once it completes (the session survives through the saved token).
+  const wasBootstrapRequired = useRef(bootstrapRequired);
+  useEffect(() => {
+    if (wasBootstrapRequired.current && !bootstrapRequired && auth.token) {
+      window.location.reload();
+    }
+    wasBootstrapRequired.current = bootstrapRequired;
+  }, [bootstrapRequired, auth.token]);
+
   useEffect(() => {
     try {
       localStorage.setItem('endoriumfort_live_alert_profile', liveAlertProfile);

@@ -38,6 +38,7 @@ const FR = {
 
   // ── Sign-in, password, MFA ───────────────────────────────────────────────
   'Invalid credentials': 'Identifiant ou mot de passe incorrect.',
+  'Security setup required': 'Changez d’abord le mot de passe initial et ajoutez un second facteur.',
   'Missing username or password': 'Saisissez l’identifiant et le mot de passe.',
   'Missing user or password': 'Saisissez l’identifiant et le mot de passe.',
   'Too many login attempts. Try again later.': 'Trop de tentatives de connexion. Réessayez plus tard.',

@@ -85,6 +85,13 @@ namespace license {
 bool gate_before(const crow::request &req, crow::response &res);
 }
 
+// Defined in route_common.cc. Returns true (403 already set) when the caller's
+// token belongs to an account that still has to rotate its initial password or
+// enrol MFA and the request is not part of that setup.
+namespace security_setup {
+bool gate_before(const crow::request &req, crow::response &res);
+}
+
 struct SecurityHeadersMiddleware {
   struct context {};
 
@@ -92,6 +99,8 @@ struct SecurityHeadersMiddleware {
                      context & /*ctx*/) {
     if (license::gate_before(req, res)) {
       res.end();  // short-circuit: premium feature not licensed
+    } else if (security_setup::gate_before(req, res)) {
+      res.end();  // short-circuit: first-login setup still outstanding
     }
   }
 

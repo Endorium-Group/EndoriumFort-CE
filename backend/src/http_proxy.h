@@ -21,7 +21,10 @@ HttpProxyResponse http_proxy_request(
     const std::string &request_body,
     const std::unordered_map<std::string, std::string> &request_headers,
     std::string &error,
-    bool use_tls = false);
+    bool use_tls = false,
+    // Refuse to connect when the name resolves to a loopback, link-local or
+    // unspecified address (SSRF guard for user-defined web resources).
+    bool block_internal_targets = false);
 
 // High-level handler: authenticates, resolves the target resource, proxies
 // the request and rewrites HTML/cookies/headers.  Used by the two

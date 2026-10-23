@@ -278,7 +278,7 @@ void register_ssh_routes(CrowApp &app, AppContext &ctx) {
                   << (token->size() > 8 ? token->substr(0, 8) + "..." : "(short)")
                   << std::endl;
         auto auth = ctx.find_auth_by_token(*token);
-        if (!auth) {
+        if (!auth || auth->securitySetupPending) {
           std::cerr << "[WS] onaccept: auth not found" << std::endl;
           return false;
         }
@@ -306,7 +306,7 @@ void register_ssh_routes(CrowApp &app, AppContext &ctx) {
         }
         std::cerr << "[WS] onopen: connection registered" << std::endl;
       })
-      .onclose([&ctx](crow::websocket::connection &conn, const std::string &) {
+      .onclose([&ctx](crow::websocket::connection &conn, const std::string &, uint16_t) {
         std::shared_ptr<SshConnection> connection;
         {
           std::lock_guard<std::mutex> lock(ctx.ws_mutex);
@@ -791,7 +791,7 @@ void register_ssh_routes(CrowApp &app, AppContext &ctx) {
         if (!token || token->empty()) return false;
 
         auto auth = ctx.find_auth_by_token(*token);
-        if (!auth) return false;
+        if (!auth || auth->securitySetupPending) return false;
         // Only admin and auditor can shadow
         if (!ctx.has_permission(auth->userId, auth->role, "ssh.shadow.watch"))
           return false;
@@ -830,7 +830,7 @@ void register_ssh_routes(CrowApp &app, AppContext &ctx) {
         conn.send_text("{\"type\":\"status\",\"message\":\"Shadow connected to session #" +
                        std::to_string(session_id) + " (read-only)\"}");
       })
-      .onclose([&ctx](crow::websocket::connection &conn, const std::string &) {
+      .onclose([&ctx](crow::websocket::connection &conn, const std::string &, uint16_t) {
         auto *data = static_cast<int *>(conn.userdata());
         if (data) {
           int session_id = *data;
