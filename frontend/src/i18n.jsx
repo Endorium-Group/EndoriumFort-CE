@@ -1201,6 +1201,9 @@ const translations = {
         revoked: 'The license has been revoked: premium features are turned off.',
         soon: 'The license expires in {days} days.',
         soonOne: 'The license expires within a day.',
+        none: 'No license is loaded: the bastion runs in the free tier and premium features are locked.',
+        invalid: 'The license was refused ({reason}): the bastion runs in the free tier and premium features are locked.',
+        invalidUnknown: 'verification failed',
         open: 'Open the license',
         dismiss: 'Hide'
       }
@@ -3160,6 +3163,9 @@ const translations = {
         revoked: 'La licence a été révoquée : les fonctions premium sont désactivées.',
         soon: 'La licence expire dans {days} jours.',
         soonOne: 'La licence expire dans moins d’un jour.',
+        none: 'Aucune licence n’est chargée : le bastion fonctionne en version gratuite et les fonctions premium sont verrouillées.',
+        invalid: 'La licence a été refusée ({reason}) : le bastion fonctionne en version gratuite et les fonctions premium sont verrouillées.',
+        invalidUnknown: 'vérification impossible',
         open: 'Ouvrir la licence',
         dismiss: 'Masquer'
       }

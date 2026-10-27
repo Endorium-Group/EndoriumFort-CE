@@ -3640,14 +3640,19 @@ export default function App() {
   // ── License banner (Enterprise edition only) ──────────────────────────────
   const renderLicenseBanner = () => {
     if (!auth.token || licenseEdition !== 'enterprise') return null;
-    const blocked = licenseState === 'expired' || licenseState === 'revoked';
+    // A refused license (bad signature, unknown issuer, damaged file) locks
+    // premium exactly like an expired one, so it gets the same red strip.
+    const blocked = licenseState === 'expired' || licenseState === 'revoked' || licenseState === 'invalid';
     const expiring = licenseValid && Number.isFinite(licenseDaysRemaining) && licenseDaysRemaining >= 0 &&
       licenseDaysRemaining <= 7 && !licenseBannerDismissed;
-    if (!blocked && !expiring) return null;
+    // No license at all: only administrators can act on it, and they may hide it.
+    const missing = licenseStatus && licenseState === 'none' && canManagePlatform && !licenseBannerDismissed;
+    if (!blocked && !expiring && !missing) return null;
     return (
       <LicenseBar
         state={licenseState}
         daysRemaining={licenseDaysRemaining}
+        reason={licenseStatus?.reason}
         canManage={canManagePlatform}
         onOpenLicense={() => navigate('/admin/license')}
         onDismiss={() => setLicenseBannerDismissed(true)}

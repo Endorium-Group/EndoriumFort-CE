@@ -163,9 +163,15 @@ void AppContext::reload_license() {
   }
 
   const auto st = current_license_status();
+  // A license that is there but refused (bad signature, unknown issuer,
+  // damaged file) silently drops the bastion to the free tier: give it its own
+  // event, with the reason, so it stands out in the journal and the SIEM.
+  const bool refused = st.state == license::LicenseState::Invalid;
   AuditEvent event;
   event.id = next_audit_id.fetch_add(1);
-  event.type = token.empty() ? "license.absent" : "license.reloaded";
+  event.type = token.empty() ? "license.absent"
+               : refused     ? "license.invalid"
+                             : "license.reloaded";
   event.actor = "system";
   event.role = "system";
   event.createdAt = now_utc();
@@ -174,7 +180,10 @@ void AppContext::reload_license() {
                       "\",\"tier\":\"" + json_escape(st.claims.tier) +
                       "\",\"kind\":\"" + json_escape(st.claims.kind) +
                       "\",\"daysRemaining\":" +
-                      std::to_string(st.daysRemaining) + "}";
+                      std::to_string(st.daysRemaining) +
+                      (refused ? ",\"reason\":\"" + json_escape(st.reason) + "\""
+                               : std::string()) +
+                      "}";
   event.payloadIsJson = true;
   append_audit(event);
 
@@ -418,9 +427,20 @@ void register_license_routes(CrowApp &app, AppContext &ctx) {
         const auto check = license::parse_and_verify(
             token, license::issuer_keys(), now, watermark, denylist);
         if (check.state == license::LicenseState::Invalid) {
-          return crow::response(400, std::string("Invalid license: ") +
-                                         (check.reason.empty() ? "verification failed"
-                                                               : check.reason));
+          const std::string reason =
+              check.reason.empty() ? "verification failed" : check.reason;
+          // Refused before anything is written: the current license stays.
+          AuditEvent rejected;
+          rejected.id = ctx.next_audit_id.fetch_add(1);
+          rejected.type = "license.rejected";
+          rejected.actor = auth->user;
+          rejected.role = auth->role;
+          rejected.createdAt = now_utc();
+          rejected.payloadJson =
+              "{\"reason\":\"" + json_escape(reason) + "\"}";
+          rejected.payloadIsJson = true;
+          ctx.append_audit(rejected);
+          return crow::response(400, "Invalid license: " + reason);
         }
 
         std::string path = ctx.license_file_path;
