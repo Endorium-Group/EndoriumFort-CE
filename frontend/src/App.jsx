@@ -50,6 +50,8 @@ import {
   fetchAccessGrants,
 } from './api.js';
 import LoginPage from './pages/LoginPage.jsx';
+import SshFilesDialog from './ui/SshFilesDialog.jsx';
+import SshTransferSettings from './pages/admin/SshTransferSettings.jsx';
 import MapPage from './pages/MapPage.jsx';
 import FirstLoginDialog from './pages/account/FirstLoginDialog.jsx';
 import AccessDialog from './pages/AccessDialog.jsx';
@@ -425,6 +427,7 @@ export default function App() {
   // Appearance (Pro): tab title/icon and login background, public and loaded before sign-in.
   const [branding, setBranding] = useState(null);
   const [licenseUpsell, setLicenseUpsell] = useState(null); // {feature, requiredTier} | null
+  const [filesSession, setFilesSession] = useState(null); // SSH file browser
   const [licenseBannerDismissed, setLicenseBannerDismissed] = useState(false);
   const [licenseUploadText, setLicenseUploadText] = useState('');
   const [licenseBusy, setLicenseBusy] = useState(false);
@@ -1887,7 +1890,7 @@ export default function App() {
           terminalInputListenerRef.current = null;
         }
         if (socketRef.current) {
-          socketRef.current.close();
+          socketRef.current.close(1000);
           socketRef.current = null;
         }
         terminal.dispose();
@@ -1905,7 +1908,9 @@ export default function App() {
   useEffect(() => {
     if (!autoConnectSessionId) return;
     if (!terminalReady) return;
-    if (!auth.token || (!sshPassword && resumeSessionId !== autoConnectSessionId)) return;
+    if (!auth.token) return;
+    if (!sshPassword && resumeSessionId !== autoConnectSessionId &&
+        !bastionInjectsCredential(activeTerminalSession)) return;
     if (!activeTerminalSession || activeTerminalSession.id !== autoConnectSessionId) return;
 
     setAutoConnectSessionId(null);
@@ -1916,7 +1921,8 @@ export default function App() {
     auth.token,
     sshPassword,
     activeTerminalSession,
-    resumeSessionId
+    resumeSessionId,
+    resources
   ]);
 
   // After a page reload: reopen the terminal of the SSH session this tab had
@@ -1937,6 +1943,15 @@ export default function App() {
     }
     openTerminal(session, { resume: true });
   }, [auth.token, sessions, activeTerminalSession]);
+
+  // The bastion holds the account's secret and injects it itself (vaulted
+  // password, brokered or ephemeral account): the terminal then connects with
+  // an empty password and the secret never travels to the browser.
+  const bastionInjectsCredential = (session) => {
+    const resource = resolveSessionResource(session);
+    if (!resource) return false;
+    return !!resource.hasCredentials || (resource.credentialSource || 'vaulted') !== 'vaulted';
+  };
 
   const resolveSessionResource = (session) => {
     if (!session) return null;
@@ -2058,6 +2073,18 @@ export default function App() {
       return;
     }
 
+    // Without the JIT licence (Community, free tier) there is no one-time lease
+    // (its routes are premium): the bastion injects the vaulted secret itself.
+    const connectWithInjectedSecret = () => {
+      setSshPassword('');
+      setAutoConnectSessionId(session.id);
+      setTerminalInfo(t('feedback.vaultInjected'));
+    };
+    if (!jitLicensed) {
+      connectWithInjectedSecret();
+      return;
+    }
+
     setTerminalInfo(t('feedback.autoReconnectAttempt'));
 
     try {
@@ -2067,9 +2094,12 @@ export default function App() {
         setSshPassword(creds.sshPassword);
         setAutoConnectSessionId(session.id);
         setTerminalInfo(t('feedback.vaultCredentialsLoaded'));
+      } else {
+        connectWithInjectedSecret();
       }
     } catch (_) {
-      setTerminalInfo(t('feedback.automaticCredentialRecoveryFailed'));
+      // No lease (policy, permission…): the bastion still holds the secret.
+      connectWithInjectedSecret();
     }
   };
 
@@ -2091,7 +2121,8 @@ export default function App() {
       setTerminalError(t('feedback.pickSessionToConnect'));
       return;
     }
-    if (!sshPassword && activeTerminalSession.id !== resumeSessionId) {
+    if (!sshPassword && activeTerminalSession.id !== resumeSessionId &&
+        !bastionInjectsCredential(activeTerminalSession)) {
       setTerminalError(t('feedback.sshPasswordRequired'));
       return;
     }
@@ -2119,7 +2150,9 @@ export default function App() {
       terminalInputListenerRef.current = null;
     }
     if (socketRef.current) {
-      socketRef.current.close();
+      // Always with a code: Crow echoes a code-less close as 1005, a reserved
+      // code the browser rejects ("broken close frame"). Same for every socket.
+      socketRef.current.close(1000);
       socketRef.current = null;
     }
 
@@ -2452,6 +2485,37 @@ export default function App() {
       }
     }
 
+    // File share: the drive opens in its own tab (?files=<sessionId>), which
+    // trades the session for a ticket to the separate file share service.
+    if (protocol === 'fileshare') {
+      const filesTab = window.open('about:blank', '_blank');
+      try {
+        const created = await createSession({
+          resourceId: resource.id,
+          target: resource.target,
+          user: auth.user,
+          protocol: resource.protocol,
+          port: resource.port,
+          justification: (accessMeta.justification || '').trim(),
+          ticketId: (accessMeta.ticketId || '').trim(),
+          purpose: (accessMeta.purpose || '').trim(),
+          purposeEvidence: (accessMeta.purposeEvidence || '').trim(),
+          accessRequestId: accessMeta.accessRequestId || undefined
+        });
+        setSessions((prev) => [created, ...prev]);
+        setSessionError('');
+        const url = `${window.location.origin}/?files=${created.id}`;
+        if (filesTab) filesTab.location = url;
+        else window.location.assign(url);
+        return true;
+      } catch (error) {
+        if (filesTab) filesTab.close();
+        lastConnectErrorRef.current = error.message || '';
+        setSessionError(error.message || 'Unable to create session');
+        return false;
+      }
+    }
+
     if (protocol === 'vnc') {
       try {
         const payload = {
@@ -2552,16 +2616,24 @@ export default function App() {
 
       // Auto-inject credentials only for vaulted mode.
       if (resource.hasCredentials && (resource.credentialSource || 'vaulted') === 'vaulted') {
-        try {
-          const lease = await issueEphemeralCredential(resource.id);
-          const creds = await consumeEphemeralCredential(lease.leaseId);
-          if (creds.sshPassword) {
-            setSshPassword(creds.sshPassword);
-            setAutoConnectSessionId(created.id);
+        // JIT licence: a one-time lease releases the secret. Without it
+        // (Community, free tier), or when no lease is granted, the bastion
+        // injects the vaulted secret itself.
+        let leased = false;
+        if (jitLicensed) {
+          try {
+            const lease = await issueEphemeralCredential(resource.id);
+            const creds = await consumeEphemeralCredential(lease.leaseId);
+            if (creds.sshPassword) {
+              setSshPassword(creds.sshPassword);
+              leased = true;
+            }
+          } catch (_) {
+            // fall through to the injected secret
           }
-        } catch (_) {
-          // JIT-first: if lease issuance fails, fall back to manual password entry.
         }
+        if (!leased) setSshPassword('');
+        setAutoConnectSessionId(created.id);
       } else if ((resource.credentialSource || 'vaulted') !== 'vaulted') {
         setSshPassword('');
         setAutoConnectSessionId(created.id);
@@ -2690,6 +2762,10 @@ export default function App() {
       openTerminal(session);
       return;
     }
+    if (protocol === 'fileshare') {
+      window.open(`${window.location.origin}/?files=${session.id}`, '_blank');
+      return;
+    }
     if (!isAgentTunnelProtocol(protocol)) return;
     const resource = resources.find((item) => Number(item.id) === Number(session.resourceId));
     if (!resource) return;
@@ -2708,6 +2784,10 @@ export default function App() {
     const protocol = String(session?.protocol || '').toLowerCase();
     if (protocol === 'vnc') {
       setVncViewerSession(session);
+      return;
+    }
+    if (protocol === 'fileshare') {
+      resumeSession(session);
       return;
     }
     await openTerminal(session);
@@ -3176,7 +3256,7 @@ export default function App() {
 
   const closeShadow = () => {
     if (shadowSocketRef.current) {
-      shadowSocketRef.current.close();
+      shadowSocketRef.current.close(1000);
       shadowSocketRef.current = null;
     }
     if (shadowTermInstanceRef.current) {
@@ -3481,6 +3561,7 @@ export default function App() {
           onGo={(target) => navigate(target)}
         >
           <MfaCard {...mfaCardProps} />
+          {canManagePlatform && <SshTransferSettings />}
         </SecurityAdmin>
       ) : null}
     </AdminLayout>
@@ -3550,6 +3631,10 @@ export default function App() {
   // Modals and viewers opened by session actions, available from every section.
   const renderSessionOverlays = () => (
     <>
+    {filesSession && (
+      <SshFilesDialog session={filesSession} onClose={() => setFilesSession(null)} />
+    )}
+
     {vncViewerSession && (
       <VncViewerModal
         session={{ ...vncViewerSession, resourceName: resources.find((r) => Number(r.id) === Number(vncViewerSession.resourceId))?.name }}
@@ -3908,6 +3993,7 @@ export default function App() {
           openRecordings(sessionId);
         }}
         onNewSession={() => navigate('/carte')}
+        onOpenFiles={(session) => setFilesSession(session)}
       />
     );
   }

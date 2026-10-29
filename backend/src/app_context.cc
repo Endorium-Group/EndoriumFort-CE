@@ -862,6 +862,8 @@ void AppContext::init_database(const std::string &path) {
   sqlite.exec("ALTER TABLE resources ADD COLUMN require_dual_approval INTEGER DEFAULT 0;", err);
   sqlite.exec("ALTER TABLE resources ADD COLUMN enable_command_guard INTEGER DEFAULT 0;", err);
   sqlite.exec("ALTER TABLE resources ADD COLUMN adaptive_access_policy INTEGER DEFAULT 0;", err);
+  sqlite.exec("ALTER TABLE resources ADD COLUMN allow_file_download INTEGER DEFAULT 0;", err);
+  sqlite.exec("ALTER TABLE resources ADD COLUMN allow_file_upload INTEGER DEFAULT 0;", err);
   sqlite.exec("ALTER TABLE resources ADD COLUMN risk_level TEXT DEFAULT 'low';", err);
   sqlite.exec("ALTER TABLE resources ADD COLUMN tunnel_ticket_rate_limit_max_attempts INTEGER DEFAULT 0;", err);
   sqlite.exec("ALTER TABLE resources ADD COLUMN tags_csv TEXT;", err);
@@ -1253,6 +1255,7 @@ bool AppContext::update_session_termination(const Session &session) {
 void AppContext::terminate_session(int session_id, const std::string &actor,
                                   const std::string &role,
                                   const std::string &event_type) {
+  forget_ssh_identity(session_id);  // the session's SSH password leaves memory
   Session terminated;
   {
     std::lock_guard<std::mutex> lock(session_mutex);
@@ -1370,7 +1373,8 @@ void AppContext::load_resources_from_db() {
       "created_at, updated_at, ssh_username, ssh_password, "
       "require_access_justification, require_dual_approval, "
       "enable_command_guard, adaptive_access_policy, risk_level, "
-      "tunnel_ticket_rate_limit_max_attempts, agent_protocol FROM resources";
+      "tunnel_ticket_rate_limit_max_attempts, agent_protocol, "
+      "allow_file_download, allow_file_upload FROM resources";
   auto stmt = sqlite.prepare(sql);
   if (!stmt) {
     std::cerr << "SQLite resource select failed: " << sqlite.last_error() << '\n';
@@ -1414,6 +1418,8 @@ void AppContext::load_resources_from_db() {
         r.tunnelTicketRateLimitMaxAttempts = 0;
       }
       stmt.column_text_into(22, r.agentProtocol);
+      r.allowFileDownload = stmt.column_int(23) != 0;
+      r.allowFileUpload = stmt.column_int(24) != 0;
       resources[r.id] = r;
       if (r.id > max_id) max_id = r.id;
     }
@@ -1430,9 +1436,10 @@ bool AppContext::insert_resource(const Resource &r) {
       "http_password, created_at, updated_at, ssh_username, ssh_password, "
       "require_access_justification, require_dual_approval, "
       "enable_command_guard, adaptive_access_policy, risk_level, "
-      "tunnel_ticket_rate_limit_max_attempts, agent_protocol) "
+      "tunnel_ticket_rate_limit_max_attempts, agent_protocol, "
+      "allow_file_download, allow_file_upload) "
       "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, "
-      "?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)");
+      "?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)");
   if (!stmt) {
     std::cerr << "SQLite resource insert failed: " << sqlite.last_error() << '\n';
     return false;
@@ -1465,6 +1472,8 @@ bool AppContext::insert_resource(const Resource &r) {
   stmt.bind_text(21, r.riskLevel);
   stmt.bind_int(22, std::max(0, r.tunnelTicketRateLimitMaxAttempts));
   stmt.bind_text_or_null(23, r.agentProtocol);
+  stmt.bind_int(24, r.allowFileDownload ? 1 : 0);
+  stmt.bind_int(25, r.allowFileUpload ? 1 : 0);
   const bool ok = stmt.execute();
   if (!ok) std::cerr << "SQLite resource insert failed: " << sqlite.last_error() << '\n';
   return ok;
@@ -1480,7 +1489,8 @@ bool AppContext::update_resource_db(const Resource &r) {
       "updated_at=?12, ssh_username=?13, ssh_password=?14, "
       "require_access_justification=?15, require_dual_approval=?16, "
       "enable_command_guard=?17, adaptive_access_policy=?18, risk_level=?19, "
-      "tunnel_ticket_rate_limit_max_attempts=?20, agent_protocol=?21 "
+      "tunnel_ticket_rate_limit_max_attempts=?20, agent_protocol=?21, "
+      "allow_file_download=?23, allow_file_upload=?24 "
       "WHERE id=?22");
   if (!stmt) {
     std::cerr << "SQLite resource update failed: " << sqlite.last_error() << '\n';
@@ -1512,6 +1522,8 @@ bool AppContext::update_resource_db(const Resource &r) {
   stmt.bind_int(20, std::max(0, r.tunnelTicketRateLimitMaxAttempts));
   stmt.bind_text_or_null(21, r.agentProtocol);
   stmt.bind_int(22, r.id);
+  stmt.bind_int(23, r.allowFileDownload ? 1 : 0);
+  stmt.bind_int(24, r.allowFileUpload ? 1 : 0);
   const bool ok = stmt.execute();
   if (!ok) std::cerr << "SQLite resource update failed: " << sqlite.last_error() << '\n';
   return ok;

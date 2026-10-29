@@ -426,6 +426,27 @@ export async function terminateSession(sessionId) {
   return response.json();
 }
 
+// ── File share resources (core) ──
+// Single-use ticket for the drive service, for the owner of an active
+// "fileshare" session. Asked again to renew the drive session.
+export async function fetchFileshareTicket(sessionId) {
+  const response = await fetch(`/api/sessions/${sessionId}/fileshare-ticket`, {
+    method: 'POST',
+    headers: withAuthHeaders()
+  });
+  await ensureResponseOk(response, 'Failed to open the drive');
+  return response.json();
+}
+
+// People who may open the same drive (and so can be given a share).
+export async function fetchFileshareDirectory(resourceId) {
+  const response = await fetch(`/api/resources/${resourceId}/fileshare/directory`, {
+    headers: withAuthHeaders()
+  });
+  await ensureResponseOk(response, 'Failed to fetch the directory');
+  return response.json();
+}
+
 export async function startSessionElevation(sessionId, payload = {}) {
   const response = await fetch(`/api/sessions/${sessionId}/elevation/start`, {
     method: 'POST',
@@ -1371,5 +1392,44 @@ export async function forwardSiemEvent(payload) {
     body: JSON.stringify(payload || {})
   });
   await ensureResponseOk(response, 'Failed to forward SIEM event');
+  return response.json();
+}
+
+// ── SSH file transfer (Pro/EE): browse, download, upload on a session's target ──
+export async function listSessionFiles(sessionId, path = '') {
+  const query = path ? `?path=${encodeURIComponent(path)}` : '';
+  const response = await fetch(`/api/sessions/${sessionId}/files${query}`, {
+    headers: withAuthHeaders()
+  });
+  await ensureResponseOk(response, 'Failed to list files');
+  return response.json();
+}
+
+// Downloads go through the browser's own download manager (streamed to disk,
+// authenticated by the session cookie), so large files never sit in memory.
+export function sessionFileDownloadUrl(sessionId, path) {
+  return `/api/sessions/${sessionId}/files/download?path=${encodeURIComponent(path)}`;
+}
+
+// One chunk of an upload. A 409 is returned (not thrown) so the caller can ask
+// before replacing an existing file ({ error: 'exists' }) or resync its offset.
+export async function uploadSessionFileChunk(sessionId, { path, uploadId, offset, chunk, final, overwrite }) {
+  const params = new URLSearchParams({
+    path,
+    uploadId,
+    offset: String(offset),
+    final: final ? '1' : '0',
+    overwrite: overwrite ? '1' : '0'
+  });
+  const response = await fetch(`/api/sessions/${sessionId}/files/upload?${params.toString()}`, {
+    method: 'POST',
+    headers: withAuthHeaders({ 'Content-Type': 'application/octet-stream' }),
+    body: chunk
+  });
+  if (response.status === 409) {
+    const body = await response.clone().json().catch(() => null);
+    if (body && body.error) return { conflict: body };
+  }
+  await ensureResponseOk(response, 'Failed to send the file');
   return response.json();
 }

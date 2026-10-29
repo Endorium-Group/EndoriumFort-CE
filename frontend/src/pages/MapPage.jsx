@@ -14,6 +14,8 @@ export const zoneOf = (resource) => {
 };
 
 const protocolOf = (resource) => String(resource?.protocol || 'ssh').toLowerCase();
+// A file share is not dialled: its target is a label, without a port.
+const addressOf = (resource) => (protocolOf(resource) === 'fileshare' ? resource.target : `${resource.target}:${resource.port}`);
 
 const RISK_COLOR = { critical: 'var(--ef-danger)', high: 'var(--ef-warn)', medium: 'var(--ef-muted)', low: 'var(--ef-ok)' };
 
@@ -26,6 +28,9 @@ function ResourceIcon({ protocol }) {
   }
   if (protocol === 'k8s' || protocol === 'kubernetes') {
     return <svg className="ef-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5l8.5 4.9v9.2L12 21.5l-8.5-4.9V7.4z" /><circle cx="12" cy="12" r="3" /></svg>;
+  }
+  if (protocol === 'fileshare') {
+    return <svg className="ef-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h4l2 2h9A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z" /></svg>;
   }
   if (protocol === 'agent' || protocol === 'tcp') {
     return <svg className="ef-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 2v6M15 2v6M6 8h12v4a6 6 0 0 1-12 0zM12 18v4" /></svg>;
@@ -263,10 +268,10 @@ export default function MapPage({
     }
     if (lens === 'risque') return t(`map.risk.${normalizeRiskLevel(resource.riskLevel)}`);
     if (lens === 'reseau') {
-      if (!relaysEnabled) return `${resource.target}:${resource.port}`;
+      if (!relaysEnabled) return addressOf(resource);
       const r = routes[resource.id];
       const route = r?.route === 'relay' ? `via ${r.relay}` : t('map.direct');
-      return `${resource.target}:${resource.port} · ${route}`;
+      return `${addressOf(resource)} · ${route}`;
     }
     return state === 'other' ? t('map.inUse') : accessLabel(resource);
   };
@@ -364,7 +369,7 @@ export default function MapPage({
         <div className="ef-insp__sec">
           <h3>{t('map.information')}</h3>
           <dl className="ef-kv">
-            <dt>{t('map.address')}</dt><dd className="ef-mono">{selected.target}:{selected.port}</dd>
+            <dt>{t('map.address')}</dt><dd className="ef-mono">{addressOf(selected)}</dd>
             <dt>{t('map.zone')}</dt><dd>{zoneLabel(zoneOf(selected))}</dd>
             <dt>{t('map.route')}</dt><dd className="ef-mono">{!relaysEnabled ? <RelayLock onUnlock={onUnlockRelays} /> : route?.route === 'relay' ? route.relay : t('map.direct')}</dd>
             <dt>{t('map.riskLabel')}</dt><dd>{t(`map.risk.${normalizeRiskLevel(selected.riskLevel)}`)}</dd>
@@ -474,7 +479,7 @@ export default function MapPage({
                           {resource.name}
                         </button>
                       </td>
-                      <td className="ef-mono ef-text-2">{resource.target}:{resource.port}</td>
+                      <td className="ef-mono ef-text-2">{addressOf(resource)}</td>
                       <td className="ef-text-2">{protocolOf(resource).toUpperCase()}</td>
                       <td><span className={`ef-badge ef-badge--${risk}`}>{t(`map.risk.${risk}`)}</span></td>
                       <td><span className="ef-status"><span className="ef-dot" style={{ background: dotColor({ ...resource }) }} />{accessLabel(resource)}</span></td>

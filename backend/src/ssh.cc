@@ -549,6 +549,9 @@ void register_ssh_routes(CrowApp &app, AppContext &ctx) {
                            json_escape(error) + "\"}");
             return;
           }
+          // File transfers of this session log in as the same identity
+          // (dropped again when the session ends, see terminate_session).
+          ctx.remember_ssh_identity(session_id, connect_session.user, password);
 
           connection->session_id = session_id;
           {

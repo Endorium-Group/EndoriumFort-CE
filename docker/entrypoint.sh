@@ -128,6 +128,59 @@ if [ -n "${ENDORIUMFORT_TRUSTED_PROXIES:-}" ]; then
   echo "[entrypoint] Trusting X-Forwarded-For from: $ENDORIUMFORT_TRUSTED_PROXIES"
 fi
 
+# File share drives (fileshare resources) are served by a separate service,
+# reached under /files/. Resolved per request (resolver + variable) so nginx
+# starts even while that container is down or not deployed at all.
+FILESHARE_CONF=/etc/nginx/endoriumfort-fileshare.conf
+FILESHARE_UPSTREAM="${ENDORIUMFORT_FILESHARE_UPSTREAM:-}"
+# No trailing slash: nginx would replace the request path with it.
+FILESHARE_UPSTREAM="${FILESHARE_UPSTREAM%/}"
+FILESHARE_MAX_BODY="${ENDORIUMFORT_FILESHARE_MAX_BODY:-2g}"
+case "$FILESHARE_MAX_BODY" in
+  "" | *[!0-9kKmMgG]*)
+    echo "[entrypoint] ERROR: invalid ENDORIUMFORT_FILESHARE_MAX_BODY: $FILESHARE_MAX_BODY" >&2
+    exit 1
+    ;;
+esac
+if [ -n "$FILESHARE_UPSTREAM" ]; then
+  case "$FILESHARE_UPSTREAM" in
+    http://*) ;;
+    *) echo "[entrypoint] ERROR: ENDORIUMFORT_FILESHARE_UPSTREAM must start with http://" >&2; exit 1 ;;
+  esac
+  case "$FILESHARE_UPSTREAM" in
+    *[!A-Za-z0-9.:/_-]*)
+      echo "[entrypoint] ERROR: invalid ENDORIUMFORT_FILESHARE_UPSTREAM: $FILESHARE_UPSTREAM" >&2
+      exit 1
+      ;;
+  esac
+  RESOLVER="$(awk '/^nameserver/ { print $2; exit }' /etc/resolv.conf 2>/dev/null)"
+  case "$RESOLVER" in *:*) RESOLVER="[$RESOLVER]" ;; esac
+  {
+    echo "location /files/ {"
+    if [ -n "$RESOLVER" ]; then echo "    resolver $RESOLVER valid=30s;"; fi
+    echo "    set \$ef_files_upstream $FILESHARE_UPSTREAM;"
+    echo "    proxy_pass \$ef_files_upstream;"
+    echo "    proxy_http_version 1.1;"
+    echo "    proxy_set_header Host \$host;"
+    echo "    proxy_set_header X-Real-IP \$remote_addr;"
+    echo "    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;"
+    echo "    proxy_set_header X-Forwarded-Proto \$scheme;"
+    echo "    client_max_body_size $FILESHARE_MAX_BODY;"
+    # The server-level security headers apply; drop the service's duplicates.
+    echo "    proxy_hide_header X-Frame-Options;"
+    echo "    proxy_hide_header X-Content-Type-Options;"
+    echo "    proxy_hide_header Referrer-Policy;"
+    echo "    proxy_request_buffering off;"
+    echo "    proxy_buffering off;"
+    echo "    proxy_read_timeout 3600s;"
+    echo "    proxy_send_timeout 3600s;"
+    echo "}"
+  } > "$FILESHARE_CONF"
+  echo "[entrypoint] File share service: $FILESHARE_UPSTREAM"
+else
+  printf '%s\n' 'location /files/ { default_type application/json; return 503 '"'"'{"error":"File share service is not configured"}'"'"'; }' > "$FILESHARE_CONF"
+fi
+
 # Start Nginx in background
 echo "[entrypoint] Starting Nginx on :443 (TLS) and :80 (redirect)..."
 nginx -g "daemon off;" &

@@ -398,6 +398,11 @@ class RbiClient : public CefClient,
   void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
     CEF_REQUIRE_UI_THREAD();
     g_browser = browser;
+    // Windowless rendering has no native window, so the browser never gets
+    // focus from a window manager and the renderer treats the view as
+    // unfocused: clicking an input gives it no caret and key events land
+    // nowhere. Nothing else grants focus here, so we assert it ourselves.
+    browser->GetHost()->SetFocus(true);
   }
   void OnBeforeClose(CefRefPtr<CefBrowser>) override {
     CEF_REQUIRE_UI_THREAD();
@@ -620,7 +625,12 @@ void handle_line(const std::string& line) {
       // from the browser's MouseEvent.buttons (1 left, 2 right, 4 middle).
       me.modifiers = mouse_button_flag(b) | held_button_flags(buttons);
       if (e == "move") host->SendMouseMoveEvent(me, false);
-      else if (e == "down") host->SendMouseClickEvent(me, mouse_button_type(b), false, cc <= 0 ? 1 : cc);
+      else if (e == "down") {
+        // Cheap and idempotent: keeps the view focused even if the page
+        // blurred it, so the click lands on a focusable element.
+        host->SetFocus(true);
+        host->SendMouseClickEvent(me, mouse_button_type(b), false, cc <= 0 ? 1 : cc);
+      }
       else if (e == "up") host->SendMouseClickEvent(me, mouse_button_type(b), true, cc <= 0 ? 1 : cc);
       else if (e == "wheel") host->SendMouseWheelEvent(me, dx, dy);
     });

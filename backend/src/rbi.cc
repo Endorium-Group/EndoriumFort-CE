@@ -250,6 +250,14 @@ bool pump(const std::shared_ptr<RbiSession> &s, std::vector<std::string> &out) {
   return true;
 }
 
+// Headless Chromium renders a page that is never focused: document.hasFocus()
+// is false, a click gives an input no caret, and dispatched key events reach a
+// page where nothing holds focus. Focus emulation makes the page behave as if
+// its window were frontmost, which is what an operator driving it expects.
+void enable_focus_emulation(const std::shared_ptr<RbiSession> &s) {
+  cdp(s, "Emulation.setFocusEmulationEnabled", "{\"enabled\":true}", true);
+}
+
 void send_device_metrics(const std::shared_ptr<RbiSession> &s) {
   std::ostringstream p;
   p << "{\"width\":" << s->view_w << ",\"height\":" << s->view_h
@@ -441,6 +449,7 @@ void run_reader(AppContext &ctx, crow::websocket::connection &conn,
         if (!p.has("sessionId")) continue;
         s->cdp_session = std::string(p["sessionId"].s());
         cdp(s, "Page.enable", "", true);
+        enable_focus_emulation(s);
         send_device_metrics(s);
         cdp(s, "Page.navigate", std::string("{\"url\":\"") + json_escape(url) + "\"}",
             true);

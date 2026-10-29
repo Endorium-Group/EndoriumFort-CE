@@ -22,8 +22,20 @@ const root = document.getElementById('root');
 // the session cookie (WS) + the persisted token (terminate on close). The session
 // itself is created by the opener tab before this one is opened.
 const rbiSessionId = new URLSearchParams(window.location.search).get('rbi');
+// Same for a file share drive (?files=<sessionId>): the opener tab creates the
+// session, this tab trades it for a drive session with the file share service.
+const filesSessionId = Number(new URLSearchParams(window.location.search).get('files')) || 0;
 
-if (rbiSessionId) {
+if (filesSessionId) {
+  document.title = 'EndoriumFort — Drive';
+  import('./FileShareApp.jsx').then(({ default: FileShareApp }) => {
+    createRoot(root).render(
+      <I18nProvider>
+        <FileShareApp sessionId={filesSessionId} />
+      </I18nProvider>
+    );
+  });
+} else if (rbiSessionId) {
   document.title = 'EndoriumFort — RBI';
   const closeRbiTab = () => {
     const id = Number(rbiSessionId);

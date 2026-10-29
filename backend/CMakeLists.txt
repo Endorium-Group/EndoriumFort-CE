@@ -87,7 +87,9 @@ add_executable(endoriumfort_backend
   src/iam_common.cc
   src/license.cc
   src/ssh.cc
+  src/ssh_transfer.cc
   src/rbi.cc
+  src/fileshare.cc
   src/session_recording.cc
 )
 
@@ -269,6 +271,7 @@ if (BUILD_TESTING)
     src/scim_query.cc
     src/audit_query.cc
     src/routes.cc
+    src/fileshare.cc  # routes.cc calls fileshare_purge_space()
     src/route_common.cc
     src/settings.cc
     src/iam_common.cc
@@ -286,6 +289,7 @@ if (BUILD_TESTING)
     src/scim_query.cc
     src/audit_query.cc
     src/routes.cc
+    src/fileshare.cc  # routes.cc calls fileshare_purge_space()
     src/route_common.cc
     src/settings.cc
     src/iam_common.cc
@@ -576,6 +580,7 @@ if (BUILD_TESTING)
     src/scim_query.cc
     src/audit_query.cc
     src/routes.cc
+    src/fileshare.cc  # routes.cc calls fileshare_purge_space()
     src/route_common.cc
     src/settings.cc
     src/iam_common.cc

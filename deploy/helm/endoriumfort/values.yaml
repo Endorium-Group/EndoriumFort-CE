@@ -241,6 +241,48 @@ secrets:
   siemWebhookToken: ""
   siemSplunkToken: ""
 
+# Cluster DNS domain, used to build the fully qualified address of the file
+# share service (nginx resolves it per request, without search domains).
+clusterDomain: cluster.local
+
+# ─────────────────────────────────────────────────────────────────────────────
+# File share drives ("fileshare" resources, Community feature). A separate
+# Deployment with its own PVC: non-root, read-only root filesystem, no
+# capabilities, no service account token. Only the bastion pod may reach it
+# (NetworkPolicy) and it reaches nothing. The ticket key shared by both is
+# generated once and kept across upgrades unless you provide one.
+# See docs/fileshare.md.
+fileshare:
+  enabled: true
+  image:
+    repository: ghcr.io/endorium-group/endoriumfort-files
+    # Empty → image.tag, then Chart.appVersion (same tags as the bastion).
+    tag: ""
+    pullPolicy: IfNotPresent
+  # Ticket key (≥ 32 chars). Empty → generated and stored in <release>-files-key.
+  secret: ""
+  # Or an existing Secret holding the key ENDORIUMFORT_FILESHARE_SECRET.
+  existingSecret: ""
+  quotaMb: 10240          # per user drive, 0 = unlimited
+  maxUploadMb: 2048       # per file
+  maxBody: 2g             # nginx client_max_body_size for /files/
+  sessionTtlSeconds: 900  # drive cookie lifetime between renewals
+  persistence:
+    enabled: true
+    size: 20Gi
+    accessMode: ReadWriteOnce
+    storageClass: ""
+    existingClaim: ""
+  networkPolicy:
+    enabled: true
+  resources:
+    limits:
+      cpu: "1"
+      memory: 512Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
 # Extra environment variables appended verbatim.
 extraEnv: []
 #  - name: ENDORIUMFORT_LOG_LEVEL

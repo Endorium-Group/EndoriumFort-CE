@@ -249,7 +249,7 @@ export default function RbiViewerModal({ session, onClose, fullscreen = false })
     return () => {
       observer.disconnect();
       if (resizeTimer) clearTimeout(resizeTimer);
-      try { ws.close(); } catch (_) { /* noop */ }
+      try { ws.close(1000); } catch (_) { /* noop */ }
       wsRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

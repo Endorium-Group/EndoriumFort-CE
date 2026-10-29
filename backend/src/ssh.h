@@ -25,3 +25,7 @@ void ssh_disconnect(SshConnection &connection);
 
 // Registers /api/ws/ssh WebSocket route (or 501 stub on unsupported platforms).
 void register_ssh_routes(CrowApp &app, AppContext &ctx);
+
+// File transfer (SFTP, SCP fallback) on an SSH session's target, from the
+// session page: /api/sessions/<id>/files[/download|/upload] (ssh_transfer.cc).
+void register_ssh_transfer_routes(CrowApp &app, AppContext &ctx);

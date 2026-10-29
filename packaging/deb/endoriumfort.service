@@ -9,6 +9,11 @@ Type=simple
 User=endoriumfort
 Group=endoriumfort
 WorkingDirectory=/var/lib/endoriumfort
+# File share resources: signs drive tickets and purge orders for the
+# endoriumfort-files service (key 0640 root:endoriumfort-fskey).
+SupplementaryGroups=endoriumfort-fskey
+Environment=ENDORIUMFORT_FILESHARE_SECRET_FILE=/etc/endoriumfort/fileshare.key
+Environment=ENDORIUMFORT_FILESHARE_UPSTREAM=http://127.0.0.1:8090
 EnvironmentFile=-/etc/endoriumfort/endoriumfort.env
 ExecStart=/opt/endoriumfort/bin/endoriumfort_backend
 Restart=on-failure

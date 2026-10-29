@@ -302,7 +302,8 @@ export default function SessionsPage({
   onTerminate,
   onOpenAudit,
   onOpenRecordings,
-  onNewSession
+  onNewSession,
+  onOpenFiles
 }) {
   const { t, locale } = useI18n();
   const now = useNow(30000);
@@ -672,6 +673,17 @@ export default function SessionsPage({
                   onRemove={onRemoveSnippet}
                 />
               )}
+              {protocolOf(current) === 'ssh' && onOpenFiles && current.operator === currentUser && (() => {
+                // Only when the resource allows a direction; the server re-checks.
+                const res = (resources || []).find((r) => Number(r.id) === Number(current.resourceId));
+                if (!res || !(res.allowFileDownload || res.allowFileUpload)) return null;
+                return (
+                  <button type="button" className="ef-btn" onClick={() => onOpenFiles(current)} title={t('sshTransfer.open')}>
+                    <svg className="ef-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></svg>
+                    {t('sshTransfer.open')}
+                  </button>
+                );
+              })()}
               {protocolOf(current) === 'ssh' && (
                 <button type="button" className="ef-btn" onClick={toggleFullscreen} aria-label={t('sess.fullscreen')} title={t('sess.fullscreen')}>
                   <svg className="ef-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>

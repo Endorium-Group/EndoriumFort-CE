@@ -281,6 +281,10 @@ inline std::string build_resource_payload_json(const Resource &resource) {
       << (resource.enableCommandGuard ? "true" : "false");
     oss << ",\"adaptiveAccessPolicy\":"
       << (resource.adaptiveAccessPolicy ? "true" : "false");
+    oss << ",\"allowFileDownload\":"
+      << (resource.allowFileDownload ? "true" : "false");
+    oss << ",\"allowFileUpload\":"
+      << (resource.allowFileUpload ? "true" : "false");
     oss << ",\"riskLevel\":\"" << json_escape(resource.riskLevel) << "\"";
   if (!resource.description.empty()) {
     oss << ",\"description\":\"" << json_escape(resource.description) << "\"";
@@ -649,6 +653,8 @@ inline crow::json::wvalue resource_to_json(const Resource &resource) {
   payload["requireDualApproval"] = resource.requireDualApproval;
   payload["enableCommandGuard"] = resource.enableCommandGuard;
   payload["adaptiveAccessPolicy"] = resource.adaptiveAccessPolicy;
+  payload["allowFileDownload"] = resource.allowFileDownload;
+  payload["allowFileUpload"] = resource.allowFileUpload;
   payload["riskLevel"] = resource.riskLevel;
   payload["createdAt"] = resource.createdAt;
   payload["updatedAt"] = resource.updatedAt;

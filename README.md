@@ -41,7 +41,9 @@ EndoriumFort is positioned as a **modern sovereign PAM platform** for self-hoste
 | **Credential Vault** | Store SSH credentials securely - auto-injected on connection |
 | **Web SSH Terminal** | Full xterm.js terminal in the browser via WebSocket |
 | **SSH Snippets Studio** | Prebuilt + custom reusable SSH command snippets with one-click inject/execute |
+| **SSH File Transfer** | Browse, download and upload files on SSH targets from the session page (SFTP, SCP fallback) — off by default, enabled per resource and direction, size-capped, every file audited with its SHA-256 |
 | **HTTP/HTTPS Proxy** | Transparent web proxy with cookie-based auth |
+| **File Share Drives** | `fileshare` resources open a web drive (folders, upload/download, per-user space, read-only or read-write shares with other bastion users, expiry), served by a separate hardened service — see [docs/fileshare.md](docs/fileshare.md) |
 | **Agent Tunnel** | Local Go agent for zero-rewrite TCP tunneling _(Enterprise Edition)_ |
 | **Session Shadowing** | Real-time read-only observation of active sessions |
 | **Session Recording** | Asciinema v2 format with animated in-browser replay |
@@ -96,6 +98,16 @@ EndoriumFort operates in two modes:
 - **Web Mode** — Browser connects directly to the backend for SSH terminals, web proxy, and session management
 - **Agent Mode** — A local Go agent creates TCP tunnels via WebSocket, providing transparent access to any web application without URL rewriting
 
+File share drives run in a **separate service** (`fileshare/`, container
+`endoriumfort-files`): the bastion only decides who may open a drive and signs a
+short single-use ticket; nginx routes `/files/` straight to the service, which
+owns its volume and never sees the bastion database.
+
+```
+Browser ──/api/──►  Backend (C++)  ── signed ticket ──┐
+   └─────/files/──► endoriumfort-files (Go, own volume, internal network)
+```
+
 ---
 
 ## Project Structure
@@ -110,13 +122,14 @@ EndoriumFort/
 │   ├── src/            #   App.jsx, styles.css, api.js, WebProxyViewer
 │   ├── package.json    #   Dependencies (xterm.js, React)
 │   └── VERSION         #   Frontend version (1.0.0)
+├── fileshare/          # File share drive service (Go, separate container)
 ├── agent/              # Go CLI tunnel agent
 │   ├── main.go         #   Login, list, connect commands
 │   ├── go.mod          #   gorilla/websocket
 │   └── VERSION         #   Agent version (1.0.0)
 ├── build-all.sh        # Linux/macOS build script (smart versioning)
 ├── build-all.ps1       # Windows build script (PowerShell)
-├── run-dev.sh          # Dev launcher (backend + frontend)
+├── run-dev.sh          # Dev launcher (backend + frontend + file share service)
 ├── VERSION             # Global version (1.0.0)
 ├── CHANGELOG.md        # Version history
 └── LICENSE             # Source-Available License
@@ -343,6 +356,30 @@ export ENDORIUMFORT_WEBAUTHN_ORIGIN=http://localhost:5173
   - evict a retired/stale peer node from the runtime registry (admin):
     - `DELETE /api/cluster/peers/:nodeId`
   - stale peer detection is controlled by `cluster_heartbeat_stale_seconds` and reported as `online`/`offline`
+
+### File Share Drives
+
+A resource with the **File share** protocol opens a web drive in its own tab:
+a personal space per user, folders, drag-and-drop upload with progress,
+download (folders as `.zip`), rename, delete, and sharing with other people who
+may open the same resource — read-only or read-write, with an optional expiry.
+"Shared with me" and "My shares" views list incoming and outgoing shares.
+
+- Opening a drive goes through the normal session path (assignment, access
+  policies, justification, approval, MFA, max duration) and shows up as a
+  `fileshare` session; ending the session closes the drive within one renewal
+  period (15 min by default).
+- Files are stored and served by `endoriumfort-files`, outside the bastion
+  (own container, volume, internal network, non-root, read-only filesystem).
+  Every file action is written to a hash-chained `audit.jsonl`.
+- Enable it by setting `ENDORIUMFORT_FILESHARE_SECRET` (`openssl rand -hex 32`);
+  both compose files already declare the service.
+- Deleting a fileshare resource purges its drive space (signed order to the
+  service, journaled). The service also ships with the Helm chart (separate
+  Deployment + NetworkPolicy) and the Debian package (own system user, no
+  network egress).
+
+Full guide: [docs/fileshare.md](docs/fileshare.md).
 
 ### Relay Runtime Configuration
 

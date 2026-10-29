@@ -46,6 +46,25 @@ jobs:
       - name: helm template (k3s / Traefik example)
         run: helm template ef "${CHART_DIR}" -n endoriumfort --values "${CHART_DIR}/examples/values-k3s.yaml" >/dev/null
 
+      # File share service (separate Deployment): rendered by default, can be
+      # turned off, takes an external key, refuses a weak one.
+      - name: helm template (file share variants)
+        run: |
+          set -euo pipefail
+          out="$(helm template ef "${CHART_DIR}" -n pam)"
+          for kind in "name: ef-endoriumfort-files$" "kind: NetworkPolicy" "ENDORIUMFORT_FILESHARE_UPSTREAM"; do
+            echo "$out" | grep -Eq "$kind" || { echo "missing in default render: $kind" >&2; exit 1; }
+          done
+          echo "$out" | grep -q "http://ef-endoriumfort-files.pam.svc.cluster.local:8090" \
+            || { echo "file share upstream is not fully qualified" >&2; exit 1; }
+          if helm template ef "${CHART_DIR}" --set fileshare.enabled=false | grep -q FILESHARE; then
+            echo "fileshare.enabled=false still renders the service" >&2; exit 1
+          fi
+          helm template ef "${CHART_DIR}" --set fileshare.existingSecret=my-key | grep -q "name: my-key"
+          if helm template ef "${CHART_DIR}" --set fileshare.secret=short >/dev/null 2>&1; then
+            echo "a short fileshare.secret was accepted" >&2; exit 1
+          fi
+
   publish:
     name: Package & push to GHCR
     if: startsWith(github.ref, 'refs/tags/v')

@@ -24,6 +24,29 @@ ENDORIUMFORT_TOKEN_TTL_SECONDS=3600
 EOF
 fi
 
+# File share service: its own user (the drives stay unreadable to the
+# backend), and a group whose only purpose is reading the shared ticket key.
+if ! id endoriumfort-files >/dev/null 2>&1; then
+  adduser --system --group --no-create-home --home /var/lib/endoriumfort-files --shell /usr/sbin/nologin endoriumfort-files >/dev/null 2>&1 || \
+  useradd --system --user-group --no-create-home --home-dir /var/lib/endoriumfort-files --shell /usr/sbin/nologin endoriumfort-files >/dev/null 2>&1 || true
+fi
+getent group endoriumfort-fskey >/dev/null 2>&1 || groupadd --system endoriumfort-fskey 2>/dev/null || addgroup --system endoriumfort-fskey >/dev/null 2>&1 || true
+usermod -a -G endoriumfort-fskey endoriumfort 2>/dev/null || true
+usermod -a -G endoriumfort-fskey endoriumfort-files 2>/dev/null || true
+if [ ! -s /etc/endoriumfort/fileshare.key ]; then
+  (umask 077 && openssl rand -hex 32 > /etc/endoriumfort/fileshare.key)
+fi
+chown root:endoriumfort-fskey /etc/endoriumfort/fileshare.key
+chmod 640 /etc/endoriumfort/fileshare.key
+if [ ! -f /etc/endoriumfort/fileshare.env ]; then
+  cat > /etc/endoriumfort/fileshare.env <<'EOF'
+# EndoriumFort file share service (see docs/fileshare.md)
+# Per user drive quota and max file size, in MB (0 = unlimited quota).
+EF_FS_QUOTA_MB=10240
+EF_FS_MAX_UPLOAD_MB=2048
+EOF
+fi
+
 # Self-signed TLS cert (replace with a real one / certbot)
 if [ ! -f /etc/endoriumfort/tls/tls.crt ]; then
   openssl req -x509 -nodes -newkey rsa:2048 \
@@ -46,10 +69,11 @@ fi
 # Enable + start the backend service
 if command -v systemctl >/dev/null 2>&1; then
   systemctl daemon-reload 2>/dev/null || true
-  systemctl enable endoriumfort.service 2>/dev/null || true
+  systemctl enable endoriumfort-files.service endoriumfort.service 2>/dev/null || true
+  systemctl restart endoriumfort-files.service 2>/dev/null || true
   systemctl restart endoriumfort.service 2>/dev/null || true
 fi
 
-echo "EndoriumFort Community Edition installed. Backend on :8080, Nginx on :80/:443."
+echo "EndoriumFort Community Edition installed. Backend on :8080, file share on 127.0.0.1:8090, Nginx on :80/:443."
 echo "Default admin: admin / Admin123 (forces password + MFA change on first login)."
 exit 0

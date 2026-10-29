@@ -270,6 +270,33 @@ struct AppContext {
   // ── SSH session closure callback ──
   std::function<void(int)> close_ssh_for_session = [](int) {};
 
+  // ── SSH identity of a live session (for file transfer) ──
+  // The account and password the terminal actually logged in with — the
+  // operator's manual password or an ephemeral account included — kept in
+  // memory only, for as long as the session is active, so a file transfer can
+  // open its own connection as the same identity. Never persisted or logged.
+  struct SshSessionIdentity {
+    std::string user;
+    std::string password;
+  };
+  std::mutex ssh_identity_mutex;
+  std::unordered_map<int, SshSessionIdentity> ssh_session_identities;
+  void remember_ssh_identity(int session_id, const std::string &user,
+                             const std::string &password) {
+    std::lock_guard<std::mutex> lock(ssh_identity_mutex);
+    ssh_session_identities[session_id] = SshSessionIdentity{user, password};
+  }
+  void forget_ssh_identity(int session_id) {
+    std::lock_guard<std::mutex> lock(ssh_identity_mutex);
+    ssh_session_identities.erase(session_id);
+  }
+  std::optional<SshSessionIdentity> ssh_identity(int session_id) {
+    std::lock_guard<std::mutex> lock(ssh_identity_mutex);
+    const auto it = ssh_session_identities.find(session_id);
+    if (it == ssh_session_identities.end()) return std::nullopt;
+    return it->second;
+  }
+
   // ── Dynamic secrets seams (premium; set by the pro/ vault module) ──
   // provision: given a session, create an ephemeral OS account on the target and
   // return the login username + password to use. Returns false (with a reason in

@@ -177,6 +177,17 @@ spec:
                   name: {{ .Values.database.postgresql.existingSecret }}
                   key: {{ .Values.database.postgresql.existingSecretKey }}
             {{- end }}
+            {{- if .Values.fileshare.enabled }}
+            - name: ENDORIUMFORT_FILESHARE_UPSTREAM
+              value: {{ include "endoriumfort.files.upstream" . | quote }}
+            - name: ENDORIUMFORT_FILESHARE_MAX_BODY
+              value: {{ .Values.fileshare.maxBody | quote }}
+            - name: ENDORIUMFORT_FILESHARE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "endoriumfort.files.secretName" . }}
+                  key: ENDORIUMFORT_FILESHARE_SECRET
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

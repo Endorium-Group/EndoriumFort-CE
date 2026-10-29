@@ -62,3 +62,40 @@ true
 {{- $tag := default .Chart.AppVersion .Values.image.tag -}}
 {{- printf "%s:%s" .Values.image.repository $tag -}}
 {{- end -}}
+
+{{/* ── File share service (separate Deployment) ── */}}
+{{- define "endoriumfort.files.fullname" -}}
+{{- printf "%s-files" (include "endoriumfort.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/* Distinct name label: the bastion Service must never select these pods. */}}
+{{- define "endoriumfort.files.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "endoriumfort.name" . }}-files
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
+
+{{- define "endoriumfort.files.labels" -}}
+helm.sh/chart: {{ include "endoriumfort.chart" . }}
+{{ include "endoriumfort.files.selectorLabels" . }}
+app.kubernetes.io/component: fileshare
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end -}}
+
+{{- define "endoriumfort.files.secretName" -}}
+{{- if .Values.fileshare.existingSecret -}}
+{{- .Values.fileshare.existingSecret -}}
+{{- else -}}
+{{- printf "%s-key" (include "endoriumfort.files.fullname" .) -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "endoriumfort.files.image" -}}
+{{- $tag := default (default .Chart.AppVersion .Values.image.tag) .Values.fileshare.image.tag -}}
+{{- printf "%s:%s" .Values.fileshare.image.repository $tag -}}
+{{- end -}}
+
+{{/* Fully qualified: nginx resolves it per request, without search domains. */}}
+{{- define "endoriumfort.files.upstream" -}}
+{{- printf "http://%s.%s.svc.%s:8090" (include "endoriumfort.files.fullname" .) .Release.Namespace .Values.clusterDomain -}}
+{{- end -}}

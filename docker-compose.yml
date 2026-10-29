@@ -40,12 +40,44 @@ services:
       - ENDORIUMFORT_RELAY_ENROLL_TOKEN_TTL_SECONDS=${ENDORIUMFORT_RELAY_ENROLL_TOKEN_TTL_SECONDS:-600}
       - ENDORIUMFORT_RELAY_TOKEN_TTL_SECONDS=${ENDORIUMFORT_RELAY_TOKEN_TTL_SECONDS:-86400}
       - ENDORIUMFORT_RELAY_HEARTBEAT_STALE_SECONDS=${ENDORIUMFORT_RELAY_HEARTBEAT_STALE_SECONDS:-90}
+      # File share resources: key shared with the endoriumfort-files service.
+      - ENDORIUMFORT_FILESHARE_SECRET=${ENDORIUMFORT_FILESHARE_SECRET:-}
+      - ENDORIUMFORT_FILESHARE_UPSTREAM=http://endoriumfort-files:8090
+    networks:
+      - default
+      - files
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://127.0.0.1:8080/api/health"]
       interval: 30s
       timeout: 5s
       start_period: 15s
       retries: 3
+
+  # File share drives ("fileshare" resources), kept outside the bastion: own
+  # image, own volume, non-root, read-only filesystem, no capabilities, and a
+  # network with no outside access that only the bastion's nginx shares.
+  endoriumfort-files:
+    image: ${DOCKER_IMAGE_FILES:-nergyr/endoriumfort-files}:${DOCKER_TAG:-latest}
+    build:
+      context: ./fileshare
+    container_name: endoriumfort-files
+    restart: unless-stopped
+    networks:
+      - files
+    volumes:
+      - ef-files:/data
+    environment:
+      - TZ=${TZ:-Europe/Paris}
+      - ENDORIUMFORT_FILESHARE_SECRET=${ENDORIUMFORT_FILESHARE_SECRET:-}
+      - EF_FS_QUOTA_MB=${EF_FS_QUOTA_MB:-10240}
+      - EF_FS_MAX_UPLOAD_MB=${EF_FS_MAX_UPLOAD_MB:-2048}
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
 
 volumes:
   ef-data:
@@ -56,3 +88,9 @@ volumes:
     driver: local
   ef-certbot-www:
     driver: local
+  ef-files:
+    driver: local
+
+networks:
+  files:
+    internal: true

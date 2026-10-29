@@ -1,0 +1,56 @@
+[Unit]
+Description=EndoriumFort file share service (drives of fileshare resources)
+Documentation=https://github.com/Endorium-Group/EndoriumFort-CE/blob/master/docs/fileshare.md
+After=network.target
+
+[Service]
+Type=simple
+# Its own user, distinct from the bastion's: the backend cannot read the
+# drives (0700), and this service cannot read the bastion's data.
+User=endoriumfort-files
+Group=endoriumfort-files
+# Only for the ticket key shared with the bastion (0640 root:endoriumfort-fskey).
+SupplementaryGroups=endoriumfort-fskey
+StateDirectory=endoriumfort-files
+StateDirectoryMode=0700
+Environment=ENDORIUMFORT_FILESHARE_SECRET_FILE=/etc/endoriumfort/fileshare.key
+Environment=EF_FS_LISTEN=127.0.0.1:8090
+Environment=EF_FS_DATA_DIR=/var/lib/endoriumfort-files
+EnvironmentFile=-/etc/endoriumfort/fileshare.env
+ExecStart=/opt/endoriumfort/bin/endoriumfort-files
+Restart=on-failure
+RestartSec=5
+
+# Hardening: loopback only (nginx and the backend reach it there), no egress.
+IPAddressAllow=localhost
+IPAddressDeny=any
+RestrictAddressFamilies=AF_INET AF_INET6
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectProc=invisible
+ProcSubset=pid
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+# Refused calls fail with EPERM instead of killing the service.
+SystemCallErrorNumber=EPERM
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

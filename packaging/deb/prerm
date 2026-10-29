@@ -2,9 +2,9 @@
 set -e
 
 if command -v systemctl >/dev/null 2>&1; then
-  systemctl stop endoriumfort.service 2>/dev/null || true
+  systemctl stop endoriumfort.service endoriumfort-files.service 2>/dev/null || true
   if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
-    systemctl disable endoriumfort.service 2>/dev/null || true
+    systemctl disable endoriumfort.service endoriumfort-files.service 2>/dev/null || true
   fi
 fi
 exit 0

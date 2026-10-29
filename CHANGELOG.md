@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+### File share resources (Community)
+
+- Added the **`fileshare` resource type**: it opens a web drive in a dedicated
+  tab (`/?files=<sessionId>`) with a personal space per user, folders,
+  drag-and-drop upload with progress, download (folders as `.zip`), rename and
+  delete, a quota gauge, and **sharing** of a folder or file with other people
+  who may open the same resource — read-only or read-write, optional expiry,
+  "Shared with me" / "My shares" views and revocation.
+- Files live in a **new, separate service** (`fileshare/`, image
+  `endoriumfort-files`, Go standard library only): own container and volume,
+  internal-only network, non-root, read-only root filesystem, no capabilities.
+  It never reads the bastion database, and file bytes never cross the C++
+  backend. Disk access goes through `os.Root`, so `..`, absolute paths and
+  symlinks cannot escape a drive or a share. Downloads are always attachments
+  under a `sandbox` CSP.
+- The bastion keeps access control: opening a drive is a normal session
+  (`POST /api/sessions`, policies, approval, MFA, duration). Its owner gets a
+  60-second single-use HMAC ticket from
+  `POST /api/sessions/<id>/fileshare-ticket`, traded at the service for a
+  15-minute cookie scoped to that resource and renewed while the session stays
+  active — ending the session closes the drive. Share candidates come from
+  `GET /api/resources/<id>/fileshare/directory` (accounts allowed on the same
+  resource).
+- Journal: `fileshare.open` on the bastion; every file action, allowed or
+  denied, in the service's hash-chained `audit.jsonl` and on stdout.
+- Deployment: `endoriumfort-files` in both compose files, nginx `/files/`
+  location generated from `ENDORIUMFORT_FILESHARE_UPSTREAM` (503 when unset),
+  shared key `ENDORIUMFORT_FILESHARE_SECRET`, `run-dev.sh` starts the service
+  when Go is installed, CI job for its tests and image. Guide:
+  `docs/fileshare.md`.
+- Deleting a fileshare resource **purges its drive space**: the bastion sends
+  a signed, single-use purge order to the service on an internal route never
+  exposed by the reverse proxy (`POST /internal/spaces/<id>/purge`), closes the
+  space's drive sessions and journals `fileshare.purge`. The service also has
+  `spaces` and `purge <id>` commands for spaces left behind.
+- Packaging: the `endoriumfort-files` image is published (multi-arch, Cosign
+  signed) by `docker-publish.yml`; the Helm chart deploys it as a separate
+  Deployment with its own PVC, a NetworkPolicy admitting only the bastion pod
+  and no egress, and a generated key kept across upgrades; the Debian package
+  ships it as `endoriumfort-files.service` under its own system user, loopback
+  only with no egress, the key readable only by the two services.
+
 ### SIEM / log export (Enterprise)
 
 The audit-event export went from two partial HTTP channels to a real shipping

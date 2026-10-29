@@ -1623,6 +1623,16 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
         if (body.has("adaptiveAccessPolicy")) {
           adaptive_access_policy = body["adaptiveAccessPolicy"].b();
         }
+        // File transfer: only touched when sent, so screens that do not know the
+        // fields (bulk zone edits…) cannot switch it off by omission.
+        const std::optional<bool> allow_file_download =
+            body.has("allowFileDownload")
+                ? std::optional<bool>(body["allowFileDownload"].b())
+                : std::nullopt;
+        const std::optional<bool> allow_file_upload =
+            body.has("allowFileUpload")
+                ? std::optional<bool>(body["allowFileUpload"].b())
+                : std::nullopt;
         std::string risk_level = "low";
         if (body.has("riskLevel")) risk_level = to_lower(body["riskLevel"].s());
         if (!is_allowed_role(risk_level, {"low", "medium", "high", "critical"})) {
@@ -1640,8 +1650,8 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
           return crow::response(400, "Invalid tunnelTicketRateLimitMaxAttempts");
 
         // Validate protocol whitelist
-        if (!is_allowed_role(protocol, {"ssh", "rdp", "vnc", "http", "https", "agent", "k8s"}))
-          return crow::response(400, "Invalid protocol. Allowed: ssh, rdp, vnc, http, https, agent, k8s");
+        if (!is_allowed_role(protocol, {"ssh", "rdp", "vnc", "http", "https", "agent", "k8s", "fileshare"}))
+          return crow::response(400, "Invalid protocol. Allowed: ssh, rdp, vnc, http, https, agent, k8s, fileshare");
 
         // Agent resources carry a tunnelled protocol (injected into the agent
         // deep link). Only meaningful for protocol == "agent".
@@ -1663,7 +1673,11 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
         // SSRF protection: allow loopback only for SSH resources. Kubernetes
         // resources are not dialled directly — kubectl connects using the
         // uploaded kubeconfig's server — so target is a display label here.
-        if (protocol != "k8s" && !ctx.is_safe_target(target, protocol == "ssh"))
+        // File share resources are served by the drive service: `target` is a
+        // label, never dialled, and the port is meaningless.
+        if (protocol == "fileshare") port = 443;
+        if (protocol != "k8s" && protocol != "fileshare" &&
+            !ctx.is_safe_target(target, protocol == "ssh"))
           return crow::response(400, "Target address is not allowed for this protocol");
 
         // Validate imageUrl scheme if provided
@@ -1692,6 +1706,8 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
         resource.requireDualApproval = require_dual_approval;
         resource.enableCommandGuard = enable_command_guard;
         resource.adaptiveAccessPolicy = adaptive_access_policy;
+        resource.allowFileDownload = allow_file_download.value_or(false);
+        resource.allowFileUpload = allow_file_upload.value_or(false);
         resource.riskLevel = risk_level;
         resource.createdAt = now_utc();
         resource.updatedAt = resource.createdAt;
@@ -1795,6 +1811,16 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
             if (body.has("adaptiveAccessPolicy")) {
               adaptive_access_policy = body["adaptiveAccessPolicy"].b();
             }
+            // File transfer: only touched when sent, so screens that do not know the
+            // fields (bulk zone edits…) cannot switch it off by omission.
+            const std::optional<bool> allow_file_download =
+                body.has("allowFileDownload")
+                    ? std::optional<bool>(body["allowFileDownload"].b())
+                    : std::nullopt;
+            const std::optional<bool> allow_file_upload =
+                body.has("allowFileUpload")
+                    ? std::optional<bool>(body["allowFileUpload"].b())
+                    : std::nullopt;
             std::string risk_level = "low";
             if (body.has("riskLevel")) risk_level = to_lower(body["riskLevel"].s());
             if (!is_allowed_role(risk_level, {"low", "medium", "high", "critical"})) {
@@ -1812,7 +1838,7 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
               return crow::response(400, "Invalid tunnelTicketRateLimitMaxAttempts");
 
             // Validate protocol whitelist
-            if (!is_allowed_role(protocol, {"ssh", "rdp", "vnc", "http", "https", "agent", "k8s"}))
+            if (!is_allowed_role(protocol, {"ssh", "rdp", "vnc", "http", "https", "agent", "k8s", "fileshare"}))
               return crow::response(400, "Invalid protocol");
 
             // Agent resources carry a tunnelled protocol (see create handler).
@@ -1833,7 +1859,10 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
 
             // SSRF protection: allow loopback only for SSH resources. Kubernetes
             // resources connect via the uploaded kubeconfig, not `target`.
-            if (protocol != "k8s" && !ctx.is_safe_target(target, protocol == "ssh"))
+            // File share: `target` is a label (see create handler).
+            if (protocol == "fileshare") port = 443;
+            if (protocol != "k8s" && protocol != "fileshare" &&
+                !ctx.is_safe_target(target, protocol == "ssh"))
               return crow::response(400, "Target address is not allowed for this protocol");
 
             Resource resource;
@@ -1870,6 +1899,9 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
               resource.requireDualApproval = require_dual_approval;
               resource.enableCommandGuard = enable_command_guard;
               resource.adaptiveAccessPolicy = adaptive_access_policy;
+              if (allow_file_download)
+                resource.allowFileDownload = *allow_file_download;
+              if (allow_file_upload) resource.allowFileUpload = *allow_file_upload;
               resource.riskLevel = risk_level;
               resource.updatedAt = now_utc();
               it->second = resource;
@@ -1921,6 +1953,10 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
             event.payloadJson = build_resource_payload_json(resource);
             event.payloadIsJson = true;
             ctx.append_audit(event);
+
+            // A drive's files live in the file share service: drop them too.
+            if (to_lower(resource.protocol) == "fileshare")
+              fileshare_purge_space(ctx, resource_id, auth->user, auth->role);
 
             crow::json::wvalue payload;
             payload["status"] = "deleted";

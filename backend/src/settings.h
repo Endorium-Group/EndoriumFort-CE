@@ -49,7 +49,7 @@ enum class Kind {
 
 struct Descriptor {
   std::string key;         // the environment variable name; the identity
-  std::string group;       // "siem" | "ldap" | "sso" | "itsm" | "rbi" | "general"
+  std::string group;       // "siem" | "ldap" | "sso" | "itsm" | "rbi" | "ssh" | "general"
   std::string subgroup;    // optional section inside a group ("syslog", "okta", …)
   Kind kind = Kind::String;
   std::string label;       // short human label

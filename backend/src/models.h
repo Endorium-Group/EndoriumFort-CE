@@ -50,6 +50,10 @@ struct Resource {
   bool requireDualApproval = false;
   bool enableCommandGuard = false;
   bool adaptiveAccessPolicy = false;
+  // SSH file transfer (SFTP, SCP fallback) from the session page, per
+  // direction. Off by default.
+  bool allowFileDownload = false;
+  bool allowFileUpload = false;
   std::string riskLevel = "low";
   std::string createdAt;
   std::string updatedAt;

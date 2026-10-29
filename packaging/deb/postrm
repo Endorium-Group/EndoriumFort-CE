@@ -11,5 +11,7 @@ fi
 # On purge, remove config + data (keeps them on plain remove/upgrade).
 if [ "$1" = "purge" ]; then
   rm -rf /etc/endoriumfort /var/lib/endoriumfort /var/www/endoriumfort-certbot 2>/dev/null || true
+  # Drives of the file share service (DynamicUser state directory).
+  rm -rf /var/lib/private/endoriumfort-files /var/lib/endoriumfort-files 2>/dev/null || true
 fi
 exit 0

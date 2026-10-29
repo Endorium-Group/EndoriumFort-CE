@@ -16,6 +16,8 @@ const proEntry = !forceStub && existsSync(proReal) ? proReal : proStub;
 // Backend the dev server proxies to (the end-to-end tests point it at a
 // throwaway bastion) and the dev server port.
 const apiTarget = process.env.EF_API_TARGET || 'http://localhost:8080';
+// The file share service (fileshare/), a separate process from the bastion.
+const filesTarget = process.env.EF_FILES_TARGET || 'http://localhost:8090';
 const devPort = Number(process.env.EF_DEV_PORT) || 5173;
 
 export default defineConfig({
@@ -38,6 +40,9 @@ export default defineConfig({
       },
       '/proxy': {
         target: apiTarget
+      },
+      '/files': {
+        target: filesTarget
       }
     }
   }

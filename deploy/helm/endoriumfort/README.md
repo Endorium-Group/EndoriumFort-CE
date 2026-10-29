@@ -142,6 +142,27 @@ the self-signed cert once (HTTPS is still a secure context, so WebAuthn works).
 If you prefer nginx-ingress on k3s, disable Traefik (`--disable traefik`), install
 ingress-nginx, and use the default values.
 
+## File share drives
+
+`fileshare` resources (a web drive per user, with sharing between bastion
+users) are served by a **separate Deployment**, `<release>-endoriumfort-files`,
+enabled by default (`fileshare.enabled`):
+
+- its own pod and PVC (`fileshare.persistence`, 20Gi), single replica,
+  `Recreate`;
+- non-root (65532), read-only root filesystem, all capabilities dropped,
+  `RuntimeDefault` seccomp, no service account token;
+- a NetworkPolicy (`fileshare.networkPolicy.enabled`) that admits only the
+  bastion pod on :8090 and gives the service **no egress at all** (needs a CNI
+  that enforces NetworkPolicy);
+- the ticket key shared with the bastion is generated on first install and kept
+  in `<release>-endoriumfort-files-key` (`helm.sh/resource-policy: keep`), or
+  set `fileshare.secret` / `fileshare.existingSecret`.
+
+nginx in the bastion pod reaches the service by its fully qualified name
+(`clusterDomain`, default `cluster.local`). Deleting a fileshare resource
+purges its drive space automatically. See `docs/fileshare.md`.
+
 ## SIEM / log export
 
 `config.siem` ships every audit event to a SIEM or log platform (Enterprise

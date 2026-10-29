@@ -25,6 +25,7 @@ services:
     networks:
       - default
       - edge
+      - files
 
     ports:
       - "${EF_HTTP_PORT:-80}:80"
@@ -68,6 +69,11 @@ services:
       - ENDORIUMFORT_SIEM_WEBHOOK_URL=${ENDORIUMFORT_SIEM_WEBHOOK_URL:-}
       - ENDORIUMFORT_SIEM_WEBHOOK_TOKEN=${ENDORIUMFORT_SIEM_WEBHOOK_TOKEN:-}
       - ENDORIUMFORT_SIEM_WEBHOOK_NDJSON=${ENDORIUMFORT_SIEM_WEBHOOK_NDJSON:-0}
+      # File share resources: key shared with the endoriumfort-files service
+      # (openssl rand -hex 32). Unset → file share drives answer 503.
+      - ENDORIUMFORT_FILESHARE_SECRET=${ENDORIUMFORT_FILESHARE_SECRET:-}
+      - ENDORIUMFORT_FILESHARE_UPSTREAM=http://endoriumfort-files:8090
+      - ENDORIUMFORT_FILESHARE_MAX_BODY=${ENDORIUMFORT_FILESHARE_MAX_BODY:-2g}
 
     security_opt:
       - no-new-privileges:true
@@ -94,6 +100,45 @@ services:
       timeout: 5s
       start_period: 20s
       retries: 5
+
+  # File share drives ("fileshare" resources), kept outside the bastion: own
+  # image and volume, non-root, read-only filesystem, no capabilities, and an
+  # internal network (no outside access) shared with the bastion's nginx only.
+  # It never sees the bastion database; the bastion never sees the files.
+  endoriumfort-files:
+    image: ${DOCKER_IMAGE_FILES:-nergyr/endoriumfort-files}:${DOCKER_TAG:-1.0.3}
+    container_name: endoriumfort-files
+    restart: unless-stopped
+
+    networks:
+      - files
+
+    volumes:
+      - ef-files:/data
+
+    environment:
+      - TZ=${TZ:-Europe/Paris}
+      - ENDORIUMFORT_FILESHARE_SECRET=${ENDORIUMFORT_FILESHARE_SECRET:-}
+      - EF_FS_QUOTA_MB=${EF_FS_QUOTA_MB:-10240}
+      - EF_FS_MAX_UPLOAD_MB=${EF_FS_MAX_UPLOAD_MB:-2048}
+      - EF_FS_SESSION_TTL_SECONDS=${EF_FS_SESSION_TTL_SECONDS:-900}
+
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1.00
+    stop_grace_period: 20s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
   # Bundled PostgreSQL. Only started with `--profile postgres`; an external
   # cluster is the better choice when you already run one.
@@ -150,8 +195,12 @@ volumes:
     driver: local
   ef-certbot-www:
     driver: local
+  ef-files:
+    driver: local
 
 networks:
   edge:
     name: edge
     external: true
+  files:
+    internal: true

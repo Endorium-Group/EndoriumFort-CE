@@ -29,15 +29,24 @@ if [ ! -d "$ROOT_DIR/frontend/dist" ]; then
   ( cd "$ROOT_DIR/frontend" && npm ci --ignore-scripts && EF_EDITION=community npm run build )
 fi
 
-# 3. Assemble package tree
+# 3. Build the file share service (separate process, see docs/fileshare.md)
+command -v go >/dev/null || { echo "go required to build the file share service (fileshare/)" >&2; exit 1; }
+FILES_BIN="$BUILD_DIR/endoriumfort-files"
+echo "== Building file share service =="
+( cd "$ROOT_DIR/fileshare" && CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" \
+    go build -trimpath -ldflags="-s -w" -o "$FILES_BIN" . )
+
+# 4. Assemble package tree
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 install -d "$WORK/DEBIAN" \
            "$WORK/opt/endoriumfort/bin" "$WORK/opt/endoriumfort/frontend" \
            "$WORK/etc/nginx/sites-available" "$WORK/lib/systemd/system"
 install -m 0755 "$BUILD_DIR/endoriumfort_backend" "$WORK/opt/endoriumfort/bin/endoriumfort_backend"
+install -m 0755 "$FILES_BIN" "$WORK/opt/endoriumfort/bin/endoriumfort-files"
 cp -r "$ROOT_DIR/frontend/dist/." "$WORK/opt/endoriumfort/frontend/"
 install -m 0644 "$ROOT_DIR/packaging/deb/nginx-endoriumfort.conf" "$WORK/etc/nginx/sites-available/endoriumfort.conf"
 install -m 0644 "$ROOT_DIR/packaging/deb/endoriumfort.service" "$WORK/lib/systemd/system/endoriumfort.service"
+install -m 0644 "$ROOT_DIR/packaging/deb/endoriumfort-files.service" "$WORK/lib/systemd/system/endoriumfort-files.service"
 install -m 0755 "$ROOT_DIR/packaging/deb/postinst" "$WORK/DEBIAN/postinst"
 install -m 0755 "$ROOT_DIR/packaging/deb/prerm"    "$WORK/DEBIAN/prerm"
 install -m 0755 "$ROOT_DIR/packaging/deb/postrm"   "$WORK/DEBIAN/postrm"
@@ -55,8 +64,9 @@ Installed-Size: ${INSTALLED_KB}
 Depends: libsqlite3-0, libssh2-1, libssl3, nginx, ca-certificates, openssl
 Description: EndoriumFort PAM Bastion - Community Edition server
  Self-hosted Privileged Access Management bastion (backend + frontend),
- served by nginx and managed by systemd. Premium/Enterprise features are not
- included in this package.
+ served by nginx and managed by systemd, plus the isolated file share service
+ for fileshare resources. Premium/Enterprise features are not included in
+ this package.
 EOF
 
 # conffiles (preserve admin edits on upgrade)

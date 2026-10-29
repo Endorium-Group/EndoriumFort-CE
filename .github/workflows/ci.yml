@@ -115,3 +115,28 @@ jobs:
       - name: Build agent
         working-directory: agent
         run: go build ./...
+
+  fileshare-build-test:
+    name: File share service Build & Test
+    # Core (Community) component: runs in both editions.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.9"
+          cache: false
+
+      - name: Vet
+        working-directory: fileshare
+        run: go vet ./...
+
+      - name: Run tests
+        working-directory: fileshare
+        run: go test -race ./...
+
+      - name: Build image
+        run: docker build -t endoriumfort-files:ci fileshare/

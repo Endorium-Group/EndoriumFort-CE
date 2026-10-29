@@ -4,6 +4,8 @@
 
 #include "security_middleware.h"
 
+#include <string>
+
 struct AppContext;
 
 void register_health_routes(CrowApp &app, AppContext &ctx);
@@ -27,6 +29,13 @@ void register_ssh_guard_routes(CrowApp &app, AppContext &ctx);
 // Remote Browser Isolation (core / CE): server-side headless Chromium streamed
 // to the operator over a WebSocket (CDP screencast). Not license-gated.
 void register_rbi_routes(CrowApp &app, AppContext &ctx);
+// File share resources (core / CE): signed tickets for the separate drive
+// service (fileshare/) and the directory of people a drive can be shared with.
+void register_fileshare_routes(CrowApp &app, AppContext &ctx);
+// Asks the file share service to delete the space of a deleted fileshare
+// resource (signed purge order, in the background; journaled either way).
+void fileshare_purge_space(AppContext &ctx, int resource_id,
+                           const std::string &actor, const std::string &role);
 
 // Open-core extension hook. Registers all premium (Enterprise) route groups.
 // The Enterprise build defines it in src/pro/pro_features.cc; the Community

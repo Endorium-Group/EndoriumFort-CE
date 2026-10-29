@@ -48,8 +48,13 @@ esac
 BACKEND_PORT="${ENDORIUMFORT_PORT:-8080}"
 FRONTEND_PORT="${ENDORIUMFORT_FRONTEND_PORT:-5173}"
 
+FILES_PORT="${EF_FS_PORT:-8090}"
+# File share service (fileshare/): dev data and ticket key, kept across runs.
+FILES_DEV_DIR="$ROOT_DIR/.fileshare-dev"
+
 BACKEND_PID=""
 FRONTEND_PID=""
+FILES_PID=""
 
 info() {
   printf "\n\033[1;36m==> %s\033[0m\n" "$1"
@@ -62,6 +67,9 @@ cleanup() {
   fi
   if [[ -n "$BACKEND_PID" ]] && kill -0 "$BACKEND_PID" 2>/dev/null; then
     kill "$BACKEND_PID" 2>/dev/null || true
+  fi
+  if [[ -n "$FILES_PID" ]] && kill -0 "$FILES_PID" 2>/dev/null; then
+    kill "$FILES_PID" 2>/dev/null || true
   fi
   wait >/dev/null 2>&1 || true
   exit "$code"
@@ -90,6 +98,27 @@ ensure_frontend_deps() {
   fi
 }
 
+# The file share service needs Go; without it, file share drives answer 503.
+start_files() {
+  if ! command -v go >/dev/null 2>&1; then
+    info "Go not found - file share service not started (fileshare resources unavailable)"
+    return
+  fi
+  mkdir -p "$FILES_DEV_DIR/data"
+  if [[ ! -s "$FILES_DEV_DIR/secret" ]]; then
+    (umask 077 && od -An -tx1 -N32 /dev/urandom | tr -d ' \n' > "$FILES_DEV_DIR/secret")
+  fi
+  export ENDORIUMFORT_FILESHARE_SECRET_FILE="$FILES_DEV_DIR/secret"
+  # Lets the backend purge a deleted resource's drive.
+  export ENDORIUMFORT_FILESHARE_UPSTREAM="http://127.0.0.1:${FILES_PORT}"
+  info "Building and starting file share service on http://localhost:${FILES_PORT}"
+  (cd "$ROOT_DIR/fileshare" && go build -o "$FILES_DEV_DIR/endoriumfort-files" .)
+  EF_FS_LISTEN="127.0.0.1:${FILES_PORT}" \
+    EF_FS_DATA_DIR="$FILES_DEV_DIR/data" \
+    "$FILES_DEV_DIR/endoriumfort-files" &
+  FILES_PID=$!
+}
+
 start_backend() {
   info "Starting backend on http://localhost:${BACKEND_PORT}"
   (
@@ -108,6 +137,8 @@ start_frontend() {
   info "Starting frontend on http://localhost:${FRONTEND_PORT}"
   (
     cd "$FRONTEND_DIR"
+    EF_API_TARGET="${EF_API_TARGET:-http://localhost:${BACKEND_PORT}}" \
+    EF_FILES_TARGET="${EF_FILES_TARGET:-http://localhost:${FILES_PORT}}" \
     npm run dev -- --host 0.0.0.0 --port "$FRONTEND_PORT"
   ) &
   FRONTEND_PID=$!
@@ -117,13 +148,15 @@ main() {
   ensure_backend
   ensure_frontend_deps
 
+  start_files
   start_backend
   start_frontend
 
   info "Dev stack ready"
   echo "Backend : http://localhost:${BACKEND_PORT}"
   echo "Frontend: http://localhost:${FRONTEND_PORT}"
-  echo "Press Ctrl+C to stop both processes."
+  [[ -n "$FILES_PID" ]] && echo "Files   : http://localhost:${FILES_PORT}"
+  echo "Press Ctrl+C to stop all processes."
 
   wait -n "$BACKEND_PID" "$FRONTEND_PID"
 }

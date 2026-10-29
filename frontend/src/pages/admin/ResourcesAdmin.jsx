@@ -5,8 +5,8 @@ import { configureK8sResource, createResource, deleteResource, fetchK8sResources
 import { describeAccessOutcome, describeResourcePolicy, normalizeRiskLevel } from '../../accessPolicy.js';
 import { zoneOf } from '../MapPage.jsx';
 
-const PROTOCOLS = ['ssh', 'rdp', 'vnc', 'http', 'https', 'agent', 'k8s'];
-const DEFAULT_PORT = { ssh: 22, rdp: 3389, vnc: 5900, http: 80, https: 443, agent: 22, k8s: 443 };
+const PROTOCOLS = ['ssh', 'rdp', 'vnc', 'http', 'https', 'agent', 'k8s', 'fileshare'];
+const DEFAULT_PORT = { ssh: 22, rdp: 3389, vnc: 5900, http: 80, https: 443, agent: 22, k8s: 443, fileshare: 443 };
 const RISKS = ['low', 'medium', 'high', 'critical'];
 const isWebProtocol = (protocol) => protocol === 'http' || protocol === 'https';
 
@@ -37,7 +37,9 @@ const formFrom = (resource) => {
     requireAccessJustification: !!resource?.requireAccessJustification,
     requireDualApproval: !!resource?.requireDualApproval,
     enableCommandGuard: !!resource?.enableCommandGuard,
-    adaptiveAccessPolicy: !!resource?.adaptiveAccessPolicy
+    adaptiveAccessPolicy: !!resource?.adaptiveAccessPolicy,
+    allowFileDownload: !!resource?.allowFileDownload,
+    allowFileUpload: !!resource?.allowFileUpload
   };
 };
 
@@ -100,7 +102,8 @@ function ResourceEditor({ resource, initialProtocol, zones, onSaved, onDeleted, 
   const save = async (event) => {
     event.preventDefault();
     const name = form.name.trim();
-    const target = form.target.trim();
+    // A file share is not dialled: its target is a label, defaulted.
+    const target = form.target.trim() || (form.protocol === 'fileshare' ? 'drive' : '');
     if (!name || !target) {
       setError(t('resAdmin.required'));
       return;
@@ -127,6 +130,9 @@ function ResourceEditor({ resource, initialProtocol, zones, onSaved, onDeleted, 
       requireDualApproval: !!form.requireDualApproval,
       enableCommandGuard: !!form.enableCommandGuard,
       adaptiveAccessPolicy: !!form.adaptiveAccessPolicy,
+      // SSH only; a non-SSH resource never offers transfer.
+      allowFileDownload: form.protocol === 'ssh' && !!form.allowFileDownload,
+      allowFileUpload: form.protocol === 'ssh' && !!form.allowFileUpload,
       riskLevel: form.riskLevel
     };
     setBusy(true);
@@ -225,12 +231,20 @@ function ResourceEditor({ resource, initialProtocol, zones, onSaved, onDeleted, 
               {PROTOCOLS.map((value) => <option key={value} value={value}>{t(`resAdmin.protocols.${value}`)}</option>)}
             </select>
           </Field>
-          <Field id="r-port" label={t('resAdmin.port')}>
-            <input id="r-port" className="ef-input ef-mono" type="number" min="1" max="65535" value={form.port} onChange={set('port')} />
-          </Field>
-          <Field id="r-target" label={protocol === 'k8s' ? t('resAdmin.clusterLabel') : t('map.address')} hint={protocol === 'k8s' ? t('resAdmin.k8sTargetHint') : null} full>
-            <input id="r-target" className="ef-input ef-mono" value={form.target} onChange={set('target')} placeholder={protocol === 'k8s' ? 'k8s.prod' : '10.0.0.12'} required />
-          </Field>
+          {protocol !== 'fileshare' && (
+            <Field id="r-port" label={t('resAdmin.port')}>
+              <input id="r-port" className="ef-input ef-mono" type="number" min="1" max="65535" value={form.port} onChange={set('port')} />
+            </Field>
+          )}
+          {protocol === 'fileshare' ? (
+            <Field id="r-target" label={t('resAdmin.driveLabel')} hint={t('resAdmin.fileshareHint')} full>
+              <input id="r-target" className="ef-input ef-mono" value={form.target} onChange={set('target')} placeholder="drive" />
+            </Field>
+          ) : (
+            <Field id="r-target" label={protocol === 'k8s' ? t('resAdmin.clusterLabel') : t('map.address')} hint={protocol === 'k8s' ? t('resAdmin.k8sTargetHint') : null} full>
+              <input id="r-target" className="ef-input ef-mono" value={form.target} onChange={set('target')} placeholder={protocol === 'k8s' ? 'k8s.prod' : '10.0.0.12'} required />
+            </Field>
+          )}
           {protocol === 'agent' && (
             <>
               <Field id="r-aproto" label={t('resAdmin.tunneled')}>
@@ -310,6 +324,13 @@ function ResourceEditor({ resource, initialProtocol, zones, onSaved, onDeleted, 
             )}
             <label className="ef-check"><input type="checkbox" checked={form.adaptiveAccessPolicy} onChange={set('adaptiveAccessPolicy')} />{t('resAdmin.adaptive')}</label>
           </div>
+          {protocol === 'ssh' && (
+            <div className="ef-rchecks is-full">
+              <span className="ef-muted">{t('resAdmin.fileTransfer')}</span>
+              <label className="ef-check"><input type="checkbox" checked={form.allowFileDownload} onChange={set('allowFileDownload')} />{t('resAdmin.allowFileDownload')}</label>
+              <label className="ef-check"><input type="checkbox" checked={form.allowFileUpload} onChange={set('allowFileUpload')} />{t('resAdmin.allowFileUpload')}</label>
+            </div>
+          )}
         </div>
         {preview.length > 0 && (
           <div className="ef-rpreview">
@@ -452,12 +473,13 @@ export default function ResourcesAdmin({ resources, loading, focusId, onFocusUse
                       const rules = [
                         resource.requireDualApproval && t('resAdmin.badgeApproval'),
                         resource.requireAccessJustification && t('resAdmin.badgeReason'),
-                        resource.enableCommandGuard && t('resAdmin.badgeGuard')
+                        resource.enableCommandGuard && t('resAdmin.badgeGuard'),
+                        (resource.allowFileDownload || resource.allowFileUpload) && t('resAdmin.badgeFiles')
                       ].filter(Boolean);
                       return (
                         <tr key={resource.id} className={selectedId === resource.id ? 'is-selected' : undefined} onClick={() => { setSelectedId(resource.id); setCreating(false); setNotice(''); }}>
                           <td className="ef-mono">{resource.name}</td>
-                          <td className="ef-mono ef-text-2">{resource.target}:{resource.port}</td>
+                          <td className="ef-mono ef-text-2">{String(resource.protocol).toLowerCase() === 'fileshare' ? resource.target : `${resource.target}:${resource.port}`}</td>
                           <td className="ef-mono ef-text-2">{String(resource.protocol || '').toUpperCase()}</td>
                           <td><span className={`ef-badge ef-badge--${risk}`}>{t(`map.risk.${risk}`)}</span></td>
                           {!editorOpen && <td>{rules.length ? rules.map((r) => <span key={r} className="ef-badge" style={{ marginRight: 4 }}>{r}</span>) : <span className="ef-muted">{t('resAdmin.direct')}</span>}</td>}
