@@ -188,3 +188,68 @@ Côté relais : `POST /api/relays/enroll`, `POST /api/relays/heartbeat` (automat
 ---
 
 *Sécurité : privilégie le mTLS (§4.2) hors lab, restreins `--allow-target` au strict nécessaire, limite la source du port-forward à l'IP du bastion, et préfère un token d'enrôlement one-shot au secret partagé.*
+
+---
+
+## Linux Relay Daemon (real binary)
+
+EndoriumFort ships a dedicated Linux relay daemon binary:
+
+```bash
+# Build relay daemon (from repository root)
+cd agent
+VERSION="$(tr -d '[:space:]' < VERSION)"
+go build -ldflags "-X main.version=${VERSION} -s -w" \
+  -o endoriumfort-relay-linux-amd64 ./cmd/endoriumfort-relay
+```
+
+Run the relay daemon:
+
+```bash
+./agent/endoriumfort-relay-linux-amd64 \
+  --server https://bastion.example.com \
+  --relay-id relay-paris-01 \
+  --label "Relay Paris #1" \
+  --listen 127.0.0.1:18080 \
+  --tls-cert /etc/endoriumfort-relay/server.pem \
+  --tls-key /etc/endoriumfort-relay/server-key.pem \
+  --client-ca /etc/endoriumfort-relay/bastion-client-ca.pem \
+  --allow-target 10.20.0.10:22 \
+  --enroll-secret "<ENDORIUMFORT_RELAY_ENROLL_SECRET>" \
+  --certificate "<relay_certificate_if_required>"
+```
+
+Behavior:
+- enrolls once via `POST /api/relays/enroll`
+- keeps online state fresh via periodic `POST /api/relays/heartbeat`
+- runs `HTTP CONNECT` over TLS with mandatory client certificates on `--listen` (default `127.0.0.1:18080`)
+- requires `--tls-cert`, `--tls-key`, `--client-ca`, and at least one repeatable `--allow-target IP:port`; startup fails if these are missing
+- only dials explicitly allowed IP/port pairs after validating the client certificate; hostnames, wildcard destinations and implicit ports are rejected
+
+**Migration:** plaintext CONNECT clients must switch to TLS and present a client certificate signed by the dedicated CA in `--client-ca`. Provision a server certificate matching the relay address and configure clients to verify it. Trust only a CA reserved for authorized bastion clients: every valid client certificate from that CA receives access to the relay's entire target allowlist. The enrollment `--certificate` header and enrollment tokens are separate from this TLS authentication. The backend enrollment/heartbeat API does not distribute these TLS credentials or configure CONNECT clients automatically. For a remote bastion, explicitly bind `--listen` to the relay's private network address and configure the permitted destinations. IPv6 targets use `[address]:port`. There is no automatic fallback to HTTP.
+
+For temporary plaintext CONNECT testing, replace the three TLS flags with:
+
+```bash
+--allow-http-connect-for 30m \
+--allow-http-client 127.0.0.1 \
+--allow-target 10.20.0.10:22
+```
+
+The duration is mandatory (maximum 24 hours); the relay and its active connections stop when it expires. Repeat `--allow-http-client` for each authorized source IP. The source address comes from the TCP connection, not forwarded headers. Destination restrictions still apply. This mode uses neither encryption nor client certificates; normal startup remains mutual TLS. `--allow-http` and `--insecure` separately control the relay-to-bastion API connection.
+
+You can alternatively bootstrap with one-time enrollment token:
+
+```bash
+./agent/endoriumfort-relay-linux-amd64 \
+  --server https://bastion.example.com \
+  --relay-id relay-paris-02 \
+  --listen 127.0.0.1:18080 \
+  --tls-cert /etc/endoriumfort-relay/server.pem \
+  --tls-key /etc/endoriumfort-relay/server-key.pem \
+  --client-ca /etc/endoriumfort-relay/bastion-client-ca.pem \
+  --allow-target 10.20.0.10:22 \
+  --enrollment-token "<one_time_token>" \
+  --certificate "<relay_certificate_if_required>"
+```
+

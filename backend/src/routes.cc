@@ -7,6 +7,7 @@
 #include "crypto.h"
 #include "http_proxy.h"
 #include "iam_common.h"
+#include "reporting.h"
 #include "route_common.h"
 #include "scim_query.h"
 #include "session_access.h"
@@ -2921,6 +2922,156 @@ void register_audit_routes(CrowApp &app, AppContext &ctx) {
     payload["legacyLines"] = check.legacyLines;
     payload["keyed"] = !ctx.audit_hmac_key.empty();
     return crow::response{payload};
+  });
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  Reporting (core / CE): daily, monthly, quarterly and annual reports
+// ══════════════════════════════════════════════════════════════════════
+
+namespace {
+
+void add_report_totals(crow::json::wvalue &out, const ReportTotals &totals) {
+  out["events"] = totals.events;
+  out["failures"] = totals.failures;
+  out["adminActions"] = totals.adminActions;
+  out["signIns"] = totals.signIns;
+  out["signInFailures"] = totals.signInFailures;
+  out["sessionsOpened"] = totals.sessionsOpened;
+  out["sessionsClosed"] = totals.sessionsClosed;
+  out["sessionsBlocked"] = totals.sessionsBlocked;
+  out["accessRequests"] = totals.accessRequests;
+  out["accessApproved"] = totals.accessApproved;
+  out["accessDenied"] = totals.accessDenied;
+  out["commandBlocks"] = totals.commandBlocks;
+  out["incidents"] = totals.incidents;
+  out["uniqueActors"] = totals.uniqueActors;
+  out["uniqueTargets"] = totals.uniqueTargets;
+}
+
+void add_report_counts(crow::json::wvalue &out,
+                       const std::vector<ReportCount> &items) {
+  out = crow::json::wvalue::list();
+  int index = 0;
+  for (const auto &item : items) {
+    out[index]["name"] = item.name;
+    out[index]["count"] = item.count;
+    ++index;
+  }
+}
+
+// Freeze what to read while holding the audit lock (a line being appended is
+// left out), then aggregate without blocking writers — as /api/audit does.
+Report read_report(AppContext &ctx, const ReportQuery &query) {
+  std::vector<std::string> files;
+  std::optional<uint64_t> active_size;
+  {
+    std::lock_guard<std::mutex> lock(ctx.audit_mutex);
+    files = audit_log_files(ctx.audit_path);
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(ctx.audit_path, ec);
+    if (!ec) active_size = static_cast<uint64_t>(size);
+  }
+  if (!files.empty() && files.front() != ctx.audit_path) active_size.reset();
+  return build_report(files, active_size, query);
+}
+
+}  // namespace
+
+void register_report_routes(CrowApp &app, AppContext &ctx) {
+  // GET /api/reports — statistics over one calendar period, built from the
+  // audit log (archives included). Query: period (day|month|quarter|year,
+  // default day), date (a day, a month or a year inside the period, default
+  // today UTC), top (length of the "top …" lists, 1-50, default 10).
+  CROW_ROUTE(app, "/api/reports")([&ctx](const crow::request &request) {
+    auto auth = ctx.find_auth(request);
+    if (!auth) return crow::response(401, "Unauthorized");
+    if (!has_permission(ctx, *auth, "audit.read"))
+      return crow::response(403, "Forbidden");
+
+    const auto &params = request.url_params;
+    ReportQuery query;
+    std::string error;
+    if (!parse_report_query(params.get("period"), params.get("date"),
+                            params.get("top"), query, error))
+      return crow::response(400, error);
+
+    const Report report = read_report(ctx, query);
+
+    crow::json::wvalue payload;
+    payload["status"] = "ok";
+    payload["period"] = query.period;
+    payload["generatedAt"] = now_utc();
+    payload["window"]["label"] = report.window.label;
+    payload["window"]["from"] = report.window.from;
+    payload["window"]["to"] = report.window.to;
+    payload["window"]["anchor"] = report.window.anchor;
+    payload["previous"]["label"] = report.previous.label;
+    payload["previous"]["from"] = report.previous.from;
+    payload["previous"]["to"] = report.previous.to;
+    payload["previous"]["anchor"] = report.previous.anchor;
+    add_report_totals(payload["totals"], report.totals);
+    add_report_totals(payload["previousTotals"], report.previousTotals);
+    payload["bucketUnit"] = report.bucketUnit;
+    payload["buckets"] = crow::json::wvalue::list();
+    int index = 0;
+    for (const auto &bucket : report.buckets) {
+      payload["buckets"][index]["label"] = bucket.label;
+      payload["buckets"][index]["events"] = bucket.events;
+      payload["buckets"][index]["sessions"] = bucket.sessions;
+      payload["buckets"][index]["failures"] = bucket.failures;
+      ++index;
+    }
+    add_report_counts(payload["topActors"], report.topActors);
+    add_report_counts(payload["topTargets"], report.topTargets);
+    add_report_counts(payload["topEvents"], report.topEvents);
+    add_report_counts(payload["families"], report.families);
+    payload["firstEventAt"] = report.firstEventAt;
+    payload["lastEventAt"] = report.lastEventAt;
+    payload["scannedLines"] = report.scannedLines;
+    payload["scannedFiles"] = report.scannedFiles;
+    payload["truncated"] = report.truncated;
+    return crow::response{payload};
+  });
+
+  // GET /api/reports/export — the same report as a CSV file, to file as-is or
+  // open in a spreadsheet. The download is journaled: a report leaving the
+  // bastion is itself an auditable act.
+  CROW_ROUTE(app, "/api/reports/export")([&ctx](const crow::request &request) {
+    auto auth = ctx.find_auth(request);
+    if (!auth) return crow::response(401, "Unauthorized");
+    if (!has_permission(ctx, *auth, "audit.read"))
+      return crow::response(403, "Forbidden");
+
+    const auto &params = request.url_params;
+    ReportQuery query;
+    std::string error;
+    if (!parse_report_query(params.get("period"), params.get("date"),
+                            params.get("top"), query, error))
+      return crow::response(400, error);
+
+    const Report report = read_report(ctx, query);
+
+    AuditEvent event;
+    event.id = ctx.next_audit_id.fetch_add(1);
+    event.type = "report.export";
+    event.actor = auth->user;
+    event.role = auth->role;
+    event.createdAt = now_utc();
+    event.payloadJson = "{\"period\":\"" + json_escape(query.period) +
+                        "\",\"label\":\"" + json_escape(report.window.label) +
+                        "\",\"events\":" + std::to_string(report.totals.events) +
+                        ",\"format\":\"csv\"}";
+    event.payloadIsJson = true;
+    ctx.append_audit(event);
+
+    // The label is "2026-10" / "2026-Q4" / a date: no quote to escape.
+    crow::response response(200, report_to_csv(report));
+    response.set_header("Content-Type", "text/csv; charset=utf-8");
+    response.set_header("Content-Disposition",
+                        "attachment; filename=\"endoriumfort-report-" +
+                            query.period + "-" + report.window.label + ".csv\"");
+    return response;
   });
 }
 

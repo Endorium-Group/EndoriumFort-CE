@@ -17,6 +17,8 @@ void register_resource_routes(CrowApp &app, AppContext &ctx);
 void register_access_request_routes(CrowApp &app, AppContext &ctx);
 void register_session_routes(CrowApp &app, AppContext &ctx);
 void register_audit_routes(CrowApp &app, AppContext &ctx);
+// Daily / monthly / quarterly / annual reports over the audit log (core / CE).
+void register_report_routes(CrowApp &app, AppContext &ctx);
 void register_recording_routes(CrowApp &app, AppContext &ctx);
 void register_stats_routes(CrowApp &app, AppContext &ctx);
 void register_relay_routes(CrowApp &app, AppContext &ctx);

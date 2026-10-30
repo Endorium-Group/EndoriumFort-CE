@@ -129,6 +129,11 @@ bool matches(const AuditQuery &q, const AuditRow &row, const crow::json::rvalue 
 
 }  // namespace
 
+bool parse_audit_line(const std::string &line, AuditRow &row) {
+  crow::json::rvalue json;
+  return parse_line(line, row, json);
+}
+
 bool audit_type_is_failure(const std::string &type) {
   static const std::regex re(
       "fail|denied|deny|block|reject|rate_limited|error|unjustified|anomaly|incident|detection|containment");

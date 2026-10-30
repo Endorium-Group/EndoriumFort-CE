@@ -142,3 +142,66 @@ test('deleteWebAuthnCredential uses DELETE with auth header', { concurrency: fal
   assert.equal(seenMethod, 'DELETE');
   assert.equal(seenHeaders.Authorization, 'Bearer eft_passkey');
 });
+
+test('fetchReport builds the period query and sends the auth header', { concurrency: false }, async () => {
+  globalThis.localStorage = createStorage();
+  globalThis.window = { dispatchEvent: () => {} };
+  globalThis.CustomEvent = class {
+    constructor(type) { this.type = type; }
+  };
+
+  let seenUrl = '';
+  let seenHeaders = null;
+  globalThis.fetch = async (url, options = {}) => {
+    seenUrl = url;
+    seenHeaders = options.headers || {};
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ status: 'ok', totals: { events: 3 } }),
+      text: async () => ''
+    };
+  };
+
+  const api = await import('../src/api.js');
+  api.setAuthToken('eft_report');
+  // An empty value is left out so the server applies its own default.
+  const result = await api.fetchReport({ period: 'quarter', date: '2026-10-30', top: 10, cursor: '' });
+
+  assert.equal(seenUrl, '/api/reports?period=quarter&date=2026-10-30&top=10');
+  assert.equal(seenHeaders.Authorization, 'Bearer eft_report');
+  assert.equal(result.totals.events, 3);
+});
+
+test('fetchReportCsv reads the filename from Content-Disposition', { concurrency: false }, async () => {
+  globalThis.localStorage = createStorage();
+  globalThis.window = { dispatchEvent: () => {} };
+  globalThis.CustomEvent = class {
+    constructor(type) { this.type = type; }
+  };
+
+  let seenUrl = '';
+  globalThis.fetch = async (url) => {
+    seenUrl = url;
+    return {
+      ok: true,
+      status: 200,
+      headers: {
+        get: (name) =>
+          name === 'Content-Disposition'
+            ? 'attachment; filename="endoriumfort-report-month-2026-10.csv"'
+            : null
+      },
+      blob: async () => 'section,label,value\r\n',
+      text: async () => ''
+    };
+  };
+
+  const api = await import('../src/api.js');
+  api.setAuthToken('eft_report_csv');
+  const { blob, filename } = await api.fetchReportCsv({ period: 'month', date: '2026-10-01' });
+
+  assert.equal(seenUrl, '/api/reports/export?period=month&date=2026-10-01');
+  assert.equal(filename, 'endoriumfort-report-month-2026-10.csv');
+  assert.equal(blob, 'section,label,value\r\n');
+});

@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+### Reporting (Community)
+
+- Added a **Reports** tab and the reporting API behind it: statistics over a
+  **day, a month, a quarter or a year**, aggregated on the server from the audit
+  log and its archives, so a report covers the whole retention window and not
+  only what is in memory since the last restart (closes #59).
+  - `GET /api/reports?period=day|month|quarter|year&date=<YYYY-MM-DD>&top=<1-50>`
+    answers sessions opened, closed and refused, successful and failed sign-ins,
+    access requests and their decisions, blocked commands, incidents opened,
+    administration changes, failures, active users and resources touched — each
+    figure next to the **same figure for the period before**, so a trend needs no
+    second request. `date` also takes `2026-10` or `2026`.
+  - A per-bucket series comes with it (the 24 hours of a day, the days of a month
+    or a quarter, the 12 months of a year), plus the busiest users, the most
+    frequent targets and the most frequent event types.
+  - `GET /api/reports/export?…` downloads the same report as a CSV file, with
+    leading `=`/`+`/`-`/`@` neutralised so a spreadsheet never reads a logged
+    value as a formula. The download is journaled as `report.export`: a report
+    leaving the bastion is itself an auditable act.
+  - Both routes need `audit.read`, which admins and auditors hold by default.
+  - Archives that fall entirely outside the two periods are never opened past
+    their first line, and the scan stops once it reaches back before the window.
+
+### Security — Go toolchain
+
+- Bumped the Go toolchain used to build the agent, the relay and the file share
+  service from **1.25.9 to 1.26.10** (`GO-2026-6809`: compromised intermediate
+  certificates were not distrusted in `crypto/x509`). The 1.25 line has no fix
+  for it, so the jump to 1.26 is required rather than optional. Updated every
+  workflow pin and `agent/go.mod`'s `toolchain` directive; the `go 1.25.0`
+  language directives are unchanged, so the minimum for consumers is the same.
+
+### Continuous integration
+
+- **The Backend and Frontend Unit gates could not fail.** Both piped their test
+  run through `tee` to capture a log, and a pipeline reports its last command's
+  status, so the exit code came from `tee`: failing tests left the step and the
+  gate green. Both now run under `set -o pipefail`.
+- **The Backend gate ran 1 of its 17 test executables.** The build step named
+  only two targets, leaving 16 test binaries uncompiled; ctest reported them as
+  "Not Run", which the missing pipefail then hid. It now builds everything.
+- **The Frontend E2E gate had never been able to pass.** It started a bare
+  backend on its default port and its own Vite server, while the harness needs
+  a throwaway bastion on `:8095` (provisioned by `e2e/start-backend.sh`, since
+  global setup drives the factory admin's first login) and starts the interface
+  itself on `:5175`. It also now selects Playwright's chromium, which is the
+  browser the job installs.
+- Pinned `govulncheck` instead of tracking `@latest`, which had started
+  requiring a newer toolchain than the pinned one and broke the Supply Chain
+  gate with no change on our side.
+- Fixed the frontend unit log path, so the uploaded artifact is no longer empty.
+
 ### File share resources (Community)
 
 - Added the **`fileshare` resource type**: it opens a web drive in a dedicated

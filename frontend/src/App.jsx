@@ -53,6 +53,7 @@ import LoginPage from './pages/LoginPage.jsx';
 import SshFilesDialog from './ui/SshFilesDialog.jsx';
 import SshTransferSettings from './pages/admin/SshTransferSettings.jsx';
 import MapPage from './pages/MapPage.jsx';
+const ReportsPage = lazy(() => import('./pages/ReportsPage.jsx'));
 import FirstLoginDialog from './pages/account/FirstLoginDialog.jsx';
 import AccessDialog from './pages/AccessDialog.jsx';
 import UpsellDialog from './ui/UpsellDialog.jsx';
@@ -585,6 +586,7 @@ export default function App() {
     'sessions',
     (canManagePlatform || jitLicensed) && 'demandes',
     canViewAudit && 'journal',
+    canViewAudit && 'rapports',
     canViewRecordings && 'preuves',
     canManagePlatform && 'zones',
     canManagePlatform && 'admin'
@@ -893,7 +895,7 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event) => {
-      // Alt+1…7 jumps to the visible top-level tabs, in display order.
+      // Alt+1…9 jumps to the visible top-level tabs, in display order.
       if (event.altKey && !event.metaKey && !event.ctrlKey) {
         const index = Number(event.key) - 1;
         const tabs = SHELL_TABS.filter((tab) => visibleShellTabs.includes(tab.id));
@@ -3918,6 +3920,8 @@ export default function App() {
         }}
       />
     );
+  } else if (currentTab === 'rapports') {
+    shellBody = <ReportsPage />;
   } else if (currentTab === 'demandes') {
     shellBody = (
       <RequestsPage

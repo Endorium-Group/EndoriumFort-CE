@@ -78,6 +78,7 @@ add_executable(endoriumfort_backend
   src/http_proxy.cc
   src/scim_query.cc
   src/audit_query.cc
+  src/reporting.cc
   src/routes.cc
   src/route_common.cc
   src/settings.cc
@@ -227,6 +228,12 @@ if (BUILD_TESTING)
     src/audit_query.cc
   )
 
+  add_executable(endoriumfort_backend_reporting_tests
+    tests/reporting_test.cc
+    src/reporting.cc
+    src/audit_query.cc
+  )
+
   add_executable(endoriumfort_backend_settings_tests
     tests/settings_test.cc
     src/settings.cc
@@ -271,6 +278,7 @@ if (BUILD_TESTING)
     src/scim_query.cc
     src/audit_query.cc
     src/routes.cc
+    src/reporting.cc  # routes.cc serves /api/reports
     src/fileshare.cc  # routes.cc calls fileshare_purge_space()
     src/route_common.cc
     src/settings.cc
@@ -289,6 +297,7 @@ if (BUILD_TESTING)
     src/scim_query.cc
     src/audit_query.cc
     src/routes.cc
+    src/reporting.cc  # routes.cc serves /api/reports
     src/fileshare.cc  # routes.cc calls fileshare_purge_space()
     src/route_common.cc
     src/settings.cc
@@ -439,6 +448,17 @@ if (BUILD_TESTING)
     PRIVATE ASIO_STANDALONE
   )
 
+  target_include_directories(endoriumfort_backend_reporting_tests
+    PRIVATE
+      ${crow_SOURCE_DIR}/include
+      ${asio_SOURCE_DIR}/asio/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  target_compile_definitions(endoriumfort_backend_reporting_tests
+    PRIVATE ASIO_STANDALONE
+  )
+
   target_compile_definitions(endoriumfort_backend_device_tests
     PRIVATE ASIO_STANDALONE
   )
@@ -474,6 +494,7 @@ if (BUILD_TESTING)
   target_link_libraries(endoriumfort_backend_runtime_config_tests PRIVATE OpenSSL::Crypto endoriumfort_db)
   target_link_libraries(endoriumfort_backend_scim_query_tests PRIVATE OpenSSL::Crypto)
   target_link_libraries(endoriumfort_backend_audit_query_tests PRIVATE OpenSSL::Crypto Threads::Threads)
+  target_link_libraries(endoriumfort_backend_reporting_tests PRIVATE OpenSSL::Crypto Threads::Threads)
   target_link_libraries(endoriumfort_backend_device_tests PRIVATE endoriumfort_db OpenSSL::SSL OpenSSL::Crypto)
   target_link_libraries(endoriumfort_backend_settings_tests PRIVATE endoriumfort_db OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
   target_link_libraries(endoriumfort_backend_ssh_guard_tests PRIVATE endoriumfort_db OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
@@ -506,6 +527,7 @@ if (BUILD_TESTING)
   add_test(NAME backend_runtime_config_test COMMAND endoriumfort_backend_runtime_config_tests)
   add_test(NAME backend_scim_query_test COMMAND endoriumfort_backend_scim_query_tests)
   add_test(NAME backend_audit_query_test COMMAND endoriumfort_backend_audit_query_tests)
+  add_test(NAME backend_reporting_test COMMAND endoriumfort_backend_reporting_tests)
   add_test(NAME backend_device_test COMMAND endoriumfort_backend_device_tests)
 
   # Resource secrets survive a restart and an edit, with or without vault key.
@@ -580,6 +602,7 @@ if (BUILD_TESTING)
     src/scim_query.cc
     src/audit_query.cc
     src/routes.cc
+    src/reporting.cc  # routes.cc serves /api/reports
     src/fileshare.cc  # routes.cc calls fileshare_purge_space()
     src/route_common.cc
     src/settings.cc

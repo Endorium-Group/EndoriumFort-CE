@@ -121,3 +121,80 @@ En SQLite, chaque nœud a sa propre base — la configuration n'est donc pas par
 ## 8. GitOps
 
 Les deux approches coexistent. Si le dépôt doit rester la source de vérité, pose les valeurs dans les `values` Helm et **ne les édite pas dans l'UI** : l'écran signale toute clé stockée qui masque l'environnement, ce qui rend la dérive visible en un coup d'œil. Pour repartir de l'état déclaré, « Revenir à l'environnement » sur les clés concernées.
+
+---
+
+## Enterprise Integrations (Foundations)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/auth/directory/providers` | List supported directory providers (LDAP/AD foundations) |
+| `GET` | `/api/auth/directory/ldap/config` | Read current LDAP/AD runtime capability/config summary |
+| `POST` | `/api/auth/directory/ldap/test-bind` | Validate LDAP bind credentials (admin diagnostic endpoint) |
+| `GET` | `/api/auth/sso/providers` | List supported SSO providers (OIDC/SAML foundations) |
+| `GET` | `/api/auth/sso/config` | Read current SSO capability/config summary |
+| `GET` | `/api/auth/sso/oidc/start` | Start OIDC authorization flow (state + PKCE) |
+| `GET` | `/api/auth/sso/oidc/callback` | OIDC callback endpoint (JIT provisioning + session bootstrap) |
+| `GET` | `/api/scim/v2/ServiceProviderConfig` | SCIM service provider capabilities |
+| `GET` | `/api/scim/v2/Users` | SCIM-formatted user listing (supports `startIndex`, `count`, `filter`) |
+| `GET` | `/api/scim/v2/Users/:idOrUserName` | SCIM user lookup by numeric id or username |
+| `POST` | `/api/scim/v2/Users` | SCIM user provisioning (JIT-compatible account creation) |
+| `PUT` | `/api/scim/v2/Users/:idOrUserName` | SCIM user update / deprovision when `active=false` |
+| `PATCH` | `/api/scim/v2/Users/:idOrUserName` | SCIM partial update (`active`, `userName`, `role/roles`) |
+| `DELETE` | `/api/scim/v2/Users/:idOrUserName` | SCIM deprovisioning (delete + token revocation) |
+| `GET` | `/api/scim/v2/Groups` | SCIM-formatted role group listing (supports `startIndex`, `count`, `filter`) |
+| `GET` | `/api/integrations/itsm/providers` | List ITSM providers (ServiceNow/Jira) |
+| `POST` | `/api/integrations/itsm/verify-ticket` | Verify ticket with explicit fail-open / fail-closed behavior |
+| `GET` | `/api/settings/integrations` | Integration configuration catalog with each key's effective value and source (`settings.manage`) |
+| `PUT` | `/api/settings/integrations` | Store or clear integration settings; the whole form is refused if any value is invalid (`settings.manage`) |
+| `GET` | `/api/integrations/siem/channels` | List SIEM channels with their destination, delivery/retry counters, queue depth and heartbeat |
+| `POST` | `/api/integrations/siem/events` | Delivery drill: ships one event synchronously with explicit fail-open / fail-closed behavior |
+
+#### OIDC JIT Quick Configuration
+
+```bash
+export ENDORIUMFORT_SSO_OIDC_ENABLED=true
+export ENDORIUMFORT_SSO_DEFAULT_PROVIDER=keycloak
+export ENDORIUMFORT_SSO_OIDC_CLIENT_ID=endoriumfort
+export ENDORIUMFORT_SSO_OIDC_CLIENT_SECRET=change-me
+export ENDORIUMFORT_SSO_OIDC_AUTHORIZATION_ENDPOINT=http://localhost:8081/realms/master/protocol/openid-connect/auth
+export ENDORIUMFORT_SSO_OIDC_TOKEN_ENDPOINT=http://localhost:8081/realms/master/protocol/openid-connect/token
+export ENDORIUMFORT_SSO_OIDC_USERINFO_ENDPOINT=http://localhost:8081/realms/master/protocol/openid-connect/userinfo
+export ENDORIUMFORT_SSO_OIDC_SCOPE="openid profile email"
+export ENDORIUMFORT_SSO_OIDC_ROLE_CLAIM=role
+export ENDORIUMFORT_SSO_OIDC_DEFAULT_ROLE=operator
+```
+
+OIDC token and userinfo exchanges support both `http://` and `https://` endpoints. For HTTPS, server certificates are validated against the system trust store.
+
+#### LDAP / Active Directory Quick Configuration
+
+```bash
+export ENDORIUMFORT_LDAP_ENABLED=true
+export ENDORIUMFORT_LDAP_HOST=ldaps://dc1.example.org:636
+export ENDORIUMFORT_LDAP_BASE_DN="dc=example,dc=org"
+export ENDORIUMFORT_LDAP_BIND_DN_TEMPLATE="uid={username},ou=People,dc=example,dc=org"
+export ENDORIUMFORT_LDAP_DEFAULT_ROLE=operator
+export ENDORIUMFORT_LDAP_SYNC_ROLE=true
+# Optional username/DN overrides (exact match):
+# export ENDORIUMFORT_LDAP_ROLE_MAP="alice=admin;bob=auditor;uid=secops,ou=People,dc=example,dc=org=admin"
+# Optional partial-match rules on username or directoryIdentity:
+# export ENDORIUMFORT_LDAP_ROLE_ADMIN_MATCHERS="cn=prod-admins,ou=groups"
+# export ENDORIUMFORT_LDAP_ROLE_AUDITOR_MATCHERS="cn=auditors,ou=groups"
+```
+
+Notes:
+- Backend LDAP diagnostics and login fallback use the `ldapwhoami` CLI (OpenLDAP tools). Install package `ldap-utils` (Debian/Ubuntu) or equivalent on your distro.
+- `ENDORIUMFORT_LDAP_HOST` accepts plain hostnames (`dc1.example.org`) or LDAP URIs (`ldap://...` / `ldaps://...`). URI scheme and optional port are auto-normalized by the backend.
+- `ENDORIUMFORT_LDAP_BIND_DN_TEMPLATE` is the preferred variable name; `ENDORIUMFORT_LDAP_USER_TEMPLATE` remains accepted for backward compatibility.
+- For DN-heavy mappings, use `;` (or newline) as separator in `ENDORIUMFORT_LDAP_ROLE_MAP` and matcher variables to avoid conflicts with DN commas.
+- Role mapping precedence is: `ENDORIUMFORT_LDAP_ROLE_MAP` exact match, then admin/auditor matcher lists, then `ENDORIUMFORT_LDAP_DEFAULT_ROLE` fallback.
+- In the admin console, open **Enterprise IAM** then **Directory Integrations** to inspect provider status and run bind tests.
+
+SCIM filter support notes:
+- Users filter attributes: `id`, `userName`, `displayName`, `role` / `roles`, `active`
+- Groups filter attributes: `id`, `displayName`, `members`
+- Filter operators: `eq`, `co`, `sw`
+
+---
+

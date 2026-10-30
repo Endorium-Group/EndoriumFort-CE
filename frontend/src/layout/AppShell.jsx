@@ -8,6 +8,7 @@ export const SHELL_TABS = [
   { id: 'sessions', path: '/sessions', labelKey: 'shell.sessions' },
   { id: 'demandes', path: '/demandes', labelKey: 'shell.requests' },
   { id: 'journal', path: '/journal', labelKey: 'shell.journal' },
+  { id: 'rapports', path: '/rapports', labelKey: 'shell.reports' },
   { id: 'preuves', path: '/preuves', labelKey: 'shell.evidence' },
   { id: 'zones', path: '/zones', labelKey: 'shell.zones' },
   { id: 'admin', path: '/admin', labelKey: 'shell.admin' }

@@ -10,6 +10,7 @@ import './ui/map.css';
 import './ui/sessions.css';
 import './ui/requests.css';
 import './ui/journal.css';
+import './ui/reports.css';
 import './ui/evidence.css';
 import './ui/zones.css';
 import './ui/admin.css';

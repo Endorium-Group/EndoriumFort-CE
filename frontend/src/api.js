@@ -515,6 +515,37 @@ export async function fetchAuditPage(params = {}) {
   return response.json();
 }
 
+// Statistics over one calendar period, built from the audit log (audit.read).
+// params: period (day|month|quarter|year), date (a day, a month or a year
+// inside the period), top (length of the "top …" lists). Returns
+// { window, previous, totals, previousTotals, bucketUnit, buckets, topActors,
+//   topTargets, topEvents, families, truncated }.
+export async function fetchReport(params = {}) {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return;
+    query.set(key, String(value));
+  });
+  const response = await fetch(`/api/reports?${query}`, { headers: withAuthHeaders() });
+  await ensureResponseOk(response, 'Failed to build the report');
+  return response.json();
+}
+
+// The same report as a CSV file (audit.read). Returns { blob, filename }; the
+// server journals the export.
+export async function fetchReportCsv(params = {}) {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return;
+    query.set(key, String(value));
+  });
+  const response = await fetch(`/api/reports/export?${query}`, { headers: withAuthHeaders() });
+  await ensureResponseOk(response, 'Failed to export the report');
+  const disposition = response.headers.get('Content-Disposition') || '';
+  const match = /filename="?([^";]+)"?/.exec(disposition);
+  return { blob: await response.blob(), filename: match ? match[1] : 'endoriumfort-report.csv' };
+}
+
 // Tamper-evidence check of the whole audit log file (audit.read):
 // { intact, lines, legacyLines, firstBrokenLine, keyed }.
 export async function verifyAuditChain() {

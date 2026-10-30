@@ -1,0 +1,84 @@
+name: Feature request
+description: A capability that does not exist yet and that you can describe concretely.
+title: "[feat] "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when you know *what* should exist. If you only have a hunch
+        worth exploring, open an **Idea** instead — it carries no commitment.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: The operational situation that is painful today. Describe the problem, not the solution.
+      placeholder: Auditors need to prove who approved a given session, but approvals are only visible in the live queue.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed capability
+      description: What should exist. UI, API, config — whatever is relevant.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - backend
+        - frontend
+        - agent
+        - relay
+        - fileshare
+        - RBI (remote browser isolation)
+        - licensing
+        - infra/CI
+        - packaging
+        - docs
+        - mobile app
+        - not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: edition
+    attributes:
+      label: Which edition should carry this?
+      description: >
+        CE is the free community baseline; EE is the commercial differentiator.
+        This drives the open-core boundary, so say what you think and triage will decide.
+      options:
+        - CE (Community) — baseline PAM capability
+        - EE (Enterprise) — commercial differentiator
+        - not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Workaround you use today
+      description: How you cope without it, including external tooling. "None" is a valid answer.
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Done means
+      description: Observable conditions that would let you close this.
+      value: |
+        - [ ]
+        - [ ]
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and the Roadmap section of the README.
+          required: true

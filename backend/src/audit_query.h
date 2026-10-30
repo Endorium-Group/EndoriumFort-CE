@@ -57,6 +57,10 @@ bool parse_audit_query(const char *limit, const char *cursor, const char *actor,
 // The active log and its archives ("<path>.<epoch>"), newest first.
 std::vector<std::string> audit_log_files(const std::string &active_path);
 
+// One log line → row, the tamper-evidence fields ignored. False for a blank or
+// unreadable line. Shared with the reporting aggregator (reporting.h).
+bool parse_audit_line(const std::string &line, AuditRow &row);
+
 // Search `files` (newest first). `active_size` caps how much of files[0] is
 // read, so a line being appended concurrently is never half-read.
 AuditPage query_audit_files(const std::vector<std::string> &files,

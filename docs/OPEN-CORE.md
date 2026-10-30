@@ -27,11 +27,46 @@ Shared logic needed by both editions lives in `backend/src/route_common.{h,cc}`
 `backend/src/iam_common.{h,cc}` (LDAP auth — core login depends on it).
 
 ### `pro/` overlay contents
-`cluster`, `relay`, `rdp`, `vnc`, `tunnel`, `recording`, `access_governance`
-(JIT access requests), `enterprise` (SSO/OIDC, SCIM, LDAP directory, SIEM, ITSM),
-`security_center` (incidents/containment/alerts), `governance` (access
-policies/profiles), `session_premium` (grants, Session DNA, evidence packs,
-privilege elevation, goal review), plus `pro_features.cc`.
+
+`pro_features.cc` is the registration point; `register_pro_features()` mounts
+every group below. Keep this list in step with it — it is what the README and
+the public docs derive the CE/EE boundary from.
+
+| Module | Premium capability | Routes |
+|---|---|---|
+| `cluster` | Cluster / HA: node identity, peer heartbeat, eviction | `/api/cluster/*` |
+| `relay` | Relay control plane: enrollment, certificates, heartbeat, assignment | `/api/relays/*` |
+| `rdp` | Browser RDP via FreeRDP | `/api/ws/rdp` |
+| `vnc` | Browser VNC via noVNC | `/api/ws/vnc`, `/api/vnc/*` |
+| `k8s` | Kubernetes resources: pod listing and recorded `kubectl exec` shells | `/api/k8s/*`, `/api/ws/k8s` |
+| `tunnel` | Agent TCP tunnel | `/ws/tunnel` |
+| `recording` | SSH session recording and replay | `/api/recordings/*` |
+| `rbi_recording` | Recording of isolated-browser sessions | `/api/recordings/<id>/rbi` |
+| `rbi_transfer` | DLP policy over isolated-browser transfers and clipboard | fills the `rbi_transfer_check` seam |
+| `access_governance` | JIT access requests: four-eyes submit / approve / deny | `/api/access-requests/*` |
+| `governance` | Centralized access policies and reusable profiles | `/api/access-policies/*`, `/api/access-profiles/*` |
+| `session_premium` | Ephemeral grants, Session DNA, evidence packs, privilege elevation, goal review | `/api/access-grants`, `/api/sessions/<id>/dna`, `/api/evidence-packs/*` |
+| `security_center` | Incidents, containment, live alerts | `/api/security/*` |
+| `itdr` | Detection rules over the audit stream + response playbooks | `/api/itdr/*` |
+| `enterprise` | SSO (OIDC/SAML), LDAP/AD directory, SCIM 2.0, SIEM, ITSM | `/api/auth/directory/*`, `/api/scim/v2/*`, SSO start/callback |
+| `vault` / `vault_dynamic` | Dynamic secrets: ephemeral OS accounts per session | `/api/vault/dynamic` |
+| `vault_rotation` | Scheduled rotation of stored target credentials | `/api/vault/rotation` |
+| `scheduler` | Background job engine behind rotation, ITDR responses, session reaping, scheduled reports | `/api/automation/jobs` |
+| `branding` | White-label logo, favicon and background | `/api/branding/*` |
+| `push` | Mobile push dispatch on access requests (no routes of its own) | — |
+
+**Boundary traps.** Two capabilities are split across the boundary rather than
+being wholly premium, which is easy to document wrong:
+
+- **Remote browser isolation** — the isolated browser itself is CE
+  (`backend/src/rbi.cc`): the bytes of a file transfer or a clipboard paste are
+  relayed regardless of edition. Only the *policy* over them is EE. In a CE
+  build the seam is unset, so **every transfer is allowed** and the
+  `ENDORIUMFORT_RBI_ALLOW_*`, `_BLOCKED_EXTENSIONS` and `_MAX_TRANSFER_MB`
+  variables have no effect.
+- **Access policy fields** — per-resource justification, ticket requirement and
+  SSH command guard are CE. The *approval queue* (`access_governance`) and the
+  *centralized policy objects* (`governance`) are EE.
 
 ## 2. Building each edition
 
@@ -110,12 +145,28 @@ Licenses are hybrid **Ed25519 + ML-DSA-65** (post-quantum) signed tokens verifie
   keypair, paste its public SPKI-DER (base64url) into `issuer_keys()`, and build
   with `-DENDORIUMFORT_LICENSE_PROD_KEY=ON`.**
 
-## 6. Before going public — checklist
+## 6. Going public — status
 
-- [ ] Generate the **prod** issuer keypair (offline); embed public keys in
-      `license.h`; keep private keys in CI secrets.
-- [ ] Split licensing: core repo `LICENSE` (Apache-2.0 or BSL), `pro/` under a
-      commercial `LICENSE-PRO`; fix the README licence contradiction.
-- [ ] Configure `secrets.ENDORIUMFORT_LICENSE_*` and (optionally) Docker Hub
-      credentials in the respective repos.
-- [ ] `scripts/publish-core.sh` → push the public core repo; wire its CI.
+- [x] **Prod issuer keypair** — embedded in `license.h` as `efort-issuer-2026`
+      (Ed25519 + ML-DSA-65 public keys, under `ENDORIUMFORT_LICENSE_PROD_KEY`).
+      Build EE with `-DENDORIUMFORT_LICENSE_PROD_KEY=ON`.
+- [x] **Licensing split** — `LICENSE` is the CE source-available license v1.1,
+      `LICENSE-PRO` the commercial terms for the `pro/` overlay. The README
+      states the boundary explicitly; the earlier contradiction is gone.
+      Note the choice landed on source-available rather than Apache-2.0 or BSL,
+      so the CE is **not** OSI open source — say "source-available" in public
+      copy, never "open source".
+- [x] **Public core repo** — `Endorium-Group/EndoriumFort-CE` is published, with
+      `ci`, `codeql`, `security-scan`, `release-gate`, `ce-packages`,
+      `docker-publish` and `helm-publish` wired.
+- [x] **Docker Hub credentials** — `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` set
+      in both repos, so the Docker Hub mirror is pushed alongside GHCR.
+- [ ] **License signing secrets are missing.** `sign-license.yml` needs
+      `ENDORIUMFORT_LICENSE_ED25519_KEY` and `ENDORIUMFORT_LICENSE_MLDSA_KEY` in
+      the private monorepo; neither is currently configured, so the
+      `workflow_dispatch` issuance path cannot run. Until they are set, EE
+      licenses can only be minted offline with `scripts/sign-license.sh`.
+- [ ] **APT signing lives only in the CE repo.** `APT_GPG_PRIVATE_KEY_BASE64`
+      and `APT_GPG_PASSPHRASE` are set there and not in the monorepo — expected,
+      since `ce-packages.yml` runs in the public repo, but worth knowing before
+      moving the workflow.

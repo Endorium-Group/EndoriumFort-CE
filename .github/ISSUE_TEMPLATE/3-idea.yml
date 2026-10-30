@@ -1,0 +1,50 @@
+name: Idea / exploration
+description: A direction worth considering, not yet a specification. Cheap to file, no commitment implied.
+title: "[idea] "
+labels: ["idea", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Deliberately light. Capture the thought before it evaporates — triage
+        promotes it to a feature request if it holds up.
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      description: A few sentences is enough.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it might matter
+      description: Who benefits, or what it would unlock. Commercial angle welcome.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area (best guess)
+      options:
+        - backend
+        - frontend
+        - agent
+        - relay
+        - fileshare
+        - RBI (remote browser isolation)
+        - licensing
+        - infra/CI
+        - docs
+        - mobile app
+        - product / positioning
+        - not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: open-questions
+    attributes:
+      label: Open questions
+      description: What would need answering before this becomes actionable.

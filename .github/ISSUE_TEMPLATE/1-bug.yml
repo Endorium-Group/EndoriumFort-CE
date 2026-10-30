@@ -1,0 +1,119 @@
+name: Bug report
+description: Something behaves incorrectly, crashes, or regressed from a previous release.
+title: "[bug] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not use this form for security vulnerabilities.** Open a private
+        security advisory instead — see `SECURITY.md`.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happens
+      description: One or two sentences. What you observe, not what you think causes it.
+      placeholder: Opening an RDP session through a relay drops after ~30s with "tunnel closed by peer".
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should happen instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered, from a clean state. An issue nobody can reproduce gets closed.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Where the defect appears to live. Guess if unsure — triage will correct it.
+      options:
+        - backend
+        - frontend
+        - agent
+        - relay
+        - fileshare
+        - RBI (remote browser isolation)
+        - licensing
+        - infra/CI
+        - packaging
+        - docs
+        - not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: edition
+    attributes:
+      label: Edition
+      options:
+        - CE (Community)
+        - CORE
+        - EE (Enterprise)
+        - not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of the version shown in the UI footer, or the release tag you deployed.
+      placeholder: v1.0.54
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment method
+      options:
+        - Docker Compose
+        - Helm / Kubernetes
+        - .deb package (APT)
+        - Built from source
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Host platform
+      placeholder: Debian 13 / amd64 — or Windows 11 24H2 for agent issues
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Backend, agent or browser console output. Redact credentials, tokens and hostnames.
+      render: shell
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Before submitting
+      options:
+        - label: I reproduced this on the latest release.
+          required: true
+        - label: I searched existing issues for a duplicate.
+          required: true
+        - label: I removed credentials, tokens and internal hostnames from the logs above.
+          required: true

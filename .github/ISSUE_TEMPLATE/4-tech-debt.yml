@@ -1,0 +1,57 @@
+name: Tech debt / chore
+description: Refactoring, dependency work, test coverage, CI or build-system maintenance.
+title: "[chore] "
+labels: ["tech-debt", "needs-triage"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What needs cleaning up
+      description: Point at files, modules or workflows where practical.
+      placeholder: backend/src/session_manager.cpp mixes transport and policy concerns, so relay changes keep breaking RDP tests.
+    validations:
+      required: true
+
+  - type: textarea
+    id: cost
+    attributes:
+      label: What it costs us today
+      description: Slow builds, flaky tests, recurring bugs, blocked features, audit findings.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - backend
+        - frontend
+        - agent
+        - relay
+        - fileshare
+        - RBI (remote browser isolation)
+        - licensing
+        - infra/CI
+        - packaging
+        - docs
+        - tests
+    validations:
+      required: true
+
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Risk if we keep deferring
+      options:
+        - Low — cosmetic, no functional impact
+        - Medium — slows development or hides defects
+        - High — security, compliance or release-blocking exposure
+    validations:
+      required: true
+
+  - type: textarea
+    id: approach
+    attributes:
+      label: Suggested approach
+      description: Optional. Sketch the change if you already see it.

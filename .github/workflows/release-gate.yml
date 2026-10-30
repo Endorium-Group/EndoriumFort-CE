@@ -67,12 +67,21 @@ jobs:
       - name: Configure
         working-directory: backend
         run: cmake -S . -B build
+      # Build everything, not just endoriumfort_backend + endoriumfort_backend_tests:
+      # the suite declares 17 separate test executables, so naming two of them
+      # left 16 binaries unbuilt and ctest reported them as "Not Run" — which the
+      # missing pipefail above then hid behind a green step.
       - name: Build
         working-directory: backend
-        run: cmake --build build --target endoriumfort_backend endoriumfort_backend_tests -j"$(nproc)"
+        run: cmake --build build -j"$(nproc)"
+      # `cmd | tee` returns tee's status, so without pipefail a failing ctest
+      # left this step green and the gate passed on broken tests.
       - name: Test
         working-directory: backend/build
-        run: ctest --output-on-failure | tee ../../backend-ctest.log
+        shell: bash
+        run: |
+          set -o pipefail
+          ctest --output-on-failure | tee ../../backend-ctest.log
 
       - name: Upload backend test log
         if: always()
@@ -94,9 +103,15 @@ jobs:
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci
+      # Same pipefail trap as the backend gate. The log also went to the
+      # repository root (`../`) while the upload step looked for it under
+      # frontend/, so the artifact was always empty.
       - name: Unit/API tests
         working-directory: frontend
-        run: npm test | tee ../frontend-unit.log
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test | tee frontend-unit.log
       - name: Build frontend
         working-directory: frontend
         run: npm run build
@@ -139,31 +154,34 @@ jobs:
         working-directory: frontend
         run: npx playwright install --with-deps chromium
 
-      - name: Start backend
-        working-directory: backend/build
-        run: ./endoriumfort_backend > ../../backend-e2e.log 2>&1 &
-
-      - name: Start frontend dev server
+      # The harness needs a *throwaway* bastion on :8095 (empty data directory,
+      # factory admin), not a bare backend on its default port: global-setup
+      # drives the factory admin's first login, so it refuses a server whose
+      # admin password was already changed. e2e/start-backend.sh provisions it.
+      - name: Start throwaway bastion
         working-directory: frontend
-        run: npm run dev -- --host 127.0.0.1 --port 5173 > ../frontend-e2e.log 2>&1 &
+        run: nohup npm run e2e:backend > ../backend-e2e.log 2>&1 &
 
-      - name: Wait for services
+      - name: Wait for the bastion
         run: |
           for i in {1..60}; do
-            if curl -sf http://127.0.0.1:8080/api/health >/dev/null && curl -sf http://127.0.0.1:5173 >/dev/null; then
+            if curl -sf http://127.0.0.1:8095/api/health >/dev/null; then
               exit 0
             fi
             sleep 1
           done
-          echo "Services did not become ready" >&2
+          echo "Bastion did not become ready on :8095" >&2
+          cat backend-e2e.log || true
           exit 1
 
+      # Playwright starts the interface itself (webServer in playwright.config.mjs,
+      # port 5175, proxied to the bastion) — do not start a dev server here.
+      # E2E_BROWSER_CHANNEL=chromium is required: the config defaults to the
+      # installed Chrome, while this job installs Playwright's own chromium.
       - name: Run e2e tests
         working-directory: frontend
         env:
-          E2E_BASE_URL: http://127.0.0.1:5173
-          E2E_USER: admin
-          E2E_PASSWORD: Admin123
+          E2E_BROWSER_CHANNEL: chromium
         run: npm run test:e2e
 
       - name: Upload playwright report on failure
@@ -178,17 +196,13 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: e2e-runtime-logs
-          path: |
-            backend-e2e.log
-            frontend-e2e.log
+          path: backend-e2e.log
 
       - name: Print logs on failure
         if: failure()
         run: |
           echo "--- backend-e2e.log ---"
           cat backend-e2e.log || true
-          echo "--- frontend-e2e.log ---"
-          cat frontend-e2e.log || true
 
   agent-gate:
     name: Agent Gate
@@ -197,7 +211,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25.9"
+          go-version: "1.26.10"
           cache-dependency-path: agent/go.sum
       - name: Agent tests
         working-directory: agent
@@ -228,12 +242,16 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.25.9"
+          go-version: "1.26.10"
           cache-dependency-path: agent/go.sum
 
+      # Pinned on purpose: govulncheck@latest tracks the Go release cycle and
+      # starts requiring a newer toolchain than the one pinned above, so the gate
+      # breaks with no change on our side. Bump this deliberately, alongside
+      # go-version, and never back to @latest.
       - name: Go vulnerability check
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
           cd agent
           govulncheck ./...
 

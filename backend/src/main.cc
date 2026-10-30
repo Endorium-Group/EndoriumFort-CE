@@ -77,6 +77,7 @@ int main() {
   register_resource_routes(app, ctx);
   register_session_routes(app, ctx);
   register_audit_routes(app, ctx);
+  register_report_routes(app, ctx);
   register_stats_routes(app, ctx);
   register_license_routes(app, ctx);
   register_settings_routes(app, ctx);
