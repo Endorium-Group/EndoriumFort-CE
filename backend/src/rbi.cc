@@ -707,7 +707,7 @@ void register_rbi_routes(CrowApp &app, AppContext &ctx) {
         if (!token || token->empty()) return false;
         auto auth = ctx.find_auth_by_token(*token);
         if (!auth || auth->securitySetupPending) return false;
-        if (!ctx.has_permission(auth->userId, auth->role, "sessions.create"))
+        if (!ctx.has_permission(*auth, "sessions.create"))
           return false;
         if (userdata) *userdata = new RbiAccept{auth->userId, auth->user, auth->role};
         return true;

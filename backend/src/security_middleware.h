@@ -5,9 +5,13 @@
 // instead of crow::SimpleApp.
 
 #include "crow.h"
+#include "api_tokens.h"
+#include "metrics.h"
+#include "utils.h"
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <string>
 
 namespace security_headers {
@@ -92,12 +96,28 @@ namespace security_setup {
 bool gate_before(const crow::request &req, crow::response &res);
 }
 
+// API tokens only reach the management endpoints listed in api_tokens.h;
+// everything else answers 403 before any handler runs.
+inline bool api_token_gate(const crow::request &req, crow::response &res) {
+  const auto bearer = extract_bearer_token(req);
+  if (!bearer || !api_tokens::looks_like_api_token(*bearer)) return false;
+  if (api_tokens::path_allowed(crow::method_name(req.method), req.url)) return false;
+  res.code = 403;
+  res.body = "Not available to API tokens";
+  return true;
+}
+
 struct SecurityHeadersMiddleware {
-  struct context {};
+  struct context {
+    std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+  };
 
   void before_handle(crow::request &req, crow::response &res,
-                     context & /*ctx*/) {
-    if (license::gate_before(req, res)) {
+                     context &ctx) {
+    ctx.started = std::chrono::steady_clock::now();
+    if (api_token_gate(req, res)) {
+      res.end();  // short-circuit: endpoint not reachable with an API token
+    } else if (license::gate_before(req, res)) {
       res.end();  // short-circuit: premium feature not licensed
     } else if (security_setup::gate_before(req, res)) {
       res.end();  // short-circuit: first-login setup still outstanding
@@ -105,7 +125,19 @@ struct SecurityHeadersMiddleware {
   }
 
   void after_handle(crow::request &req, crow::response &res,
-                    context & /*ctx*/) {
+                    context &ctx) {
+    {
+      // Route group and status class only: bounded labels (see metrics.h).
+      const std::string group = metrics::route_group(req.url);
+      const double seconds = std::chrono::duration<double>(
+                                 std::chrono::steady_clock::now() - ctx.started)
+                                 .count();
+      auto &registry = metrics::registry();
+      registry.inc(metrics::kHttpRequests,
+                   {{"route_group", group}, {"status", metrics::status_class(res.code)}});
+      registry.observe(metrics::kHttpDuration, {{"route_group", group}}, seconds);
+    }
+
     // Reverse-proxied third-party apps (/proxy/*) must NOT inherit the SPA's
     // strict CSP / X-Frame-Options / Cache-Control, or they break — e.g. the
     // embedded app's login form POST is blocked by `form-action 'self'`, and the

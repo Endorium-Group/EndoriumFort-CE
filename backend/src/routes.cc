@@ -7,6 +7,7 @@
 #include "crypto.h"
 #include "http_proxy.h"
 #include "iam_common.h"
+#include "metrics.h"
 #include "reporting.h"
 #include "route_common.h"
 #include "scim_query.h"
@@ -626,12 +627,15 @@ void register_auth_routes(CrowApp &app, AppContext &ctx) {
         bool ldap_authenticated = false;
         std::string ldap_directory_identity;
         LdapRoleResolution ldap_role_resolution;
-        bool local_password_ok =
-            matched && crypto::verify_password(password, matched->password);
+        // A service account never signs in, whatever password or directory
+        // entry is presented for it: it acts through API tokens only.
+        const bool service_account = matched && matched->serviceAccount;
+        bool local_password_ok = !service_account && matched &&
+                                 crypto::verify_password(password, matched->password);
 
         if (!local_password_ok) {
           const bool can_try_ldap =
-              ldap_cfg.enabled &&
+              ldap_cfg.enabled && !service_account &&
               (!matched || is_ldap_shadow_password(matched->password));
           if (can_try_ldap) {
             std::string ldap_error;
@@ -1137,11 +1141,13 @@ void register_auth_routes(CrowApp &app, AppContext &ctx) {
 // ══════════════════════════════════════════════════════════════════════
 
 namespace {
-// Number of admin accounts; the caller holds ctx.user_mutex.
+// Number of admin accounts that can sign in (service accounts cannot, so they
+// are no way back into the console); the caller holds ctx.user_mutex.
 int count_admins_locked(const AppContext &ctx) {
   return static_cast<int>(std::count_if(
-      ctx.users.begin(), ctx.users.end(),
-      [](const auto &entry) { return entry.second.role == "admin"; }));
+      ctx.users.begin(), ctx.users.end(), [](const auto &entry) {
+        return entry.second.role == "admin" && !entry.second.serviceAccount;
+      }));
 }
 }  // namespace
 
@@ -1184,16 +1190,23 @@ void register_user_routes(CrowApp &app, AppContext &ctx) {
         if (!body || body.t() != crow::json::type::Object)
           return crow::response(400, "Invalid JSON body");
         if (!json_fields_are_strings(body, {"username", "password", "role"}) ||
-            !json_fields_are_bools(body, {"forcePasswordRotation"}))
+            !json_fields_are_bools(body, {"forcePasswordRotation", "serviceAccount"}))
           return crow::response(400, "Invalid field type");
 
+        const bool service_account =
+            body.has("serviceAccount") && body["serviceAccount"].b();
         std::string username = trim_copy(body["username"].s());
-        std::string password = body["password"].s();
+        // A service account never signs in: it gets an unguessable password
+        // nobody knows, and the login route refuses it anyway.
+        std::string password = service_account
+                                   ? ctx.generate_token()
+                                   : (body.has("password") ? std::string(body["password"].s()) : std::string());
         std::string role = body["role"].s();
         bool force_password_rotation =
-            body.has("forcePasswordRotation")
-                ? body["forcePasswordRotation"].b()
-                : normalize_user_role(role) == "admin";
+            !service_account &&
+            (body.has("forcePasswordRotation")
+                 ? body["forcePasswordRotation"].b()
+                 : normalize_user_role(role) == "admin");
         if (username.empty() || password.empty() || role.empty())
           return crow::response(400, "Missing username, password, or role");
         // Control characters forge lines in the audit trail and logs.
@@ -1207,17 +1220,18 @@ void register_user_routes(CrowApp &app, AppContext &ctx) {
 
         // Validate password policy
         auto policy = crypto::validate_password(password);
-        if (!policy.valid)
+        if (!service_account && !policy.valid)
           return crow::response(400, policy.message);
 
         UserAccount user;
+        user.serviceAccount = service_account;
         user.username = username;
         user.password = crypto::hash_password(password);
         user.role = normalize_user_role(role);
         user.createdAt = now_utc();
         user.updatedAt = user.createdAt;
         user.bootstrapPasswordChangeRequired = force_password_rotation;
-        user.bootstrapMfaRequired = user.role == "admin";
+        user.bootstrapMfaRequired = user.role == "admin" && !service_account;
 
         {
           // Check and claim the name under one lock: two concurrent requests
@@ -1268,22 +1282,32 @@ void register_user_routes(CrowApp &app, AppContext &ctx) {
                 !json_fields_are_bools(body, {"forcePasswordRotation"}))
               return crow::response(400, "Invalid field type");
 
-            std::string password = body["password"].s();
+            std::string password = body.has("password") ? std::string(body["password"].s()) : "";
             std::string role = body["role"].s();
             std::string normalized_role = normalize_user_role(role);
+            bool service_account = false;
+            {
+              std::lock_guard<std::mutex> lock(ctx.user_mutex);
+              auto it = ctx.users.find(user_id);
+              service_account = it != ctx.users.end() && it->second.serviceAccount;
+            }
             bool force_password_rotation =
-                body.has("forcePasswordRotation")
-                    ? body["forcePasswordRotation"].b()
-                    : normalized_role == "admin";
-            if (password.empty() || role.empty())
+                !service_account &&
+                (body.has("forcePasswordRotation")
+                     ? body["forcePasswordRotation"].b()
+                     : normalized_role == "admin");
+            // A service account has no password to reset: only its role changes.
+            if ((password.empty() && !service_account) || role.empty())
               return crow::response(400, "Missing password or role");
             if (!is_allowed_user_role(role, {"operator", "admin", "auditor"}))
               return crow::response(400, "Invalid role");
 
             // Validate password policy
-            auto policy = crypto::validate_password(password);
-            if (!policy.valid)
-              return crow::response(400, policy.message);
+            if (!service_account) {
+              auto policy = crypto::validate_password(password);
+              if (!policy.valid)
+                return crow::response(400, policy.message);
+            }
 
             UserAccount user;
             {
@@ -1292,15 +1316,15 @@ void register_user_routes(CrowApp &app, AppContext &ctx) {
               if (it == ctx.users.end())
                 return crow::response(404, "User not found");
               user = it->second;
-              if (user.role == "admin" && normalized_role != "admin" &&
-                  count_admins_locked(ctx) <= 1)
+              if (user.role == "admin" && !user.serviceAccount &&
+                  normalized_role != "admin" && count_admins_locked(ctx) <= 1)
                 return crow::response(409, "Cannot demote the last admin");
-              user.password = crypto::hash_password(password);
+              if (!user.serviceAccount) user.password = crypto::hash_password(password);
               user.role = normalized_role;
               user.updatedAt = now_utc();
               user.bootstrapPasswordChangeRequired = force_password_rotation;
               user.bootstrapMfaRequired =
-                  user.role == "admin" && !user.totpEnabled &&
+                  user.role == "admin" && !user.serviceAccount && !user.totpEnabled &&
                   user.webauthnCredentialCount == 0;
               it->second = user;
             }
@@ -1345,7 +1369,8 @@ void register_user_routes(CrowApp &app, AppContext &ctx) {
               user = it->second;
               if (user_id == auth->userId)
                 return crow::response(409, "Cannot delete your own account");
-              if (user.role == "admin" && count_admins_locked(ctx) <= 1)
+              if (user.role == "admin" && !user.serviceAccount &&
+                  count_admins_locked(ctx) <= 1)
                 return crow::response(409, "Cannot delete the last admin");
               ctx.users.erase(it);
             }
@@ -1608,6 +1633,8 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
         }
         std::string agent_protocol;
         if (body.has("agentProtocol")) agent_protocol = to_lower(body["agentProtocol"].s());
+        std::optional<std::string> db_tls_mode;
+        if (body.has("dbTlsMode")) db_tls_mode = to_lower(body["dbTlsMode"].s());
         bool require_access_justification = false;
         if (body.has("requireAccessJustification")) {
           require_access_justification = body["requireAccessJustification"].b();
@@ -1651,8 +1678,8 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
           return crow::response(400, "Invalid tunnelTicketRateLimitMaxAttempts");
 
         // Validate protocol whitelist
-        if (!is_allowed_role(protocol, {"ssh", "rdp", "vnc", "http", "https", "agent", "k8s", "fileshare"}))
-          return crow::response(400, "Invalid protocol. Allowed: ssh, rdp, vnc, http, https, agent, k8s, fileshare");
+        if (!is_allowed_role(protocol, {"ssh", "rdp", "vnc", "http", "https", "agent", "k8s", "fileshare", "postgres"}))
+          return crow::response(400, "Invalid protocol. Allowed: ssh, rdp, vnc, http, https, agent, k8s, fileshare, postgres");
 
         // Agent resources carry a tunnelled protocol (injected into the agent
         // deep link). Only meaningful for protocol == "agent".
@@ -1664,6 +1691,16 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
                 "Invalid agentProtocol. Allowed: ssh, rdp, vnc, http, https, tcp");
         } else {
           agent_protocol.clear();
+        }
+        // Database resources: TLS towards the server, "prefer" by default
+        // (libpq's default too). Meaningless for any other protocol.
+        if (protocol == "postgres") {
+          if (!db_tls_mode || db_tls_mode->empty()) db_tls_mode = "prefer";
+          if (!is_allowed_role(*db_tls_mode, {"disable", "prefer", "require", "verify-full"}))
+            return crow::response(400,
+                "Invalid dbTlsMode. Allowed: disable, prefer, require, verify-full");
+        } else {
+          db_tls_mode = std::string();
         }
 
         // Input length limits
@@ -1703,6 +1740,7 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
         resource.sshUsername = ssh_username;
         resource.sshPassword = ssh_password;
         resource.agentProtocol = agent_protocol;
+        resource.dbTlsMode = db_tls_mode.value_or("");
         resource.requireAccessJustification = require_access_justification;
         resource.requireDualApproval = require_dual_approval;
         resource.enableCommandGuard = enable_command_guard;
@@ -1796,6 +1834,8 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
             }
             std::string agent_protocol;
             if (body.has("agentProtocol")) agent_protocol = to_lower(body["agentProtocol"].s());
+            std::optional<std::string> db_tls_mode;
+            if (body.has("dbTlsMode")) db_tls_mode = to_lower(body["dbTlsMode"].s());
             bool require_access_justification = false;
             if (body.has("requireAccessJustification")) {
               require_access_justification = body["requireAccessJustification"].b();
@@ -1839,7 +1879,7 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
               return crow::response(400, "Invalid tunnelTicketRateLimitMaxAttempts");
 
             // Validate protocol whitelist
-            if (!is_allowed_role(protocol, {"ssh", "rdp", "vnc", "http", "https", "agent", "k8s", "fileshare"}))
+            if (!is_allowed_role(protocol, {"ssh", "rdp", "vnc", "http", "https", "agent", "k8s", "fileshare", "postgres"}))
               return crow::response(400, "Invalid protocol");
 
             // Agent resources carry a tunnelled protocol (see create handler).
@@ -1852,6 +1892,10 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
             } else {
               agent_protocol.clear();
             }
+            if (db_tls_mode && protocol == "postgres" &&
+                !is_allowed_role(*db_tls_mode, {"disable", "prefer", "require", "verify-full"}))
+              return crow::response(400,
+                  "Invalid dbTlsMode. Allowed: disable, prefer, require, verify-full");
 
             // Input length limits
             if (name.size() > 255 || target.size() > 255 || description.size() > 1024 ||
@@ -1896,6 +1940,11 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
               // Only update sshPassword if provided (non-empty)
               if (!ssh_password.empty()) resource.sshPassword = ssh_password;
               resource.agentProtocol = agent_protocol;
+              // Kept when the request omits it; defaulted when a resource
+              // becomes a database; cleared when it stops being one.
+              if (protocol != "postgres") resource.dbTlsMode.clear();
+              else if (db_tls_mode) resource.dbTlsMode = *db_tls_mode;
+              if (protocol == "postgres" && resource.dbTlsMode.empty()) resource.dbTlsMode = "prefer";
               resource.requireAccessJustification = require_access_justification;
               resource.requireDualApproval = require_dual_approval;
               resource.enableCommandGuard = enable_command_guard;
@@ -1978,7 +2027,24 @@ void register_resource_routes(CrowApp &app, AppContext &ctx) {
 //  Sessions
 // ══════════════════════════════════════════════════════════════════════
 
+static SessionOpenResult open_session_impl(AppContext &ctx,
+                                           const AuthSession &auth_session,
+                                           const SessionOpenRequest &request);
+
+// Counts every opening attempt for /api/metrics: started, denied (the policy or
+// the request refused it) or failed (the server could not record it).
 SessionOpenResult open_session_with_policy(AppContext &ctx,
+                                           const AuthSession &auth_session,
+                                           const SessionOpenRequest &request) {
+  SessionOpenResult result = open_session_impl(ctx, auth_session, request);
+  const char *outcome = result.ok ? "started" : result.status >= 500 ? "failed" : "denied";
+  metrics::registry().inc(
+      metrics::kSessionsTotal,
+      {{"protocol", metrics::protocol_label(request.protocol)}, {"outcome", outcome}});
+  return result;
+}
+
+static SessionOpenResult open_session_impl(AppContext &ctx,
                                            const AuthSession &auth_session,
                                            const SessionOpenRequest &request) {
   const AuthSession *auth = &auth_session;
@@ -2491,7 +2557,7 @@ void register_session_routes(CrowApp &app, AppContext &ctx) {
       return it == owners.end() ? std::string() : it->second;
     };
     const bool sees_all =
-        ctx.has_permission(auth->userId, auth->role, "audit.read");
+        ctx.has_permission(*auth, "audit.read");
 
     std::vector<Session> filtered;
     int visible_total = 0;
@@ -2665,7 +2731,7 @@ void register_session_routes(CrowApp &app, AppContext &ctx) {
 
         // Operators only receive events of the sessions they opened.
         const bool sees_all =
-            ctx.has_permission(auth->userId, auth->role, "audit.read");
+            ctx.has_permission(*auth, "audit.read");
         const auto owners =
             sees_all ? std::unordered_map<int, std::string>() : ctx.access_grant_subjects();
 

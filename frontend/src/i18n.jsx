@@ -430,6 +430,10 @@ const translations = {
       }
     },
     users: {
+      serviceAccount: "Service account (automation, no sign-in)",
+      serviceAccountHint: "Cannot sign in: it acts only through API tokens an administrator creates for it from Account → API tokens.",
+      serviceBadge: "service account",
+      type: "Type",
       title: "Users",
       subtitle: "{count} accounts, {admins} administrator(s)",
       adminsWithoutMfa: "{count} administrator(s) without MFA",
@@ -607,6 +611,17 @@ const translations = {
       justification: "Reason required",
       dualApproval: "Approval by a second administrator",
       commandGuard: "SSH guard (blocks dangerous commands)",
+      sqlGuard: "SQL guard (refuses DROP, DELETE without WHERE…)",
+      dbTls: "TLS to the database",
+      dbTlsModes: { prefer: "Prefer", require: "Require (unverified)", "verify-full": "Verify (CA and host name)", disable: "Disable" },
+      dbTlsHint: {
+        prefer: "Encrypts when the server offers TLS, falls back to plain otherwise.",
+        require: "Encrypted, but the server certificate is not checked.",
+        "verify-full": "Certificate checked against the system CAs (or ENDORIUMFORT_DB_CA_FILE) and the address.",
+        disable: "No encryption between the bastion and the database."
+      },
+      dbAccount: "Database account",
+      dbAccountHint: "The proxy logs in with it; operators never see its password. Every query is journaled.",
       adaptive: "Adaptive policy (ticket required when risk is high)",
       fileTransfer: "File transfer (SFTP / SCP)",
       allowFileDownload: "Allow downloading files from the target",
@@ -637,7 +652,8 @@ const translations = {
         https: "HTTPS",
         agent: "Agent tunnel",
         k8s: "Kubernetes",
-        fileshare: "File share"
+        fileshare: "File share",
+        postgres: "PostgreSQL (database proxy)"
       },
       modes: {
         vaulted: "Vault: injected at connection",
@@ -894,6 +910,44 @@ const translations = {
         power_command: 'Shut down or reboot the host'
       }
     },
+    dbGuard: {
+      title: 'SQL guard (database proxy)',
+      intro: 'Statements refused before they reach the database, on PostgreSQL resources with the SQL guard enabled. The client gets a normal PostgreSQL error and the session carries on. Built-in rules can be switched off but not removed.',
+      rule: 'Rule',
+      match: 'Matches',
+      kind: 'Kind',
+      actions: 'Actions',
+      add: 'Add',
+      remove: 'Remove',
+      builtinTag: 'Built in',
+      namePlaceholder: 'rule name',
+      hint: 'A statement rule matches statements that start with those words (EXPLAIN ANALYZE is looked through), ignoring case. A schema rule matches any schema-qualified name (payroll.salaries) and SET search_path to it. Comments and string literals are ignored. Code run indirectly (function bodies, EXECUTE) is not visible: keep database privileges tight.',
+      badName: 'The name may only contain letters, digits, hyphens and underscores (1 to 48 characters).',
+      badValue: 'Enter the statement words or the schema name.',
+      loadError: 'Could not load the SQL guard rules.',
+      saveError: 'Could not save the rule.',
+      kinds: { statement: 'Statement', schema: 'Schema' },
+      builtin: {
+        drop: 'DROP',
+        truncate: 'TRUNCATE',
+        delete_without_where: 'DELETE without WHERE',
+        update_without_where: 'UPDATE without WHERE',
+        role_change: 'Role and privilege changes',
+        alter_system: 'ALTER SYSTEM',
+        copy_program: 'COPY … PROGRAM',
+        do_block: 'Anonymous DO blocks'
+      },
+      builtinHelp: {
+        drop: 'Any DROP statement (table, schema, database, role…).',
+        truncate: 'TRUNCATE of any table.',
+        delete_without_where: 'DELETE FROM with no WHERE, also inside a CTE or EXPLAIN ANALYZE.',
+        update_without_where: 'UPDATE … SET with no WHERE.',
+        role_change: 'CREATE/ALTER/DROP ROLE or USER, GRANT, REVOKE, SET ROLE, SET SESSION AUTHORIZATION.',
+        alter_system: 'Server configuration changes.',
+        copy_program: 'COPY to or from a shell command on the database server.',
+        do_block: 'DO $$ … $$: its body would run unseen by the other rules.'
+      }
+    },
     threats: {
       title: "Threat detection",
       subtitle: "The bastion watches sign-ins and sessions for suspicious behaviour and can respond on its own.",
@@ -953,6 +1007,39 @@ const translations = {
           fixed: "fixed: 07:00-20:00 UTC"
         }
       }
+    },
+    apiTokens: {
+      title: "API tokens",
+      subtitle: "for scripts, CI and Terraform",
+      intro: "A token acts on your behalf from the API only, within the scopes you pick and never beyond your own rights. It cannot open sessions, approve requests or change your security settings.",
+      none: "No token yet.",
+      showAll: "All users' tokens",
+      name: "Name",
+      namePlaceholder: "e.g. terraform-prod",
+      scopes: "Scopes",
+      lifetime: "Valid for",
+      days: "{count} days",
+      cidrs: "Allowed addresses",
+      cidrsPlaceholder: "optional: 10.0.0.0/8, 192.0.2.10",
+      create: "Create token",
+      creating: "Creating…",
+      createdTitle: "Token created: copy it now",
+      createdText: "It will not be shown again. Send it as the header Authorization: Bearer <token>.",
+      copy: "Copy token",
+      dismiss: "Done",
+      expires: "expires {when}",
+      lastUsed: "used {when} from {ip}",
+      neverUsed: "never used",
+      owner: "owner {name}",
+      revoke: "Revoke",
+      revokeTitle: "Revoke the token {name}?",
+      revokeMsg: "Any script using it stops working immediately. This cannot be undone.",
+      statusActive: "active",
+      statusExpired: "expired",
+      statusRevoked: "revoked",
+      noScopes: "Your role holds no permission that can be given to a token.",
+      holder: "Holder",
+      holderSelf: "Me ({name})"
     },
     mfa: {
       title: "Two-factor authentication",
@@ -1365,6 +1452,7 @@ const translations = {
       then: 'Then',
       thenBrowser: 'the page opens at',
       thenClient: 'your {protocol} client connects to {endpoint}.',
+      dbHint: 'Any user name and no password: the bastion logs in to the database for you and journals every query.',
       open: 'Open with the agent',
       opening: 'Opening…',
       opened: 'The agent has taken over. You can close this window.',
@@ -2543,6 +2631,10 @@ const translations = {
       }
     },
     users: {
+      serviceAccount: "Compte de service (automatisation, sans connexion)",
+      serviceAccountHint: "Ne peut pas se connecter : il agit uniquement via des jetons d'API qu'un administrateur crée pour lui depuis Compte → Jetons d'API.",
+      serviceBadge: "compte de service",
+      type: "Type",
       title: "Utilisateurs",
       subtitle: "{count} comptes, dont {admins} administrateur(s)",
       adminsWithoutMfa: "{count} administrateur(s) sans MFA",
@@ -2720,6 +2812,17 @@ const translations = {
       justification: "Motif obligatoire",
       dualApproval: "Approbation par un second administrateur",
       commandGuard: "SSH guard (bloque les commandes dangereuses)",
+      sqlGuard: "Garde-fou SQL (refuse DROP, DELETE sans WHERE…)",
+      dbTls: "TLS vers la base",
+      dbTlsModes: { prefer: "Préférer", require: "Exiger (non vérifié)", "verify-full": "Vérifier (CA et nom d'hôte)", disable: "Désactiver" },
+      dbTlsHint: {
+        prefer: "Chiffre si le serveur propose TLS, sinon repasse en clair.",
+        require: "Chiffré, mais le certificat du serveur n'est pas vérifié.",
+        "verify-full": "Certificat vérifié par les CA système (ou ENDORIUMFORT_DB_CA_FILE) et l'adresse.",
+        disable: "Aucun chiffrement entre le bastion et la base."
+      },
+      dbAccount: "Compte de la base",
+      dbAccountHint: "Le proxy se connecte avec ; les opérateurs n'en voient jamais le mot de passe. Chaque requête est journalisée.",
       adaptive: "Politique adaptative (ticket exigé si le risque est élevé)",
       fileTransfer: "Transfert de fichiers (SFTP / SCP)",
       allowFileDownload: "Autoriser le téléchargement de fichiers depuis la cible",
@@ -2750,7 +2853,8 @@ const translations = {
         https: "HTTPS",
         agent: "Tunnel agent",
         k8s: "Kubernetes",
-        fileshare: "Partage de fichiers"
+        fileshare: "Partage de fichiers",
+        postgres: "PostgreSQL (proxy de base)"
       },
       modes: {
         vaulted: "Coffre : injecté à la connexion",
@@ -3007,6 +3111,44 @@ const translations = {
         power_command: "Arrêt ou redémarrage de l'hôte"
       }
     },
+    dbGuard: {
+      title: 'Garde-fou SQL (proxy de bases de données)',
+      intro: "Instructions refusées avant d'atteindre la base, sur les ressources PostgreSQL dont le garde-fou SQL est activé. Le client reçoit une erreur PostgreSQL normale et la session continue. Les règles intégrées peuvent être désactivées, pas supprimées.",
+      rule: 'Règle',
+      match: 'Correspond à',
+      kind: 'Type',
+      actions: 'Actions',
+      add: 'Ajouter',
+      remove: 'Supprimer',
+      builtinTag: 'Intégrée',
+      namePlaceholder: 'nom de la règle',
+      hint: "Une règle d'instruction vise les instructions qui commencent par ces mots (EXPLAIN ANALYZE est traversé), sans tenir compte de la casse. Une règle de schéma vise tout nom qualifié par ce schéma (payroll.salaries) et SET search_path vers lui. Commentaires et chaînes sont ignorés. Le code exécuté indirectement (corps de fonctions, EXECUTE) n'est pas visible : gardez des privilèges de base stricts.",
+      badName: 'Le nom ne peut contenir que des lettres, chiffres, tirets et soulignés (1 à 48 caractères).',
+      badValue: "Saisissez les mots de l'instruction ou le nom du schéma.",
+      loadError: 'Impossible de charger les règles du garde-fou SQL.',
+      saveError: "Impossible d'enregistrer la règle.",
+      kinds: { statement: 'Instruction', schema: 'Schéma' },
+      builtin: {
+        drop: 'DROP',
+        truncate: 'TRUNCATE',
+        delete_without_where: 'DELETE sans WHERE',
+        update_without_where: 'UPDATE sans WHERE',
+        role_change: 'Changements de rôles et de privilèges',
+        alter_system: 'ALTER SYSTEM',
+        copy_program: 'COPY … PROGRAM',
+        do_block: 'Blocs DO anonymes'
+      },
+      builtinHelp: {
+        drop: 'Toute instruction DROP (table, schéma, base, rôle…).',
+        truncate: "TRUNCATE de n'importe quelle table.",
+        delete_without_where: 'DELETE FROM sans WHERE, y compris dans une CTE ou un EXPLAIN ANALYZE.',
+        update_without_where: 'UPDATE … SET sans WHERE.',
+        role_change: 'CREATE/ALTER/DROP ROLE ou USER, GRANT, REVOKE, SET ROLE, SET SESSION AUTHORIZATION.',
+        alter_system: 'Modifications de la configuration du serveur.',
+        copy_program: 'COPY vers ou depuis une commande shell du serveur de base.',
+        do_block: 'DO $$ … $$ : son corps échapperait aux autres règles.'
+      }
+    },
     threats: {
       title: "Détection des menaces",
       subtitle: "Le bastion surveille les connexions et les sessions pour repérer les comportements suspects, et peut réagir seul.",
@@ -3066,6 +3208,39 @@ const translations = {
           fixed: "fixe : 07:00-20:00 UTC"
         }
       }
+    },
+    apiTokens: {
+      title: "Jetons d'API",
+      subtitle: "pour les scripts, la CI et Terraform",
+      intro: "Un jeton agit en votre nom, uniquement via l'API, dans les droits que vous choisissez et jamais au-delà des vôtres. Il ne peut ni ouvrir de session, ni approuver une demande, ni modifier vos paramètres de sécurité.",
+      none: "Aucun jeton pour l'instant.",
+      showAll: "Jetons de tous les utilisateurs",
+      name: "Nom",
+      namePlaceholder: "ex. terraform-prod",
+      scopes: "Droits",
+      lifetime: "Validité",
+      days: "{count} jours",
+      cidrs: "Adresses autorisées",
+      cidrsPlaceholder: "facultatif : 10.0.0.0/8, 192.0.2.10",
+      create: "Créer le jeton",
+      creating: "Création…",
+      createdTitle: "Jeton créé : copiez-le maintenant",
+      createdText: "Il ne sera plus affiché. Envoyez-le dans l'en-tête Authorization: Bearer <jeton>.",
+      copy: "Copier le jeton",
+      dismiss: "Terminé",
+      expires: "expire {when}",
+      lastUsed: "utilisé {when} depuis {ip}",
+      neverUsed: "jamais utilisé",
+      owner: "propriétaire {name}",
+      revoke: "Révoquer",
+      revokeTitle: "Révoquer le jeton {name} ?",
+      revokeMsg: "Les scripts qui l'utilisent cessent immédiatement de fonctionner. Action irréversible.",
+      statusActive: "actif",
+      statusExpired: "expiré",
+      statusRevoked: "révoqué",
+      noScopes: "Votre rôle ne détient aucun droit délégable à un jeton.",
+      holder: "Titulaire",
+      holderSelf: "Moi ({name})"
     },
     mfa: {
       title: "Double authentification",
@@ -3478,6 +3653,7 @@ const translations = {
       then: 'Ensuite',
       thenBrowser: 'la page s’ouvre à l’adresse',
       thenClient: 'votre client {protocol} se connecte à {endpoint}.',
+      dbHint: "N'importe quel nom d'utilisateur, sans mot de passe : le bastion se connecte à la base pour vous et journalise chaque requête.",
       open: 'Ouvrir avec l’agent',
       opening: 'Ouverture…',
       opened: 'L’agent a pris le relais. Vous pouvez fermer cette fenêtre.',

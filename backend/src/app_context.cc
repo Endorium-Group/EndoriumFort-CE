@@ -1,7 +1,9 @@
 // ─── EndoriumFort — AppContext implementation ───────────────────────────
 
 #include "app_context.h"
+#include "api_tokens.h"
 #include "crypto.h"
+#include "metrics.h"
 #include "utils.h"
 
 #include <openssl/rand.h>
@@ -256,6 +258,13 @@ bool AppContext::is_safe_target(const std::string &raw_host, bool allow_loopback
 // ── Auth helpers ────────────────────────────────────────────────────────
 
 std::optional<AuthSession> AppContext::find_auth(const crow::request &request) {
+  // API tokens are accepted from the Authorization header only, never from the
+  // session cookie, and only here: WebSocket and proxy upgrades authenticate
+  // through find_auth_by_token, which does not know them.
+  const auto bearer = extract_bearer_token(request);
+  if (bearer && api_tokens::looks_like_api_token(*bearer))
+    return resolve_api_token(*bearer, get_client_ip(request));
+
   auto token = extract_auth_token_from_request(request);
 
   if (!token) return std::nullopt;
@@ -413,7 +422,22 @@ constexpr char kAuditPrevMarker[] = ",\"prevHash\":\"";
 constexpr char kAuditHashMarker[] = "\"hash\":\"";
 }  // namespace
 
+// Counters derived from the audit trail, so every route that already journals
+// an outcome feeds /api/metrics without its own instrumentation.
+static void count_audit_event(const AuditEvent &event) {
+  auto &registry = metrics::registry();
+  if (const auto login = metrics::login_outcome(event.type, event.payloadJson)) {
+    registry.inc(metrics::kLoginsTotal,
+                 {{"method", login->first}, {"result", login->second}});
+  } else if (event.type == "command_guard.block") {
+    registry.inc(metrics::kSshGuardBlocked);
+  } else if (event.type == "web.proxy_error") {
+    registry.inc(metrics::kProxyUpstreamErrors);
+  }
+}
+
 void AppContext::append_audit(const AuditEvent &event) {
+  count_audit_event(event);
   {
     std::lock_guard<std::mutex> lock(audit_mutex);
     audit_events.push_back(event);
@@ -686,6 +710,185 @@ bool AppContext::delete_user_device(int user_id, int device_id) {
   return ok && sqlite.changes() > 0;
 }
 
+// ── Personal API tokens ─────────────────────────────────────────────────
+
+namespace {
+
+ApiToken read_api_token_row(const db::Statement &stmt) {
+  ApiToken t;
+  t.id = stmt.column_int(0);
+  t.userId = stmt.column_int(1);
+  t.name = stmt.column_text(2);
+  t.tokenPrefix = stmt.column_text(3);
+  t.scopes = api_tokens::split_csv(stmt.column_text(4));
+  t.allowedCidrs = api_tokens::split_csv(stmt.column_text(5));
+  t.createdAt = stmt.column_text(6);
+  t.expiresAt = stmt.column_text(7);
+  t.lastUsedAt = stmt.column_text(8);
+  t.lastUsedIp = stmt.column_text(9);
+  t.revokedAt = stmt.column_text(10);
+  return t;
+}
+
+constexpr const char *kApiTokenColumns =
+    "id, user_id, name, token_prefix, scopes, allowed_cidrs, created_at, "
+    "expires_at, last_used_at, last_used_ip, revoked_at";
+
+}  // namespace
+
+bool AppContext::create_api_token(ApiToken &token, std::string &plaintext) {
+  // generate_token() yields "eft_" + 64 hex; swap in the API token prefix.
+  const std::string session_style = generate_token();
+  plaintext = std::string(api_tokens::kPrefix) + session_style.substr(4);
+  token.tokenPrefix = plaintext.substr(0, api_tokens::kDisplayPrefixLength);
+  token.createdAt = now_utc();
+
+  std::lock_guard<std::mutex> lock(sqlite.mutex);
+  if (!sqlite.is_open()) return false;
+  auto stmt = sqlite.prepare(
+      "INSERT INTO api_tokens (user_id, name, token_hash, token_prefix, scopes, "
+      "allowed_cidrs, created_at, expires_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8);");
+  if (!stmt) return false;
+  const std::string hash = crypto::sha256_hex(plaintext);
+  stmt.bind_int(1, token.userId);
+  stmt.bind_text(2, token.name);
+  stmt.bind_text(3, hash);
+  stmt.bind_text(4, token.tokenPrefix);
+  stmt.bind_text(5, api_tokens::join_csv(token.scopes));
+  stmt.bind_text_or_null(6, api_tokens::join_csv(token.allowedCidrs));
+  stmt.bind_text(7, token.createdAt);
+  stmt.bind_text(8, token.expiresAt);
+  if (!stmt.execute()) return false;
+
+  auto idq = sqlite.prepare("SELECT id FROM api_tokens WHERE token_hash=?1;");
+  if (!idq) return false;
+  idq.bind_text(1, hash);
+  if (!idq.step()) return false;
+  token.id = idq.column_int(0);
+  return true;
+}
+
+std::vector<ApiToken> AppContext::list_api_tokens(int user_id) {
+  std::vector<ApiToken> out;
+  {
+    std::lock_guard<std::mutex> lock(sqlite.mutex);
+    if (!sqlite.is_open()) return out;
+    auto stmt = sqlite.prepare(
+        std::string("SELECT ") + kApiTokenColumns + " FROM api_tokens" +
+        (user_id > 0 ? " WHERE user_id=?1" : "") + " ORDER BY id;");
+    if (!stmt) return out;
+    if (user_id > 0) stmt.bind_int(1, user_id);
+    while (stmt.step()) out.push_back(read_api_token_row(stmt));
+  }
+  std::lock_guard<std::mutex> lock(user_mutex);
+  for (auto &t : out) {
+    auto it = users.find(t.userId);
+    if (it != users.end()) t.owner = it->second.username;
+  }
+  return out;
+}
+
+bool AppContext::revoke_api_token(int token_id, int owner_user_id) {
+  std::lock_guard<std::mutex> lock(sqlite.mutex);
+  if (!sqlite.is_open()) return false;
+  auto stmt = sqlite.prepare(
+      std::string("UPDATE api_tokens SET revoked_at=?1 WHERE id=?2 AND "
+                  "revoked_at IS NULL") +
+      (owner_user_id > 0 ? " AND user_id=?3;" : ";"));
+  if (!stmt) return false;
+  stmt.bind_text(1, now_utc());
+  stmt.bind_int(2, token_id);
+  if (owner_user_id > 0) stmt.bind_int(3, owner_user_id);
+  return stmt.execute() && sqlite.changes() > 0;
+}
+
+int AppContext::count_active_api_tokens(int user_id) {
+  std::lock_guard<std::mutex> lock(sqlite.mutex);
+  if (!sqlite.is_open()) return 0;
+  auto stmt = sqlite.prepare(
+      "SELECT COUNT(*) FROM api_tokens WHERE user_id=?1 AND revoked_at IS NULL "
+      "AND expires_at > ?2;");
+  if (!stmt) return 0;
+  stmt.bind_int(1, user_id);
+  stmt.bind_text(2, now_utc());
+  return stmt.step() ? stmt.column_int(0) : 0;
+}
+
+std::optional<AuthSession> AppContext::resolve_api_token(
+    const std::string &token, const std::string &client_ip) {
+  if (!api_tokens::looks_like_api_token(token)) return std::nullopt;
+  ApiToken row;
+  {
+    std::lock_guard<std::mutex> lock(sqlite.mutex);
+    if (!sqlite.is_open()) return std::nullopt;
+    auto stmt = sqlite.prepare(std::string("SELECT ") + kApiTokenColumns +
+                               " FROM api_tokens WHERE token_hash=?1;");
+    if (!stmt) return std::nullopt;
+    stmt.bind_text(1, crypto::sha256_hex(token));
+    if (!stmt.step()) return std::nullopt;
+    row = read_api_token_row(stmt);
+  }
+  if (!row.revokedAt.empty()) return std::nullopt;
+  if (row.expiresAt <= now_utc()) return std::nullopt;
+  if (!api_tokens::ip_allowed(client_ip, row.allowedCidrs)) return std::nullopt;
+
+  // Like a session token, the identity is the account as it is now: a deleted
+  // owner kills the token, a demotion applies at once, and an account still in
+  // first-login setup cannot be driven through a token.
+  AuthSession session;
+  {
+    std::lock_guard<std::mutex> lock(user_mutex);
+    auto it = users.find(row.userId);
+    if (it == users.end()) return std::nullopt;
+    if (it->second.bootstrapPasswordChangeRequired ||
+        it->second.bootstrapMfaRequired)
+      return std::nullopt;
+    session.userId = it->second.id;
+    session.user = it->second.username;
+    session.role = it->second.role;
+  }
+  session.issuedAt = row.createdAt;
+  session.expiresAt = row.expiresAt;
+  session.apiTokenId = row.id;
+  session.apiScopes = row.scopes;
+
+  // Record the use at most once a minute per token, and journal it at most
+  // once an hour: a busy automation would otherwise flood both.
+  const int64_t now = now_epoch_seconds();
+  int64_t previous = 0;
+  {
+    std::lock_guard<std::mutex> lock(auth_mutex);
+    auto it = api_token_last_touch.find(row.id);
+    if (it != api_token_last_touch.end()) previous = it->second;
+    if (now - previous >= 60) api_token_last_touch[row.id] = now;
+  }
+  if (now - previous >= 60) {
+    std::lock_guard<std::mutex> lock(sqlite.mutex);
+    auto stmt = sqlite.prepare(
+        "UPDATE api_tokens SET last_used_at=?1, last_used_ip=?2 WHERE id=?3;");
+    if (stmt) {
+      stmt.bind_text(1, now_utc());
+      stmt.bind_text(2, client_ip);
+      stmt.bind_int(3, row.id);
+      stmt.execute();
+    }
+  }
+  if (now - previous >= 3600) {
+    AuditEvent event;
+    event.id = next_audit_id.fetch_add(1);
+    event.type = "apitoken.use";
+    event.actor = session.user;
+    event.role = session.role;
+    event.createdAt = now_utc();
+    event.payloadJson = "{\"tokenId\":" + std::to_string(row.id) +
+                        ",\"tokenPrefix\":\"" + json_escape(row.tokenPrefix) +
+                        "\",\"ip\":\"" + json_escape(client_ip) + "\"}";
+    event.payloadIsJson = true;
+    append_audit(event);
+  }
+  return session;
+}
+
 AppContext::AuditChainCheck AppContext::verify_audit_chain() {
   AuditChainCheck res;
   std::lock_guard<std::mutex> lock(audit_mutex);
@@ -858,6 +1061,7 @@ void AppContext::init_database(const std::string &path) {
   sqlite.exec("ALTER TABLE resources ADD COLUMN ssh_username TEXT;", err);
   sqlite.exec("ALTER TABLE resources ADD COLUMN ssh_password TEXT;", err);
   sqlite.exec("ALTER TABLE resources ADD COLUMN agent_protocol TEXT;", err);
+  sqlite.exec("ALTER TABLE resources ADD COLUMN db_tls_mode TEXT;", err);
   sqlite.exec("ALTER TABLE resources ADD COLUMN require_access_justification INTEGER DEFAULT 0;", err);
   sqlite.exec("ALTER TABLE resources ADD COLUMN require_dual_approval INTEGER DEFAULT 0;", err);
   sqlite.exec("ALTER TABLE resources ADD COLUMN enable_command_guard INTEGER DEFAULT 0;", err);
@@ -1048,6 +1252,7 @@ void AppContext::init_database(const std::string &path) {
   sqlite.exec("ALTER TABLE users ADD COLUMN totp_enabled INTEGER DEFAULT 0;", err);
   sqlite.exec("ALTER TABLE users ADD COLUMN totp_secret TEXT;", err);
   sqlite.exec("ALTER TABLE users ADD COLUMN preferred_mfa_method TEXT DEFAULT 'any';", err);
+  sqlite.exec("ALTER TABLE users ADD COLUMN service_account INTEGER DEFAULT 0;", err);
 
   const std::string webauthn_schema =
       "CREATE TABLE IF NOT EXISTS user_webauthn_credentials ("
@@ -1097,6 +1302,25 @@ void AppContext::init_database(const std::string &path) {
       ");";
   if (!sqlite.exec(user_devices_schema, err))
     std::cerr << "SQLite user_devices schema failed: " << err << '\n';
+
+  // Personal API tokens: only the SHA-256 of the token is kept.
+  const std::string api_tokens_schema =
+      "CREATE TABLE IF NOT EXISTS api_tokens ("
+      "id " + sqlite.autoinc_pk() + ","
+      "user_id INTEGER NOT NULL,"
+      "name TEXT NOT NULL,"
+      "token_hash TEXT NOT NULL UNIQUE,"
+      "token_prefix TEXT NOT NULL,"
+      "scopes TEXT NOT NULL,"
+      "allowed_cidrs TEXT,"
+      "created_at TEXT NOT NULL,"
+      "expires_at TEXT NOT NULL,"
+      "last_used_at TEXT,"
+      "last_used_ip TEXT,"
+      "revoked_at TEXT"
+      ");";
+  if (!sqlite.exec(api_tokens_schema, err))
+    std::cerr << "SQLite api_tokens schema failed: " << err << '\n';
 
   // Integration configuration set from the admin console. It shadows the
   // matching environment variable (see settings.h); a secret is stored
@@ -1265,6 +1489,9 @@ void AppContext::terminate_session(int session_id, const std::string &actor,
     it->second.terminatedAt = now_utc();
     terminated = it->second;
   }
+  metrics::registry().inc(
+      metrics::kSessionsTotal,
+      {{"protocol", metrics::protocol_label(terminated.protocol)}, {"outcome", "ended"}});
   if (!update_session_termination(terminated)) return;
 
   if (sqlite.is_open() && terminated.accessGrantId > 0) {
@@ -1374,7 +1601,7 @@ void AppContext::load_resources_from_db() {
       "require_access_justification, require_dual_approval, "
       "enable_command_guard, adaptive_access_policy, risk_level, "
       "tunnel_ticket_rate_limit_max_attempts, agent_protocol, "
-      "allow_file_download, allow_file_upload FROM resources";
+      "allow_file_download, allow_file_upload, db_tls_mode FROM resources";
   auto stmt = sqlite.prepare(sql);
   if (!stmt) {
     std::cerr << "SQLite resource select failed: " << sqlite.last_error() << '\n';
@@ -1420,6 +1647,7 @@ void AppContext::load_resources_from_db() {
       stmt.column_text_into(22, r.agentProtocol);
       r.allowFileDownload = stmt.column_int(23) != 0;
       r.allowFileUpload = stmt.column_int(24) != 0;
+      stmt.column_text_into(25, r.dbTlsMode);
       resources[r.id] = r;
       if (r.id > max_id) max_id = r.id;
     }
@@ -1437,9 +1665,9 @@ bool AppContext::insert_resource(const Resource &r) {
       "require_access_justification, require_dual_approval, "
       "enable_command_guard, adaptive_access_policy, risk_level, "
       "tunnel_ticket_rate_limit_max_attempts, agent_protocol, "
-      "allow_file_download, allow_file_upload) "
+      "allow_file_download, allow_file_upload, db_tls_mode) "
       "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, "
-      "?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)");
+      "?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)");
   if (!stmt) {
     std::cerr << "SQLite resource insert failed: " << sqlite.last_error() << '\n';
     return false;
@@ -1474,6 +1702,7 @@ bool AppContext::insert_resource(const Resource &r) {
   stmt.bind_text_or_null(23, r.agentProtocol);
   stmt.bind_int(24, r.allowFileDownload ? 1 : 0);
   stmt.bind_int(25, r.allowFileUpload ? 1 : 0);
+  stmt.bind_text_or_null(26, r.dbTlsMode);
   const bool ok = stmt.execute();
   if (!ok) std::cerr << "SQLite resource insert failed: " << sqlite.last_error() << '\n';
   return ok;
@@ -1490,7 +1719,7 @@ bool AppContext::update_resource_db(const Resource &r) {
       "require_access_justification=?15, require_dual_approval=?16, "
       "enable_command_guard=?17, adaptive_access_policy=?18, risk_level=?19, "
       "tunnel_ticket_rate_limit_max_attempts=?20, agent_protocol=?21, "
-      "allow_file_download=?23, allow_file_upload=?24 "
+      "allow_file_download=?23, allow_file_upload=?24, db_tls_mode=?25 "
       "WHERE id=?22");
   if (!stmt) {
     std::cerr << "SQLite resource update failed: " << sqlite.last_error() << '\n';
@@ -1524,6 +1753,7 @@ bool AppContext::update_resource_db(const Resource &r) {
   stmt.bind_int(22, r.id);
   stmt.bind_int(23, r.allowFileDownload ? 1 : 0);
   stmt.bind_int(24, r.allowFileUpload ? 1 : 0);
+  stmt.bind_text_or_null(25, r.dbTlsMode);
   const bool ok = stmt.execute();
   if (!ok) std::cerr << "SQLite resource update failed: " << sqlite.last_error() << '\n';
   return ok;
@@ -1560,7 +1790,7 @@ void AppContext::load_users_from_db() {
   const char *sql =
       "SELECT id, username, password, role, created_at, updated_at, "
       "bootstrap_password_change_required, bootstrap_mfa_required, "
-      "totp_enabled, totp_secret, preferred_mfa_method FROM users";
+      "totp_enabled, totp_secret, preferred_mfa_method, service_account FROM users";
   auto stmt = sqlite.prepare(sql);
   if (!stmt) {
     std::cerr << "SQLite user select failed: " << sqlite.last_error() << '\n';
@@ -1582,6 +1812,7 @@ void AppContext::load_users_from_db() {
       u.totpEnabled = stmt.column_int(8) != 0;
       stmt.column_text_into(9, u.totpSecret);
       stmt.column_text_into(10, u.preferredMfaMethod);
+      u.serviceAccount = stmt.column_int(11) != 0;
       users[u.id] = u;
       if (u.id > max_id) max_id = u.id;
     }
@@ -1595,8 +1826,9 @@ bool AppContext::insert_user(const UserAccount &u) {
   auto stmt = sqlite.prepare(
       "INSERT INTO users (id, username, password, role, created_at, "
       "updated_at, bootstrap_password_change_required, "
-      "bootstrap_mfa_required, totp_enabled, totp_secret, preferred_mfa_method) "
-      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)");
+      "bootstrap_mfa_required, totp_enabled, totp_secret, preferred_mfa_method, "
+      "service_account) "
+      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)");
   if (!stmt) {
     std::cerr << "SQLite user insert failed: " << sqlite.last_error() << '\n';
     return false;
@@ -1612,6 +1844,7 @@ bool AppContext::insert_user(const UserAccount &u) {
   stmt.bind_int(9, u.totpEnabled ? 1 : 0);
   stmt.bind_text_or_null(10, u.totpSecret);
   stmt.bind_text(11, u.preferredMfaMethod);
+  stmt.bind_int(12, u.serviceAccount ? 1 : 0);
   const bool ok = stmt.execute();
   if (!ok) std::cerr << "SQLite user insert failed: " << sqlite.last_error() << '\n';
   return ok;
@@ -1652,11 +1885,12 @@ bool AppContext::delete_user_db(int user_id) {
     cleanup.bind_int(1, user_id);
     cleanup.execute();
   }
-  // Same for resource grants and access profiles: a later account reusing the
-  // id must not inherit them.
+  // Same for resource grants, access profiles and API tokens: a later account
+  // reusing the id must not inherit them.
   for (const char *sql :
        {"DELETE FROM user_resource_permissions WHERE user_id = ?1",
-        "DELETE FROM user_access_profiles WHERE user_id = ?1"}) {
+        "DELETE FROM user_access_profiles WHERE user_id = ?1",
+        "DELETE FROM api_tokens WHERE user_id = ?1"}) {
     auto dependent = sqlite.prepare(sql);
     if (dependent) {
       dependent.bind_int(1, user_id);
@@ -1790,6 +2024,13 @@ bool AppContext::has_permission(int user_id, const std::string &role,
   if (!is_known_permission(permission)) return false;
   const auto effective = get_effective_permissions(user_id, role);
   return permissions_contain(effective, permission);
+}
+
+bool AppContext::has_permission(const AuthSession &auth,
+                                const std::string &permission) {
+  if (auth.apiTokenId > 0 && !api_tokens::scope_allows(auth.apiScopes, permission))
+    return false;
+  return has_permission(auth.userId, auth.role, permission);
 }
 
 // ── Session ownership ──────────────────────────────────────────────────

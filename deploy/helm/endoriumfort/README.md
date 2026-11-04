@@ -163,6 +163,37 @@ nginx in the bastion pod reaches the service by its fully qualified name
 (`clusterDomain`, default `cluster.local`). Deleting a fileshare resource
 purges its drive space automatically. See `docs/fileshare.md`.
 
+## Prometheus metrics
+
+The bastion serves `GET /api/metrics` on its HTTPS port. It needs an API token
+with the `metrics.read` scope: create one from **Account → API tokens**
+(preferably for a service account), then store it in a Secret:
+
+```bash
+kubectl -n endoriumfort create secret generic endoriumfort-metrics \
+  --from-literal=token='efapi_…'
+```
+
+```yaml
+metrics:
+  serviceMonitor:
+    enabled: true
+    tokenSecret:
+      name: endoriumfort-metrics
+    labels:
+      release: kube-prometheus-stack   # whatever your Prometheus selects on
+  prometheusRule:
+    enabled: true
+```
+
+Both need the Prometheus Operator CRDs (`monitoring.coreos.com/v1`); the
+VictoriaMetrics operator converts them as well. The pod's certificate is
+self-signed by default, hence `insecureSkipVerify: true`; set it to `false` with
+`serverName` once the pod presents a trusted certificate. Alert thresholds:
+`licenseExpiryDays`, `loginFailuresPerMinute`, `http5xxRatio`. Grafana
+dashboard: `deploy/grafana/endoriumfort-dashboard.json`. Metric reference:
+[docs/configuration.md](../../../docs/configuration.md#prometheus-metrics).
+
 ## SIEM / log export
 
 `config.siem` ships every audit event to a SIEM or log platform (Enterprise

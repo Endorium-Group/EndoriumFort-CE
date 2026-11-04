@@ -85,6 +85,8 @@ add_executable(endoriumfort_backend
   src/settings_routes.cc
   src/ssh_guard.cc
   src/ssh_guard_routes.cc
+  src/api_token_routes.cc
+  src/metrics_routes.cc
   src/iam_common.cc
   src/license.cc
   src/ssh.cc
@@ -168,6 +170,10 @@ if (ENDORIUMFORT_PRO)
     src/pro/rbi_recording.cc
     src/pro/rbi_transfer.cc
     src/pro/push.cc
+    src/pro/db_proxy.cc
+    src/pro/db_guard.cc
+    src/pro/db_guard_sql.cc
+    src/pro/db_guard_routes.cc
   )
   target_compile_definitions(endoriumfort_backend PRIVATE ENDORIUMFORT_PRO)
   # forkpty(3) for the Kubernetes exec PTY bridge (Linux: libutil).
@@ -261,6 +267,17 @@ if (BUILD_TESTING)
 
   add_executable(endoriumfort_backend_device_tests
     tests/device_test.cc
+    src/app_context.cc
+    src/http_proxy.cc
+    src/scim_query.cc
+    src/route_common.cc
+    src/settings.cc
+    src/iam_common.cc
+    src/license.cc
+  )
+
+  add_executable(endoriumfort_backend_api_tokens_tests
+    tests/api_tokens_test.cc
     src/app_context.cc
     src/http_proxy.cc
     src/scim_query.cc
@@ -380,6 +397,12 @@ if (BUILD_TESTING)
       ${asio_SOURCE_DIR}/asio/include
       ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
+  target_include_directories(endoriumfort_backend_api_tokens_tests
+    PRIVATE
+      ${crow_SOURCE_DIR}/include
+      ${asio_SOURCE_DIR}/asio/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
 
   if (ENDORIUMFORT_PRO)  # pro test include dirs
   target_include_directories(endoriumfort_backend_scim_routes_tests
@@ -463,6 +486,10 @@ if (BUILD_TESTING)
     PRIVATE ASIO_STANDALONE
   )
 
+  target_compile_definitions(endoriumfort_backend_api_tokens_tests
+    PRIVATE ASIO_STANDALONE
+  )
+
   target_compile_definitions(endoriumfort_backend_settings_tests
     PRIVATE ASIO_STANDALONE
   )
@@ -496,6 +523,7 @@ if (BUILD_TESTING)
   target_link_libraries(endoriumfort_backend_audit_query_tests PRIVATE OpenSSL::Crypto Threads::Threads)
   target_link_libraries(endoriumfort_backend_reporting_tests PRIVATE OpenSSL::Crypto Threads::Threads)
   target_link_libraries(endoriumfort_backend_device_tests PRIVATE endoriumfort_db OpenSSL::SSL OpenSSL::Crypto)
+  target_link_libraries(endoriumfort_backend_api_tokens_tests PRIVATE endoriumfort_db OpenSSL::SSL OpenSSL::Crypto)
   target_link_libraries(endoriumfort_backend_settings_tests PRIVATE endoriumfort_db OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
   target_link_libraries(endoriumfort_backend_ssh_guard_tests PRIVATE endoriumfort_db OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
   if (ENDORIUMFORT_PRO)  # pro test libs
@@ -529,6 +557,7 @@ if (BUILD_TESTING)
   add_test(NAME backend_audit_query_test COMMAND endoriumfort_backend_audit_query_tests)
   add_test(NAME backend_reporting_test COMMAND endoriumfort_backend_reporting_tests)
   add_test(NAME backend_device_test COMMAND endoriumfort_backend_device_tests)
+  add_test(NAME backend_api_tokens_test COMMAND endoriumfort_backend_api_tokens_tests)
 
   # Resource secrets survive a restart and an edit, with or without vault key.
   add_executable(endoriumfort_backend_resource_secret_tests
@@ -585,6 +614,13 @@ if (BUILD_TESTING)
     target_link_libraries(endoriumfort_backend_login_backoff_tests PRIVATE ws2_32 mswsock)
   endif()
   add_test(NAME backend_login_backoff_test COMMAND endoriumfort_backend_login_backoff_tests)
+
+  # Prometheus registry and exposition format (header-only, see src/metrics.h).
+  add_executable(endoriumfort_backend_metrics_tests tests/metrics_test.cc)
+  target_include_directories(endoriumfort_backend_metrics_tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(endoriumfort_backend_metrics_tests PRIVATE Threads::Threads)
+  add_test(NAME backend_metrics_test COMMAND endoriumfort_backend_metrics_tests)
   add_test(NAME backend_settings_test COMMAND endoriumfort_backend_settings_tests)
   add_test(NAME backend_ssh_guard_test COMMAND endoriumfort_backend_ssh_guard_tests)
   if (ENDORIUMFORT_PRO)  # pro tests
@@ -609,6 +645,9 @@ if (BUILD_TESTING)
     src/iam_common.cc
     src/license.cc
     src/pro/tunnel.cc
+    src/pro/db_proxy.cc   # tunnel.cc hands "postgres" resources to the proxy
+    src/pro/db_guard.cc
+    src/pro/db_guard_sql.cc
   )
   target_include_directories(endoriumfort_backend_agent_tunnel_jit_tests
     PRIVATE
@@ -625,6 +664,43 @@ if (BUILD_TESTING)
     target_link_libraries(endoriumfort_backend_agent_tunnel_jit_tests PRIVATE ws2_32 mswsock)
   endif()
   add_test(NAME backend_agent_tunnel_jit_test COMMAND endoriumfort_backend_agent_tunnel_jit_tests)
+
+  # Database proxy: wire protocol, SCRAM, relay state machine and SQL guard
+  # (pure parts), plus an end-to-end run against a local PostgreSQL when its
+  # binaries are installed (skipped otherwise).
+  add_executable(endoriumfort_backend_db_proxy_tests
+    tests/db_proxy_test.cc
+    src/pro/db_guard_sql.cc
+  )
+  target_include_directories(endoriumfort_backend_db_proxy_tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(endoriumfort_backend_db_proxy_tests
+    PRIVATE OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
+  add_test(NAME backend_db_proxy_test COMMAND endoriumfort_backend_db_proxy_tests)
+
+  add_executable(endoriumfort_backend_db_proxy_e2e_tests
+    tests/db_proxy_e2e_test.cc
+    src/app_context.cc
+    src/http_proxy.cc
+    src/scim_query.cc
+    src/route_common.cc
+    src/settings.cc
+    src/iam_common.cc
+    src/license.cc
+    src/pro/db_proxy.cc
+    src/pro/db_guard.cc
+    src/pro/db_guard_sql.cc
+  )
+  target_include_directories(endoriumfort_backend_db_proxy_e2e_tests
+    PRIVATE
+      ${crow_SOURCE_DIR}/include
+      ${asio_SOURCE_DIR}/asio/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_definitions(endoriumfort_backend_db_proxy_e2e_tests PRIVATE ASIO_STANDALONE)
+  target_link_libraries(endoriumfort_backend_db_proxy_e2e_tests
+    PRIVATE endoriumfort_db OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
+  add_test(NAME backend_db_proxy_e2e_test COMMAND endoriumfort_backend_db_proxy_e2e_tests)
   endif()
   add_test(NAME backend_license_test COMMAND endoriumfort_backend_license_tests)
 endif()

@@ -13,7 +13,7 @@ import { formatWhen, initialsOf } from '../../ui/sessions.js';
 import { zoneOf } from '../MapPage.jsx';
 
 const ROLES = ['operator', 'admin', 'auditor'];
-const EMPTY_FORM = { username: '', password: '', role: 'operator', forcePasswordRotation: true };
+const EMPTY_FORM = { username: '', password: '', role: 'operator', forcePasswordRotation: true, serviceAccount: false };
 
 const mfaOf = (user, t) => {
   const parts = [];
@@ -41,22 +41,33 @@ function UserForm({ initial, isNew, onSubmit, onCancel, busy, error }) {
           <input id="u-name" className="ef-input ef-mono" value={form.username} onChange={set('username')} autoComplete="off" required />
         </div>
       )}
+      {isNew && (
+        <label className="ef-check">
+          <input type="checkbox" checked={!!form.serviceAccount} onChange={set('serviceAccount')} />
+          {t('users.serviceAccount')}
+        </label>
+      )}
+      {form.serviceAccount && <p className="ef-hint" style={{ margin: 0 }}>{t('users.serviceAccountHint')}</p>}
       <div className="ef-field">
         <label htmlFor="u-role">{t('users.role')}</label>
         <select id="u-role" className="ef-input" value={form.role} onChange={set('role')}>
           {ROLES.map((role) => <option key={role} value={role}>{t(`users.roles.${role}`)}</option>)}
         </select>
       </div>
-      <div className="ef-field">
-        <label htmlFor="u-pass">{isNew ? t('users.password') : t('users.newPassword')}</label>
-        <input id="u-pass" className="ef-input" type="password" value={form.password} onChange={set('password')} autoComplete="new-password" required />
-        {!isNew && <span className="ef-hint">{t('users.passwordRequiredHint')}</span>}
-      </div>
-      <label className="ef-check">
-        <input type="checkbox" checked={!!form.forcePasswordRotation} onChange={set('forcePasswordRotation')} />
-        {t('users.forceRotation')}
-      </label>
-      {form.role === 'admin' && <p className="ef-hint" style={{ margin: 0 }}>{t('users.adminMfaHint')}</p>}
+      {!form.serviceAccount && (
+        <>
+          <div className="ef-field">
+            <label htmlFor="u-pass">{isNew ? t('users.password') : t('users.newPassword')}</label>
+            <input id="u-pass" className="ef-input" type="password" value={form.password} onChange={set('password')} autoComplete="new-password" required />
+            {!isNew && <span className="ef-hint">{t('users.passwordRequiredHint')}</span>}
+          </div>
+          <label className="ef-check">
+            <input type="checkbox" checked={!!form.forcePasswordRotation} onChange={set('forcePasswordRotation')} />
+            {t('users.forceRotation')}
+          </label>
+          {form.role === 'admin' && <p className="ef-hint" style={{ margin: 0 }}>{t('users.adminMfaHint')}</p>}
+        </>
+      )}
       {error && <div className="ef-alert ef-alert--danger">{error}</div>}
       <div className="ef-uform__actions">
         <button type="submit" className="ef-btn ef-btn--primary" disabled={busy}>{isNew ? t('users.create') : t('common.save')}</button>
@@ -232,12 +243,12 @@ export default function UsersAdmin({
     return [...users]
       .filter((u) => !q || String(u.username).toLowerCase().includes(q))
       .filter((u) => !role || u.role === role)
-      .filter((u) => !noMfaOnly || mfaOf(u, t).length === 0)
+      .filter((u) => !noMfaOnly || (!u.serviceAccount && mfaOf(u, t).length === 0))
       .sort((a, b) => String(a.username).localeCompare(String(b.username)));
   }, [users, query, role, noMfaOnly]);
 
   const selected = users.find((u) => u.id === selectedId) || null;
-  const admins = users.filter((u) => u.role === 'admin');
+  const admins = users.filter((u) => u.role === 'admin' && !u.serviceAccount);
   const adminsWithoutMfa = admins.filter((u) => !mfaOf(u, t).length).length;
 
   const run = async (action) => {
@@ -257,7 +268,7 @@ export default function UsersAdmin({
 
   const deleteBlocked = selected && (selected.username === currentUser
     ? t('users.cannotDeleteSelf')
-    : selected.role === 'admin' && admins.length <= 1 ? t('users.cannotDeleteLastAdmin') : '');
+    : selected.role === 'admin' && !selected.serviceAccount && admins.length <= 1 ? t('users.cannotDeleteLastAdmin') : '');
 
   const renderPanel = () => {
     if (mode === 'create') {
@@ -292,7 +303,7 @@ export default function UsersAdmin({
           <span className={selected.username === currentUser ? 'ef-avatar ef-avatar--lg ef-avatar--priv' : 'ef-avatar ef-avatar--lg'}>{initialsOf(selected.username)}</span>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div className="ef-insp__title ef-mono">{selected.username}</div>
-            <div className="ef-muted" style={{ fontSize: 12.5 }}>{t(`users.roles.${selected.role}`)}{selected.username === currentUser ? ` · ${t('users.you')}` : ''}</div>
+            <div className="ef-muted" style={{ fontSize: 12.5 }}>{t(`users.roles.${selected.role}`)}{selected.serviceAccount ? ` · ${t('users.serviceBadge')}` : ''}{selected.username === currentUser ? ` · ${t('users.you')}` : ''}</div>
           </div>
         </div>
         <div style={{ padding: '0 16px 12px' }}>
@@ -307,12 +318,14 @@ export default function UsersAdmin({
 
         {tab === 'profile' && mode === 'edit' && (
           <UserForm
-            initial={{ username: selected.username, password: '', role: selected.role, forcePasswordRotation: !!selected.bootstrapPasswordChangeRequired }}
+            initial={{ username: selected.username, password: '', role: selected.role, forcePasswordRotation: !!selected.bootstrapPasswordChangeRequired, serviceAccount: !!selected.serviceAccount }}
             busy={busy}
             error={error}
             onCancel={() => { setMode('view'); setError(''); }}
             onSubmit={async (form) => {
-              const done = await run(() => onUpdate(selected.id, { password: form.password, role: form.role, forcePasswordRotation: !!form.forcePasswordRotation }));
+              const done = await run(() => onUpdate(selected.id, selected.serviceAccount
+                ? { role: form.role }
+                : { password: form.password, role: form.role, forcePasswordRotation: !!form.forcePasswordRotation }));
               if (done) setMode('view');
             }}
           />
@@ -322,12 +335,20 @@ export default function UsersAdmin({
             <dl className="ef-kv">
               <dt>{t('users.username')}</dt><dd className="ef-mono">{selected.username}</dd>
               <dt>{t('users.role')}</dt><dd>{t(`users.roles.${selected.role}`)}</dd>
-              <dt>{t('users.mfa')}</dt>
-              <dd>
-                {mfa.length ? mfa.join(' + ') : <span className={selected.role === 'admin' ? 'ef-badge ef-badge--critical' : 'ef-badge'}>{t('users.noMfa')}</span>}
-              </dd>
-              <dt>{t('users.password')}</dt>
-              <dd>{selected.bootstrapPasswordChangeRequired ? t('users.mustChange') : t('users.ok')}</dd>
+              {selected.serviceAccount ? (
+                <>
+                  <dt>{t('users.type')}</dt><dd><span className="ef-badge">{t('users.serviceBadge')}</span> <span className="ef-hint">{t('users.serviceAccountHint')}</span></dd>
+                </>
+              ) : (
+                <>
+                  <dt>{t('users.mfa')}</dt>
+                  <dd>
+                    {mfa.length ? mfa.join(' + ') : <span className={selected.role === 'admin' ? 'ef-badge ef-badge--critical' : 'ef-badge'}>{t('users.noMfa')}</span>}
+                  </dd>
+                  <dt>{t('users.password')}</dt>
+                  <dd>{selected.bootstrapPasswordChangeRequired ? t('users.mustChange') : t('users.ok')}</dd>
+                </>
+              )}
               <dt>{t('users.created')}</dt><dd>{selected.createdAt ? formatWhen(selected.createdAt, locale) : '—'}</dd>
               <dt>{t('users.updated')}</dt><dd>{selected.updatedAt ? formatWhen(selected.updatedAt, locale) : '—'}</dd>
             </dl>
@@ -424,9 +445,11 @@ export default function UsersAdmin({
                       </td>
                       <td className="ef-text-2">{t(`users.roles.${user.role}`)}</td>
                       <td>
-                        {mfa.length
-                          ? <span className="ef-badge">{mfa.join(' + ')}</span>
-                          : <span className={user.role === 'admin' ? 'ef-badge ef-badge--critical' : 'ef-badge'}>{t('users.noMfa')}</span>}
+                        {user.serviceAccount
+                          ? <span className="ef-badge">{t('users.serviceBadge')}</span>
+                          : mfa.length
+                            ? <span className="ef-badge">{mfa.join(' + ')}</span>
+                            : <span className={user.role === 'admin' ? 'ef-badge ef-badge--critical' : 'ef-badge'}>{t('users.noMfa')}</span>}
                       </td>
                       <td className="ef-text-2">{user.bootstrapPasswordChangeRequired ? t('users.mustChange') : '—'}</td>
                       <td className="ef-muted">{user.createdAt ? formatWhen(user.createdAt, locale) : '—'}</td>

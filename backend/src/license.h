@@ -190,6 +190,8 @@ inline const std::vector<FeatureEntitlement> &feature_catalog() {
       // RBI file transfer / clipboard is a core capability; the DLP policy that
       // governs it (allow/deny per direction, size/extension limits) + audit is EE.
       {"rbi.transfer", "enterprise", nullptr, GateLayer::PerRoute},
+      // Database proxy: PostgreSQL protocol, vaulted login, query audit, SQL guard.
+      {"database.proxy", "enterprise", nullptr, GateLayer::PerRoute},
   };
   return catalog;
 }

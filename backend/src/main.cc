@@ -82,6 +82,8 @@ int main() {
   register_license_routes(app, ctx);
   register_settings_routes(app, ctx);
   register_ssh_guard_routes(app, ctx);
+  register_api_token_routes(app, ctx);
+  register_metrics_routes(app, ctx);
   register_proxy_routes(app, ctx);
   register_web_resource_routes(app, ctx);
   register_ssh_routes(app, ctx);

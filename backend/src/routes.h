@@ -28,6 +28,8 @@ void register_license_routes(CrowApp &app, AppContext &ctx);
 // Community build can configure LDAP and the RBI transfer policy too.
 void register_settings_routes(CrowApp &app, AppContext &ctx);
 void register_ssh_guard_routes(CrowApp &app, AppContext &ctx);
+void register_api_token_routes(CrowApp &app, AppContext &ctx);
+void register_metrics_routes(CrowApp &app, AppContext &ctx);
 // Remote Browser Isolation (core / CE): server-side headless Chromium streamed
 // to the operator over a WebSocket (CDP screencast). Not license-gated.
 void register_rbi_routes(CrowApp &app, AppContext &ctx);

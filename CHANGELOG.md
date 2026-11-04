@@ -2,6 +2,80 @@
 
 ## Unreleased
 
+### Database proxy (Enterprise)
+
+- Added **PostgreSQL resources** with a protocol-aware proxy (#72, license
+  feature `database.proxy`). Through the agent tunnel, `psql` or DBeaver connect
+  to a local port. The bastion answers the start-up itself, logs in to the
+  database with the vaulted account (SCRAM-SHA-256 with server verification,
+  MD5, cleartext), and the operator never sees the password. TLS towards the
+  database per resource: `prefer`, `require`, `verify-full` (system CAs or
+  `ENDORIUMFORT_DB_CA_FILE`), `disable`.
+- Every query is journaled as `db.query` (simple and extended protocol, with
+  duration, rows, command and server error; bound parameter values are never
+  recorded), plus `db.connect`, `db.connect.failed` and `db.disconnect`. A query
+  still running when the connection ends is journaled as interrupted.
+- **SQL guard** on resources with the guard ticked: built-in rules `drop`,
+  `truncate`, `delete_without_where`, `update_without_where`, `role_change`,
+  `alter_system`, `copy_program` and `do_block`, plus custom statement and
+  schema rules (`/api/db-guard/rules`, **Threat detection → Rules**). The SQL is
+  tokenised, so comments and literals neither trigger nor hide a rule. A refused
+  statement gets a normal PostgreSQL error (`42501`), is journaled as
+  `db.query.blocked`, and the session carries on.
+- Terminating a session now cuts its agent tunnels, raw TCP ones included,
+  within a second.
+- Metrics: `endoriumfort_db_queries_total{result}`,
+  `endoriumfort_db_query_duration_seconds`, `endoriumfort_db_connections_active`.
+- Not yet: dynamic per-session database roles, MySQL/MariaDB, web SQL console.
+  See [docs/database-proxy.md](docs/database-proxy.md).
+
+### Prometheus metrics (Community)
+
+- Added **`GET /api/metrics`** in the Prometheus text format (#71): sessions
+  (active, started/denied/failed/ended), logins by method and result, SSH guard
+  blocks, HTTP requests and latency by route group, web proxy upstream errors,
+  license validity and expiry, build info. The Enterprise build adds pending
+  access requests, relay heartbeats, cluster peers and the last success of each
+  automation job.
+  - Needs the new **`metrics.read`** permission (admins and auditors by default),
+    which can be put on an API token: Prometheus scrapes with
+    `Authorization: Bearer efapi_…`.
+  - Labels come from fixed lists only (no user names or targets) and each family
+    is capped at 256 series.
+- Helm: optional **`ServiceMonitor`** (`metrics.serviceMonitor`, token read from
+  a Secret) and **`PrometheusRule`** (`metrics.prometheusRule`) with alerts on
+  scrape down, license expiring or invalid, relay down, cluster peer offline,
+  failed-login spike and 5xx ratio.
+- Grafana dashboard and a plain Prometheus rule file in `deploy/grafana/`.
+
+### API tokens (Community)
+
+- Added **personal API tokens** for scripts, CI and infrastructure-as-code
+  (#70). Create, list and revoke them from **Account → API tokens**, or through
+  `GET/POST /api/tokens` and `DELETE /api/tokens/<id>`; an administrator holding
+  `users.manage` can list and revoke everyone's.
+  - Tokens look like `efapi_…`, are stored as a SHA-256 only, and are shown
+    once. They expire (1 to `ENDORIUMFORT_API_TOKEN_MAX_DAYS` days, default 365),
+    can be pinned to source addresses (IPv4 CIDRs, IPv6 literals), and record
+    when and from where they were last used.
+  - A token acts for its owner and never beyond: each permission check requires
+    both the owner's current role and the token's scope. Interactive rights
+    (opening sessions, connecting, shadowing, approving requests, MFA) cannot be
+    granted to a token.
+  - Tokens reach an **allowlist** of management endpoints only; anything else
+    (authentication, MFA, devices, tokens, WebSockets, the web proxy, file
+    transfer) answers `403` before any handler runs. They are read from the
+    `Authorization` header only, never from the session cookie.
+  - Journaled as `apitoken.create`, `apitoken.revoke`, and `apitoken.use` at
+    most once an hour per token.
+- Added **service accounts** (#70): a user created with **Service account** ticked
+  (or `"serviceAccount": true`) has no password anyone knows, cannot sign in by
+  password, LDAP or SSO, skips MFA and rotation setup, and acts only through
+  tokens an administrator mints for it (`serviceAccountId` on `POST /api/tokens`,
+  scopes capped by both the administrator's and the account's role). It does not
+  count as a sign-in-capable administrator for the last-admin guard.
+  - The Terraform provider is tracked in #76 (separate repository).
+
 ### Reporting (Community)
 
 - Added a **Reports** tab and the reporting API behind it: statistics over a

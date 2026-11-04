@@ -283,6 +283,38 @@ fileshare:
       cpu: 50m
       memory: 64Mi
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Prometheus metrics (GET /api/metrics, Community feature). The endpoint needs
+# an API token with the `metrics.read` scope: create it from Account → API
+# tokens (ideally for a service account), then store it in a Secret, e.g.
+#   kubectl create secret generic endoriumfort-metrics --from-literal=token=efapi_…
+# Both objects need the Prometheus Operator CRDs (monitoring.coreos.com/v1);
+# VictoriaMetrics' operator converts them too. See docs/configuration.md.
+metrics:
+  serviceMonitor:
+    enabled: false
+    # Secret holding the API token (required when enabled).
+    tokenSecret:
+      name: ""
+      key: token
+    interval: 30s
+    scrapeTimeout: 10s
+    # The image serves a self-signed certificate on :443. Set false and give
+    # serverName when the pod presents a certificate your Prometheus trusts.
+    insecureSkipVerify: true
+    serverName: ""
+    # Extra labels, e.g. `release: kube-prometheus-stack` for its selector.
+    labels: {}
+  prometheusRule:
+    enabled: false
+    labels: {}
+    # Alert when the license expires within this many days.
+    licenseExpiryDays: 30
+    # Alert when more than this many logins fail per minute (over 5 min).
+    loginFailuresPerMinute: 10
+    # Alert when more than this share of requests answer 5xx (over 10 min).
+    http5xxRatio: 0.05
+
 # Extra environment variables appended verbatim.
 extraEnv: []
 #  - name: ENDORIUMFORT_LOG_LEVEL

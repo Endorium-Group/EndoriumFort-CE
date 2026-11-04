@@ -633,7 +633,7 @@ crow::response handle_proxy_request(
 
   // ── Check resource permissions ──
   std::vector<int> allowed_resource_ids;
-  if (ctx.has_permission(auth->userId, auth->role, "resources.manage")) {
+  if (ctx.has_permission(*auth, "resources.manage")) {
     std::lock_guard<std::mutex> lock(ctx.resource_mutex);
     for (const auto &entry : ctx.resources) {
       allowed_resource_ids.push_back(entry.first);
@@ -1150,7 +1150,7 @@ void register_web_resource_routes(CrowApp &app, AppContext &ctx) {
         if (!auth) return crow::response(401, "Unauthorized");
 
         std::vector<int> allowed_resource_ids;
-        if (ctx.has_permission(auth->userId, auth->role, "resources.manage")) {
+        if (ctx.has_permission(*auth, "resources.manage")) {
           std::lock_guard<std::mutex> lock(ctx.resource_mutex);
           for (const auto &entry : ctx.resources)
             allowed_resource_ids.push_back(entry.first);
@@ -1189,7 +1189,7 @@ void register_web_resource_routes(CrowApp &app, AppContext &ctx) {
 
         // Filter by user permissions (same as /api/resources)
         std::vector<int> allowed_resource_ids;
-        if (ctx.has_permission(auth->userId, auth->role, "resources.manage")) {
+        if (ctx.has_permission(*auth, "resources.manage")) {
           std::lock_guard<std::mutex> lock(ctx.resource_mutex);
           for (const auto &entry : ctx.resources)
             allowed_resource_ids.push_back(entry.first);

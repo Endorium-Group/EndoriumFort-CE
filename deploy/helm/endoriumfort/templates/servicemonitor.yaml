@@ -1,0 +1,38 @@
+{{- if .Values.metrics.serviceMonitor.enabled }}
+{{- $sm := .Values.metrics.serviceMonitor }}
+{{- if not $sm.tokenSecret.name }}
+{{- fail "metrics.serviceMonitor.tokenSecret.name is required: /api/metrics needs an API token with the metrics.read scope" }}
+{{- end }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "endoriumfort.fullname" . }}
+  labels:
+    {{- include "endoriumfort.labels" . | nindent 4 }}
+    {{- with $sm.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "endoriumfort.selectorLabels" . | nindent 6 }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  endpoints:
+    - port: https
+      scheme: https
+      path: /api/metrics
+      interval: {{ $sm.interval }}
+      scrapeTimeout: {{ $sm.scrapeTimeout }}
+      authorization:
+        type: Bearer
+        credentials:
+          name: {{ $sm.tokenSecret.name }}
+          key: {{ $sm.tokenSecret.key }}
+      tlsConfig:
+        insecureSkipVerify: {{ $sm.insecureSkipVerify }}
+        {{- with $sm.serverName }}
+        serverName: {{ . }}
+        {{- end }}
+{{- end }}

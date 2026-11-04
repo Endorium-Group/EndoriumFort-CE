@@ -15,7 +15,7 @@
 
 bool has_permission(AppContext &ctx, const AuthSession &auth,
                     const std::string &permission) {
-  return ctx.has_permission(auth.userId, auth.role, permission);
+  return ctx.has_permission(auth, permission);
 }
 
 // The three helpers below are the single seam through which every integration

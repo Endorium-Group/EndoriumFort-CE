@@ -48,6 +48,59 @@ features, or listed in the overlay inventory in
 | `POST` | `/api/auth/disable-2fa` | Disable 2FA |
 | `GET`  | `/api/auth/2fa-status` | Check 2FA status |
 
+## API tokens
+
+Personal tokens for scripts, CI and Terraform. A token acts **for its owner and
+never beyond**: a request is allowed only when the owner's current role holds the
+permission *and* the token's scope lists it. Send it as
+`Authorization: Bearer efapi_…` (never as a cookie).
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET`  | `/api/tokens/scopes` | Scopes the caller may grant, and `maxLifetimeDays` |
+| `GET`  | `/api/tokens` | The caller's tokens; `?all=1` lists everyone's (`users.manage`) |
+| `POST` | `/api/tokens` | Create: `name`, `scopes[]`, `expiresInDays` (default 30), optional `allowedCidrs[]`. The clear `token` is in this response only |
+| `DELETE` | `/api/tokens/:id` | Revoke (own tokens, or anyone's with `users.manage`) |
+
+**Service accounts.** For automation that should not hang off a person, create a
+user with `"serviceAccount": true` on `POST /api/users` (no `password`: it gets an
+unguessable one). A service account can never sign in — not with a password,
+LDAP or SSO (a directory identity with the same name is refused) — and has no
+MFA or password-rotation setup. An administrator holding `users.manage` mints
+its tokens with `POST /api/tokens` and `"serviceAccountId": <id>`; each scope
+must then be held by both the administrator and the account's role. `PUT
+/api/users/:id` only changes its role; deleting it revokes its tokens. Service
+accounts do not count towards the "last administrator" guard.
+
+**Limits.** Only the SHA-256 of a token is stored. Lifetime 1 day up to
+`ENDORIUMFORT_API_TOKEN_MAX_DAYS` (default 365); 25 active tokens per person;
+`allowedCidrs` takes IPv4 addresses or CIDRs and literal IPv6 addresses (max 16).
+A token dies with its owner's account, follows a role change at once, and is
+refused while the owner still has first-login setup pending.
+
+**Grantable scopes:** `users.read`, `users.manage`, `resources.read`,
+`resources.manage`, `resources.assign`, `sessions.read`, `sessions.terminate`,
+`audit.read`, `recordings.read`, `stats.read`, `access_requests.read`,
+`cluster.read`, `cluster.manage`, `settings.manage`, `metrics.read`. Interactive permissions
+(`sessions.create`, `*.connect`, `ssh.shadow.watch`, `access_requests.review`,
+`credentials.ephemeral.*`, `totp.manage`) can never be put on a token.
+
+**Reachable endpoints.** Tokens reach the management API only, and every other
+path answers `403 Not available to API tokens` before any handler runs:
+resources (except one-time credentials and the file-share directory), users,
+access policies/profiles/grants, access requests (read only — approving stays a
+human decision), audit, reports, stats, recordings, SSH guard, vault,
+automation, ITDR, security center, Kubernetes resources, SIEM integration,
+evidence packs, cluster status, `/api/health`, `/api/license/status`,
+`GET /api/metrics`, and
+sessions (list, read, `terminate`, `dna` only). Authentication, MFA, devices,
+tokens themselves, WebSockets and `/proxy/*` are out of reach.
+
+**Journal.** `apitoken.create` and `apitoken.revoke` on each change;
+`apitoken.use` (with the token id, prefix and source IP) on the first use, then
+at most once an hour per token. Events produced by a token's requests carry the
+owner as actor.
+
 ## Sessions
 
 | Method | Endpoint | Description |
@@ -118,6 +171,7 @@ features, or listed in the overlay inventory in
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET`  | `/api/health` | Health check |
+| `GET`  | `/api/metrics` | Prometheus exposition (`metrics.read`); see [configuration.md](configuration.md#prometheus-metrics) |
 | `GET`  | `/api/stats` | Dashboard KPI metrics |
 | `GET`  | `/api/audit` | Audit events |
 | `GET`  | `/api/reports` | Statistics over one calendar period (`period=day\|month\|quarter\|year`, `date`, `top`) |
@@ -130,6 +184,9 @@ features, or listed in the overlay inventory in
 | `POST` | `/api/cluster/heartbeat` | Peer heartbeat update (shared secret auth) |
 | `DELETE` | `/api/cluster/peers/:nodeId` | Remove a cluster peer from runtime registry |
 | `ANY`  | `/proxy/:resourceId/*` | HTTP reverse proxy |
+
+The database proxy and its SQL guard (`/api/db-guard/rules`) are documented in
+[docs/database-proxy.md](database-proxy.md).
 
 Relay, SSO/LDAP/SCIM, ITSM and SIEM endpoints are documented in
 [docs/relay-deployment.md](docs/relay-deployment.md) and

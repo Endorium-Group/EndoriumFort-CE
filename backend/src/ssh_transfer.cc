@@ -257,7 +257,7 @@ std::optional<crow::response> prepare(AppContext &ctx, const crow::request &requ
                                       int session_id, Need need, Prepared &out) {
   const auto auth = ctx.find_auth(request);
   if (!auth) return crow::response(401, "Unauthorized");
-  if (!ctx.has_permission(auth->userId, auth->role, "ssh.connect"))
+  if (!ctx.has_permission(*auth, "ssh.connect"))
     return crow::response(403, "Forbidden");
   out.auth = *auth;
 

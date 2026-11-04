@@ -308,6 +308,7 @@ inline std::string build_user_payload_json(const UserAccount &user) {
   oss << "\"userId\":" << user.id << ',';
   oss << "\"username\":\"" << json_escape(user.username) << "\",";
   oss << "\"role\":\"" << json_escape(user.role) << "\"";
+  if (user.serviceAccount) oss << ",\"serviceAccount\":true";
   if (!user.createdAt.empty()) {
     oss << ",\"createdAt\":\"" << json_escape(user.createdAt) << "\"";
   }
@@ -395,6 +396,7 @@ inline const std::vector<std::string> &permission_catalog() {
       "audit.read",
       "recordings.read",
       "stats.read",
+      "metrics.read",
       "totp.manage",
       "access_requests.read",
       "access_requests.create",
@@ -430,7 +432,7 @@ inline std::unordered_set<std::string> default_permissions_for_role(
   if (normalized == "auditor") {
     return {"resources.read", "sessions.read", "audit.read", "recordings.read",
             "stats.read", "access_requests.read", "ssh.shadow.watch",
-            "cluster.read"};
+            "cluster.read", "metrics.read"};
   }
   return {"resources.read", "sessions.read", "sessions.create",
           "sessions.terminate", "stats.read", "access_requests.read",
@@ -648,6 +650,7 @@ inline crow::json::wvalue resource_to_json(const Resource &resource) {
   payload["httpUsername"] = resource.httpUsername;
   payload["sshUsername"] = resource.sshUsername;
   payload["agentProtocol"] = resource.agentProtocol;
+  payload["dbTlsMode"] = resource.dbTlsMode;
   payload["hasCredentials"] = !resource.sshPassword.empty();
   payload["requireAccessJustification"] = resource.requireAccessJustification;
   payload["requireDualApproval"] = resource.requireDualApproval;
@@ -751,6 +754,7 @@ inline crow::json::wvalue user_to_json(const UserAccount &user) {
   payload["webauthnEnabled"] = user_has_webauthn_enabled(user);
   payload["webauthnCredentialCount"] = user.webauthnCredentialCount;
   payload["preferredMfaMethod"] = effective_mfa_preference(user);
+  payload["serviceAccount"] = user.serviceAccount;
   return payload;
 }
 

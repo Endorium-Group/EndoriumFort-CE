@@ -5,8 +5,9 @@ import { configureK8sResource, createResource, deleteResource, fetchK8sResources
 import { describeAccessOutcome, describeResourcePolicy, normalizeRiskLevel } from '../../accessPolicy.js';
 import { zoneOf } from '../MapPage.jsx';
 
-const PROTOCOLS = ['ssh', 'rdp', 'vnc', 'http', 'https', 'agent', 'k8s', 'fileshare'];
-const DEFAULT_PORT = { ssh: 22, rdp: 3389, vnc: 5900, http: 80, https: 443, agent: 22, k8s: 443, fileshare: 443 };
+const PROTOCOLS = ['ssh', 'rdp', 'vnc', 'http', 'https', 'agent', 'k8s', 'fileshare', 'postgres'];
+const DEFAULT_PORT = { ssh: 22, rdp: 3389, vnc: 5900, http: 80, https: 443, agent: 22, k8s: 443, fileshare: 443, postgres: 5432 };
+const DB_TLS_MODES = ['prefer', 'require', 'verify-full', 'disable'];
 const RISKS = ['low', 'medium', 'high', 'critical'];
 const isWebProtocol = (protocol) => protocol === 'http' || protocol === 'https';
 
@@ -25,6 +26,7 @@ const formFrom = (resource) => {
     target: resource?.target || '',
     port: String(resource?.port ?? 22),
     agentProtocol: resource?.agentProtocol || 'tcp',
+    dbTlsMode: resource?.dbTlsMode || 'prefer',
     tunnelTicketRateLimitMaxAttempts: String(Math.max(0, Number(resource?.tunnelTicketRateLimitMaxAttempts) || 0)),
     credentialSource: resource?.credentialSource || 'vaulted',
     sshUsername: resource?.sshUsername || '',
@@ -126,6 +128,7 @@ function ResourceEditor({ resource, initialProtocol, zones, onSaved, onDeleted, 
       sshUsername: form.sshUsername.trim(),
       sshPassword: form.sshPassword,
       agentProtocol: form.protocol === 'agent' ? form.agentProtocol || 'tcp' : '',
+      dbTlsMode: form.protocol === 'postgres' ? form.dbTlsMode || 'prefer' : '',
       requireAccessJustification: !!form.requireAccessJustification,
       requireDualApproval: !!form.requireDualApproval,
       enableCommandGuard: !!form.enableCommandGuard,
@@ -257,7 +260,14 @@ function ResourceEditor({ resource, initialProtocol, zones, onSaved, onDeleted, 
               </Field>
             </>
           )}
-          {(protocol === 'agent' || protocol === 'rdp') && (
+          {protocol === 'postgres' && (
+            <Field id="r-dbtls" label={t('resAdmin.dbTls')} hint={t(`resAdmin.dbTlsHint.${form.dbTlsMode}`)}>
+              <select id="r-dbtls" className="ef-input" value={form.dbTlsMode} onChange={set('dbTlsMode')}>
+                {DB_TLS_MODES.map((value) => <option key={value} value={value}>{t(`resAdmin.dbTlsModes.${value}`)}</option>)}
+              </select>
+            </Field>
+          )}
+          {(protocol === 'agent' || protocol === 'rdp' || protocol === 'postgres') && (
             <Field id="r-rate" label={t('resAdmin.ticketLimit')} hint={t('resAdmin.ticketLimitHint')}>
               <input id="r-rate" className="ef-input ef-mono" type="number" min="0" value={form.tunnelTicketRateLimitMaxAttempts} onChange={set('tunnelTicketRateLimitMaxAttempts')} />
             </Field>
@@ -265,7 +275,7 @@ function ResourceEditor({ resource, initialProtocol, zones, onSaved, onDeleted, 
         </div>
       </section>
 
-      {(protocol === 'ssh' || isWebProtocol(protocol) || protocol === 'k8s') && (
+      {(protocol === 'ssh' || isWebProtocol(protocol) || protocol === 'k8s' || protocol === 'postgres') && (
         <section className="ef-rsec">
           <h3>{t('resAdmin.credentials')}</h3>
           <div className="ef-rgrid">
@@ -281,6 +291,16 @@ function ResourceEditor({ resource, initialProtocol, zones, onSaved, onDeleted, 
                 </Field>
                 <Field id="r-spass" label={t('resAdmin.secret')} hint={!isNew && resource?.hasCredentials ? t('resAdmin.keepSecret') : null}>
                   <input id="r-spass" className="ef-input" type="password" value={form.sshPassword} onChange={set('sshPassword')} autoComplete="new-password" placeholder={!isNew && resource?.hasCredentials ? '••••••••' : ''} />
+                </Field>
+              </>
+            )}
+            {protocol === 'postgres' && (
+              <>
+                <Field id="r-duser" label={t('resAdmin.dbAccount')} hint={t('resAdmin.dbAccountHint')}>
+                  <input id="r-duser" className="ef-input ef-mono" value={form.sshUsername} onChange={set('sshUsername')} placeholder="app_admin" autoComplete="off" required />
+                </Field>
+                <Field id="r-dpass" label={t('resAdmin.secret')} hint={!isNew && resource?.hasCredentials ? t('resAdmin.keepSecret') : null}>
+                  <input id="r-dpass" className="ef-input" type="password" value={form.sshPassword} onChange={set('sshPassword')} autoComplete="new-password" placeholder={!isNew && resource?.hasCredentials ? '••••••••' : ''} />
                 </Field>
               </>
             )}
@@ -321,6 +341,9 @@ function ResourceEditor({ resource, initialProtocol, zones, onSaved, onDeleted, 
             <label className="ef-check"><input type="checkbox" checked={form.requireDualApproval} onChange={set('requireDualApproval')} />{t('resAdmin.dualApproval')}</label>
             {(protocol === 'ssh' || (protocol === 'agent' && form.agentProtocol === 'ssh')) && (
               <label className="ef-check"><input type="checkbox" checked={form.enableCommandGuard} onChange={set('enableCommandGuard')} />{t('resAdmin.commandGuard')}</label>
+            )}
+            {protocol === 'postgres' && (
+              <label className="ef-check"><input type="checkbox" checked={form.enableCommandGuard} onChange={set('enableCommandGuard')} />{t('resAdmin.sqlGuard')}</label>
             )}
             <label className="ef-check"><input type="checkbox" checked={form.adaptiveAccessPolicy} onChange={set('adaptiveAccessPolicy')} />{t('resAdmin.adaptive')}</label>
           </div>
@@ -420,6 +443,7 @@ export default function ResourcesAdmin({ resources, loading, focusId, onFocusUse
     if (protocol === 'ssh') return resource.hasCredentials ? t(`resAdmin.modesShort.${resource.credentialSource || 'vaulted'}`) : t('resAdmin.typedAtLogin');
     if (isWebProtocol(protocol)) return resource.httpUsername ? t('resAdmin.httpAccountShort') : '—';
     if (protocol === 'k8s') return 'kubeconfig';
+    if (protocol === 'postgres') return resource.sshUsername ? `${resource.sshUsername} · ${t('resAdmin.modesShort.vaulted')}` : '—';
     return '—';
   };
 

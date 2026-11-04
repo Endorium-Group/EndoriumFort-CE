@@ -278,6 +278,81 @@ guide, including Helm and Debian packaging: [fileshare.md](./fileshare.md).
 
 ---
 
+## Database Proxy
+
+PostgreSQL resources (Enterprise, `database.proxy`) are configured per resource;
+see [database-proxy.md](./database-proxy.md). One variable:
+
+| Variable | Default | Role |
+|---|---|---|
+| `ENDORIUMFORT_DB_CA_FILE` | — | Extra CA bundle (PEM) trusted for `dbTlsMode: verify-full`, on top of the system CAs |
+
+---
+
+## Prometheus Metrics
+
+`GET /api/metrics` serves the Prometheus text exposition format (0.0.4). It is
+under `/api/`, so the bundled nginx and any ingress already route it: scrape with
+`metrics_path: /api/metrics`. No environment variable turns it on or off.
+
+**Access.** The caller needs the `metrics.read` permission (admins and auditors
+hold it by default). Create an API token with only that scope, ideally for a
+[service account](./api.md#api-tokens), and give it to Prometheus as a bearer
+token. The token can reach nothing else that it was not also scoped for.
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: endoriumfort
+    scheme: https
+    metrics_path: /api/metrics
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/endoriumfort.token   # efapi_…
+    tls_config:
+      insecure_skip_verify: true   # the image's self-signed cert; prefer ca_file
+    static_configs:
+      - targets: ["bastion.example.com:443"]
+```
+
+**Metrics.** Labels only take values from fixed lists (no user names, targets or
+request IDs), and each family is capped at 256 series.
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `endoriumfort_sessions_active` | gauge | `protocol` | Sessions open now |
+| `endoriumfort_sessions_total` | counter | `protocol`, `outcome` | `started`, `denied` (policy or request refused), `failed` (server error), `ended` |
+| `endoriumfort_logins_total` | counter | `method`, `result` | `method`: `password`, `ldap`, `sso`, `mfa`; `result`: `success`, `failure`, `rate_limited` |
+| `endoriumfort_ssh_guard_blocked_total` | counter | — | Commands blocked by the SSH command guard |
+| `endoriumfort_http_requests_total` | counter | `route_group`, `status` | `route_group` is the first segment after `/api/` (or `proxy`, `ws`, `static`, `other`); `status` is the class (`2xx`…) |
+| `endoriumfort_http_request_duration_seconds` | histogram | `route_group` | Buckets from 5 ms to 30 s |
+| `endoriumfort_proxy_upstream_errors_total` | counter | — | Web proxy requests that could not reach the upstream |
+| `endoriumfort_license_valid` | gauge | — | 1 when a license is installed and valid |
+| `endoriumfort_license_expiry_timestamp_seconds` | gauge | — | License `notAfter`; absent without a license |
+| `endoriumfort_build_info` | gauge | `version`, `edition` | Always 1; `edition` is `ce` or `ee` |
+| `endoriumfort_process_start_time_seconds` | gauge | — | Start time of the process |
+| `endoriumfort_metrics_dropped_series_total` | counter | — | Series refused by the cardinality cap (should stay 0) |
+| `endoriumfort_access_requests_pending` | gauge | — | **EE.** Access requests waiting for review |
+| `endoriumfort_relay_up` | gauge | `relay` | **EE.** 1 while the relay's heartbeat is fresh |
+| `endoriumfort_cluster_peers` | gauge | `state` | **EE.** Peers `online` / `offline` |
+| `endoriumfort_scheduler_job_last_success_timestamp_seconds` | gauge | `job` | **EE.** Last successful run of an automation job |
+| `endoriumfort_db_queries_total` | counter | `result` | **EE.** Database proxy queries: `ok`, `error`, `blocked` |
+| `endoriumfort_db_query_duration_seconds` | histogram | — | **EE.** Database proxy query duration |
+| `endoriumfort_db_connections_active` | gauge | — | **EE.** Open database proxy connections |
+
+Counters live in memory and restart from zero with the process, as Prometheus
+expects. EE metrics are only present in the Enterprise build.
+
+**Dashboard and alerts.** [`deploy/grafana/endoriumfort-dashboard.json`](../deploy/grafana/endoriumfort-dashboard.json)
+imports into Grafana 10+ (pick the Prometheus data source when asked).
+[`deploy/grafana/endoriumfort-alerts.yaml`](../deploy/grafana/endoriumfort-alerts.yaml)
+is a rule file for a plain Prometheus: scrape down, license expiring or invalid,
+relay down, cluster peer offline, failed-login spike, 5xx ratio. With Helm, use
+`metrics.serviceMonitor` and `metrics.prometheusRule` instead (see the chart
+README).
+
+---
+
 ## Environment Variables
 
 | Variable | Default | Description |

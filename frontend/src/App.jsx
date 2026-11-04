@@ -2314,7 +2314,8 @@ export default function App() {
     const normalized = String(protocol || '').toLowerCase();
     // SSH keeps the in-browser web terminal; only "agent" tunnels and direct RDP
     // (which has no web viewer) launch via the native agent deep link.
-    return normalized === 'agent' || normalized === 'rdp';
+    // Databases too: the bastion's proxy speaks PostgreSQL behind the tunnel.
+    return normalized === 'agent' || normalized === 'rdp' || normalized === 'postgres';
   };
 
   const resolveAgentInstallGuide = () => {

@@ -285,6 +285,8 @@ bool gate_before(const crow::request &req, crow::response &res) {
     feature = "evidence.packs";  // signed forensic evidence (enterprise)
   } else if (path_has_prefix(path, "/api/security")) {
     feature = "security.center";  // incidents / containment / alerts (enterprise)
+  } else if (path_has_prefix(path, "/api/db-guard")) {
+    feature = "database.proxy";  // SQL guard of the database proxy (enterprise)
   }
   if (!feature) return false;  // not a globally-gated premium prefix
 
@@ -365,7 +367,7 @@ void register_license_routes(CrowApp &app, AppContext &ctx) {
         }
         payload["features"] = std::move(feats);
 
-        if (ctx.has_permission(auth->userId, auth->role, "resources.manage")) {
+        if (ctx.has_permission(*auth, "resources.manage")) {
           payload["customer"] = st.claims.customer;
           payload["licenseId"] = st.claims.licenseId;
           payload["maxNodes"] = st.claims.maxNodes;
@@ -380,7 +382,7 @@ void register_license_routes(CrowApp &app, AppContext &ctx) {
       .methods(crow::HTTPMethod::Post)([&ctx](const crow::request &request) {
         auto auth = ctx.find_auth(request);
         if (!auth) return crow::response(401, "Unauthorized");
-        if (!ctx.has_permission(auth->userId, auth->role, "resources.manage")) {
+        if (!ctx.has_permission(*auth, "resources.manage")) {
           return crow::response(403, "Forbidden");
         }
         ctx.reload_license();
@@ -401,7 +403,7 @@ void register_license_routes(CrowApp &app, AppContext &ctx) {
       .methods(crow::HTTPMethod::Post)([&ctx](const crow::request &request) {
         auto auth = ctx.find_auth(request);
         if (!auth) return crow::response(401, "Unauthorized");
-        if (!ctx.has_permission(auth->userId, auth->role, "resources.manage")) {
+        if (!ctx.has_permission(*auth, "resources.manage")) {
           return crow::response(403, "Forbidden");
         }
         auto body = crow::json::load(request.body);

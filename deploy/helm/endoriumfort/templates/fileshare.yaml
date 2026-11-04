@@ -1,4 +1,9 @@
-{{- if .Values.fileshare.enabled }}
+{{/* Values blocks added after the first release. Reached through `default
+     dict` so an upgrade run with --reuse-values, which replaces the chart's
+     defaults with the previous release's values and therefore knows nothing of
+     a newer block, renders as "feature off" instead of failing on a nil
+     pointer. */}}
+{{- if (.Values.fileshare | default dict).enabled }}
 {{- $name := include "endoriumfort.files.fullname" . }}
 {{- if not .Values.fileshare.existingSecret }}
 {{- /* Keep the ticket key across upgrades: reuse the one already in the cluster. */}}

@@ -37,6 +37,16 @@ export default function AgentDialog({ modal, onLaunch, onNewPort, onClose }) {
             ? <>{t('agentDlg.thenBrowser')} <a href={modal.localUrl} target="_blank" rel="noreferrer" className="ef-mono">{modal.localUrl}</a></>
             : t('agentDlg.thenClient', { protocol, endpoint: modal.localEndpoint || `127.0.0.1:${modal.port}` })}
         </dd>
+        {String(resource?.protocol || '').toLowerCase() === 'postgres' && (
+          <>
+            <dt>psql</dt>
+            <dd>
+              <code className="ef-mono">{`psql "host=127.0.0.1 port=${modal.port} dbname=postgres"`}</code>{' '}
+              <CopyButton text={`psql "host=127.0.0.1 port=${modal.port} dbname=postgres"`} label={t('agentDlg.copy')} />
+              <span className="ef-hint" style={{ display: 'block' }}>{t('agentDlg.dbHint')}</span>
+            </dd>
+          </>
+        )}
       </dl>
 
       {modal.launchState === 'opened' && (

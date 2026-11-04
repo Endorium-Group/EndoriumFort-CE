@@ -1,5 +1,13 @@
-{{- if eq .Values.database.type "postgresql" }}
-  {{- if and (not .Values.database.postgresql.dsn) (not .Values.database.postgresql.existingSecret) }}
+{{/* Values blocks added after the first release. Reached through `default
+     dict` so an upgrade run with --reuse-values, which replaces the chart's
+     defaults with the previous release's values and therefore knows nothing of
+     a newer block, renders as "feature off" instead of failing on a nil
+     pointer. */}}
+{{- $db := .Values.database | default dict }}
+{{- $pg := $db.postgresql | default dict }}
+{{- $fs := .Values.fileshare | default dict }}
+{{- if eq ($db.type | default "sqlite") "postgresql" }}
+  {{- if and (not $pg.dsn) (not $pg.existingSecret) }}
     {{- fail "database.type is \"postgresql\" but no DSN was given: set database.postgresql.dsn or database.postgresql.existingSecret. Without one the pod would silently fall back to the embedded SQLite file." }}
   {{- end }}
 {{- end }}
@@ -170,18 +178,18 @@ spec:
             {{- end }}
             {{- end }}
             {{- end }}
-            {{- if and (eq .Values.database.type "postgresql") .Values.database.postgresql.existingSecret }}
+            {{- if and (eq ($db.type | default "sqlite") "postgresql") $pg.existingSecret }}
             - name: ENDORIUMFORT_DB_DSN
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.database.postgresql.existingSecret }}
-                  key: {{ .Values.database.postgresql.existingSecretKey }}
+                  name: {{ $pg.existingSecret }}
+                  key: {{ $pg.existingSecretKey }}
             {{- end }}
-            {{- if .Values.fileshare.enabled }}
+            {{- if $fs.enabled }}
             - name: ENDORIUMFORT_FILESHARE_UPSTREAM
               value: {{ include "endoriumfort.files.upstream" . | quote }}
             - name: ENDORIUMFORT_FILESHARE_MAX_BODY
-              value: {{ .Values.fileshare.maxBody | quote }}
+              value: {{ $fs.maxBody | quote }}
             - name: ENDORIUMFORT_FILESHARE_SECRET
               valueFrom:
                 secretKeyRef:

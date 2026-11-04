@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { useI18n } from '../../i18n.jsx';
 import { formatWhen, initialsOf } from '../../ui/sessions.js';
+import ApiTokensCard from './ApiTokensCard.jsx';
 import MfaCard from './MfaCard.jsx';
 
 const MAP_VIEW_KEY = 'endoriumfort_map_view';
@@ -69,6 +70,8 @@ export default function AccountPage({
       </div>
 
       <MfaCard {...mfa} />
+
+      <ApiTokensCard user={user} canSeeAll={mfa.isAdmin} />
 
       <div className="ef-account__grid">
         <section className="ef-card">

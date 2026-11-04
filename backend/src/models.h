@@ -46,6 +46,9 @@ struct Resource {
   // rdp, vnc, http, https, tcp). Empty for non-agent resources. Injected into the
   // agent deep link as &protocol so the native client launches correctly.
   std::string agentProtocol;
+  // For "postgres" resources: TLS towards the database — disable, prefer,
+  // require (encrypted, unverified) or verify-full (CA + host name checked).
+  std::string dbTlsMode;
   bool requireAccessJustification = false;
   bool requireDualApproval = false;
   bool enableCommandGuard = false;
@@ -161,6 +164,9 @@ struct UserAccount {
   std::string totpSecret;  // Base32-encoded secret
   int webauthnCredentialCount = 0;
   std::string preferredMfaMethod = "any";
+  // Non-interactive account for automation: it never signs in, has no first-
+  // login setup, and acts only through API tokens an administrator mints for it.
+  bool serviceAccount = false;
 };
 
 struct WebAuthnCredential {
@@ -188,6 +194,27 @@ struct AuthSession {
   // First-login password rotation or MFA enrolment still outstanding: the
   // token may only reach the security-setup endpoints (see bootstrap gate).
   bool securitySetupPending = false;
+  // Set when the request authenticated with a personal API token (see
+  // api_tokens.h): the permissions it may exercise are narrowed to apiScopes.
+  int apiTokenId = 0;
+  std::vector<std::string> apiScopes;
+};
+
+// A personal API token. Only its SHA-256 is stored; the clear value is shown
+// once, when it is created.
+struct ApiToken {
+  int id = 0;
+  int userId = 0;
+  std::string owner;
+  std::string name;
+  std::string tokenPrefix;
+  std::vector<std::string> scopes;
+  std::vector<std::string> allowedCidrs;
+  std::string createdAt;
+  std::string expiresAt;
+  std::string lastUsedAt;
+  std::string lastUsedIp;
+  std::string revokedAt;
 };
 
 struct AuditEvent {
@@ -296,6 +323,10 @@ struct SshConnection {
 struct TunnelState {
   int upstream_sock = -1;
   int resource_id = 0;
+  int session_id = 0;  // the access session the tunnel runs under
+  // Set for "postgres" resources: the database proxy (EE, pro/db_proxy.h)
+  // speaks the protocol instead of relaying raw bytes. Opaque to the core.
+  std::shared_ptr<void> db_proxy;
   std::string user;
   std::string token;
   std::atomic<bool> active{false};

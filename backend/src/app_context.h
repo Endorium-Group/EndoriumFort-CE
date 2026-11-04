@@ -111,6 +111,8 @@ struct AppContext {
   // ── Auth state ──
   std::mutex auth_mutex;
   std::unordered_map<std::string, AuthSession> auth_sessions;
+  // API token id -> epoch of the last recorded use (throttles the write-back).
+  std::unordered_map<int, int64_t> api_token_last_touch;
   int listen_port = 8080;
   int token_ttl_seconds = 3600;  // 1 hour default
 
@@ -177,6 +179,19 @@ struct AppContext {
   int register_user_device(const UserDevice &device);
   std::vector<UserDevice> list_user_devices(int user_id);
   bool delete_user_device(int user_id, int device_id);
+  // ── Personal API tokens (see api_tokens.h) ──
+  // Stores `token` (whose id is filled in) and writes the one-time clear value
+  // to `plaintext`. Returns false on a storage error.
+  bool create_api_token(ApiToken &token, std::string &plaintext);
+  // The owner's tokens, or every user's when user_id <= 0. Revoked ones included.
+  std::vector<ApiToken> list_api_tokens(int user_id);
+  // Revokes one token; scoped to its owner unless owner_user_id <= 0.
+  bool revoke_api_token(int token_id, int owner_user_id);
+  int count_active_api_tokens(int user_id);
+  // Authenticates a clear token from `client_ip`: unknown, revoked, expired,
+  // out-of-range or orphaned tokens yield nullopt.
+  std::optional<AuthSession> resolve_api_token(const std::string &token,
+                                               const std::string &client_ip);
   // Verify that `signature_b64url` over `message` was produced by the private
   // key of device `device_id` owned by `user_id` (public key stored at
   // registration, SPKI base64url). ES256 (EC P-256) or Ed25519. Used for
@@ -567,6 +582,8 @@ struct AppContext {
       int user_id, const std::string &role);
   bool has_permission(int user_id, const std::string &role,
                       const std::string &permission);
+  // Same, narrowed to the token's scope when `auth` came from an API token.
+  bool has_permission(const AuthSession &auth, const std::string &permission);
 
   // ── Session ownership ──
   // The person who opened a session is the subject of its access grant;

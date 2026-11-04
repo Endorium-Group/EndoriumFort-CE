@@ -1,0 +1,65 @@
+# EndoriumFort alert rules for a plain Prometheus (rule_files:).
+# Generated from deploy/helm/endoriumfort/files/prometheus-rules.yaml with the
+# chart defaults; with the Helm chart, set metrics.prometheusRule.enabled instead.
+# EndoriumFortScrapeDown assumes the scrape job is named "endoriumfort".
+groups:
+  - name: endoriumfort
+    rules:
+      - alert: EndoriumFortScrapeDown
+        expr: up{job="endoriumfort"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "EndoriumFort metrics unreachable on {{ $labels.instance }}"
+          description: "Prometheus cannot scrape /api/metrics: the bastion is down, or the metrics token expired or was revoked."
+      - alert: EndoriumFortLicenseExpiringSoon
+        expr: (endoriumfort_license_expiry_timestamp_seconds - time()) < 30 * 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "EndoriumFort license expires in {{ $value | humanizeDuration }}"
+          description: "Renew the license before it expires, or premium features turn off."
+      - alert: EndoriumFortLicenseInvalid
+        expr: endoriumfort_license_valid == 0 and on(instance, job) endoriumfort_license_expiry_timestamp_seconds
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "EndoriumFort license installed but not valid on {{ $labels.instance }}"
+          description: "The license is expired, revoked, not yet valid or failed its checks: see Admin → License."
+      - alert: EndoriumFortRelayDown
+        expr: endoriumfort_relay_up == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Relay {{ $labels.relay }} has stopped sending heartbeats"
+          description: "Resources behind this relay are unreachable until it reconnects."
+      - alert: EndoriumFortClusterPeerOffline
+        expr: endoriumfort_cluster_peers{state="offline"} > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} EndoriumFort cluster peer(s) offline"
+          description: "A cluster node stopped sending heartbeats."
+      - alert: EndoriumFortLoginFailureSpike
+        expr: sum by (instance) (rate(endoriumfort_logins_total{result=~"failure|rate_limited"}[5m])) * 60 > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value | humanize }} failed logins per minute on {{ $labels.instance }}"
+          description: "Possible password spraying or brute force: check the audit log and the Security center."
+      - alert: EndoriumFortHighErrorRate
+        expr: |
+          sum by (instance) (rate(endoriumfort_http_requests_total{status="5xx"}[10m]))
+            / sum by (instance) (rate(endoriumfort_http_requests_total[10m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of requests fail with 5xx on {{ $labels.instance }}"
+          description: "Look at the backend logs; endoriumfort_http_requests_total by route_group shows which API is failing."

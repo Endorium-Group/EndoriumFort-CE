@@ -1,0 +1,17 @@
+{{- if .Values.metrics.prometheusRule.enabled }}
+{{- $pr := .Values.metrics.prometheusRule }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "endoriumfort.fullname" . }}
+  labels:
+    {{- include "endoriumfort.labels" . | nindent 4 }}
+    {{- with $pr.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: endoriumfort
+      rules:
+{{ .Files.Get "files/prometheus-rules.yaml" | replace "__LICENSE_DAYS__" (toString $pr.licenseExpiryDays) | replace "__LOGIN_FAILURES_PER_MIN__" (toString $pr.loginFailuresPerMinute) | replace "__HTTP_5XX_RATIO__" (toString $pr.http5xxRatio) | replace "__SERVICE__" (include "endoriumfort.fullname" .) | indent 8 }}
+{{- end }}

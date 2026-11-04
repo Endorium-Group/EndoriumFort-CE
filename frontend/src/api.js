@@ -176,6 +176,64 @@ export async function configureVaultDynamic(resourceId, payload) {
   return response.json();
 }
 
+// ── Personal API tokens (core) ──
+export async function fetchApiTokenScopes() {
+  const response = await fetch('/api/tokens/scopes', { headers: withAuthHeaders() });
+  await ensureResponseOk(response, 'Failed to fetch API token scopes');
+  return response.json();
+}
+
+export async function fetchApiTokens(all = false) {
+  const response = await fetch(all ? '/api/tokens?all=1' : '/api/tokens', { headers: withAuthHeaders() });
+  await ensureResponseOk(response, 'Failed to fetch API tokens');
+  return response.json();
+}
+
+export async function createApiToken(payload) {
+  const response = await fetch('/api/tokens', {
+    method: 'POST',
+    headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload)
+  });
+  await ensureResponseOk(response, 'Failed to create the API token');
+  return response.json();
+}
+
+export async function revokeApiToken(id) {
+  const response = await fetch(`/api/tokens/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: withAuthHeaders()
+  });
+  await ensureResponseOk(response, 'Failed to revoke the API token');
+  return response.json();
+}
+
+// ── SQL guard of the database proxy (Enterprise: database.proxy) ──
+export async function fetchDbGuardRules() {
+  const response = await fetch('/api/db-guard/rules', { headers: withAuthHeaders() });
+  await ensureResponseOk(response, 'Failed to fetch SQL guard rules');
+  return response.json();
+}
+
+export async function saveDbGuardRule(name, payload) {
+  const response = await fetch(`/api/db-guard/rules/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload)
+  });
+  await ensureResponseOk(response, 'Failed to save the SQL guard rule');
+  return response.json();
+}
+
+export async function deleteDbGuardRule(name) {
+  const response = await fetch(`/api/db-guard/rules/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+    headers: withAuthHeaders()
+  });
+  await ensureResponseOk(response, 'Failed to delete the SQL guard rule');
+  return response.json();
+}
+
 // ── SSH command guard (core: the guard has no license feature) ──
 export async function fetchSshGuardRules() {
   const response = await fetch('/api/ssh-guard/rules', { headers: withAuthHeaders() });
