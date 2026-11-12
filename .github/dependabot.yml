@@ -1,16 +1,46 @@
+# Minutes: version updates monthly (each PR runs the CI). Security updates are
+# not tied to this schedule: Dependabot opens them as soon as an advisory lands.
 version: 2
+
+# Minor and patch bumps are grouped into a single PR per ecosystem and merged
+# automatically once the required checks pass (see
+# .github/workflows/dependabot-auto-merge.yml). Major bumps stay in their own
+# PR and wait for a manual review.
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
+    groups:
+      github-actions:
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: "gomod"
-    directory: "/agent"
+    directories:
+      - "/agent"
+      - "/agent/gui"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
+    groups:
+      go-modules:
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: "npm"
-    directory: "/frontend"
+    directories:
+      - "/"
+      - "/frontend"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
+    groups:
+      npm:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "docker"
+    directories:
+      - "/"
+      - "/fileshare"
+    schedule:
+      interval: "monthly"
+    groups:
+      docker:
+        update-types: ["minor", "patch"]

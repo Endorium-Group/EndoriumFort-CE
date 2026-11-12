@@ -185,6 +185,9 @@ and Go 1.25+. Build tuning, WSL defaults and the test suites are covered in
 
 Production deployment — hardened compose stack, Helm chart, Debian packages,
 upgrade and rollback — is in [docs/deployment.md](docs/deployment.md).
+How much CPU, RAM, disk and bandwidth to give it for your number of concurrent
+sessions and recordings: the [sizing guide](https://endorium.space/docs/#/dimensionnement)
+and [calculator](https://endorium.space/#sizing) on the EndoriumFort site.
 
 ---
 

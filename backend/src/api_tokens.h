@@ -146,7 +146,7 @@ inline bool path_allowed(const std::string &method, const std::string &raw_path)
       "/api/access-grants",   "/api/audit",           "/api/reports",
       "/api/stats",           "/api/recordings",      "/api/ssh-guard",
       "/api/vault",           "/api/automation",      "/api/itdr",
-      "/api/db-guard",
+      "/api/db-guard",        "/api/db-proxy",
       "/api/security",        "/api/k8s/resources",   "/api/integrations/siem",
       "/api/evidence-packs",  "/api/cluster/status"};
   for (const char *prefix : kAllowed)

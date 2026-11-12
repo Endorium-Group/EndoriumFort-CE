@@ -192,6 +192,8 @@ inline const std::vector<FeatureEntitlement> &feature_catalog() {
       {"rbi.transfer", "enterprise", nullptr, GateLayer::PerRoute},
       // Database proxy: PostgreSQL protocol, vaulted login, query audit, SQL guard.
       {"database.proxy", "enterprise", nullptr, GateLayer::PerRoute},
+      // Full-text search in terminal recordings (index + /api/recordings/search).
+      {"recordings.search", "enterprise", nullptr, GateLayer::PerRoute},
   };
   return catalog;
 }

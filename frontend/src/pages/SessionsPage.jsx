@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import ConfirmButton from '../ui/ConfirmButton.jsx';
 import { useI18n } from '../i18n.jsx';
 import { fetchSessionDna } from '../api.js';
+import Dialog from '../ui/Dialog.jsx';
+import DbQueryLog from './DbQueryLog.jsx';
 import TerminalSlot from '../ui/TerminalSlot.jsx';
 import RelayLock from '../ui/RelayLock.jsx';
 import {
@@ -140,6 +142,7 @@ const eventTone = (type) => {
 function SessionDetails({ session, resource, route, relaysEnabled, onUnlockRelays, now, canViewAudit, dnaEnabled, auditItems, canEnd, onTerminate, onOpenAudit, onOpenRecordings }) {
   const { t, locale } = useI18n();
   const events = useSessionEvents(session, { enabled: canViewAudit, dnaEnabled, auditItems });
+  const [showQueries, setShowQueries] = React.useState(false);
 
   if (!session) {
     return (
@@ -217,7 +220,10 @@ function SessionDetails({ session, resource, route, relaysEnabled, onUnlockRelay
           {canViewAudit && (
             <button type="button" className="ef-btn ef-btn--sm" onClick={() => onOpenAudit(session.id)}>{t('sess.openJournal')}</button>
           )}
-          {canViewAudit && !isWeb(session) && (
+          {canViewAudit && protocolOf(session) === 'postgres' && (
+            <button type="button" className="ef-btn ef-btn--sm" onClick={() => setShowQueries(true)}>{t('dbLog.open')}</button>
+          )}
+          {canViewAudit && !isWeb(session) && protocolOf(session) !== 'postgres' && (
             <button type="button" className="ef-btn ef-btn--sm" onClick={() => onOpenRecordings(session.id)}>{t('sess.recordings')}</button>
           )}
           {active && canEnd && (
@@ -233,6 +239,17 @@ function SessionDetails({ session, resource, route, relaysEnabled, onUnlockRelay
           )}
         </div>
       </div>
+      {showQueries && (
+        <Dialog
+          kicker={t('dbLog.kicker')}
+          title={t('sess.sessionNo', { id: session.id })}
+          subtitle={`${session.operator} · ${resource?.name || session.target}`}
+          width={880}
+          onClose={() => setShowQueries(false)}
+        >
+          <DbQueryLog sessionId={session.id} live={active} />
+        </Dialog>
+      )}
       {canViewAudit && (
         <div className="ef-insp__sec">
           <h3 className="ef-evhead">

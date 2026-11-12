@@ -321,6 +321,8 @@ struct AppContext {
   std::function<bool(const Session &, std::string & /*username*/,
                      std::string & /*password*/, std::string & /*detail*/)>
       provision_dynamic_credential;
+  // Called once a recording is closed (EE search index); unset in CE.
+  std::function<void(int /*recording_id*/)> on_recording_closed;
   std::function<void(int /*session_id*/)> deprovision_dynamic_for_session =
       [](int) {};
 

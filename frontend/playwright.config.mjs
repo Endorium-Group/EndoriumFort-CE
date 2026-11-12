@@ -14,6 +14,9 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   timeout: 60_000,
+  // A whole run never takes longer than this in CI: a hang fails fast instead
+  // of holding a runner (and its minutes) until the job timeout.
+  globalTimeout: process.env.CI ? 12 * 60_000 : 0,
   expect: { timeout: 10_000 },
   reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report' }]],
   use: {

@@ -2,6 +2,75 @@
 
 ## Unreleased
 
+### Fixed
+
+- **v1.0.60 froze the bastion when a terminal recording closed** (end of an SSH
+  or Kubernetes session): the new search-index hook ran under the database lock
+  and woke the scheduler, which takes that lock too. The hook now runs after the
+  lock is released. Upgrade from v1.0.60 without waiting; v1.0.59 and earlier
+  are not affected.
+
+### Continuous integration
+
+- The Linux jobs can run on a self-hosted runner (a container on any Linux
+  host with Docker, WSL included), switched on and off by the `LINUX_RUNNER`
+  repository variable; Dependabot pull requests, macOS, Windows, license
+  signing and the Compose smoke gate stay on GitHub. See
+  `.github/runner/README.md`.
+- Cut GitHub Actions minutes: each job runs only when its part of the tree
+  changed (a skipped job still satisfies the required checks, and if change
+  detection fails every gate runs); on PRs into master, CI no longer repeats
+  the Release Gate's backend, frontend and Linux agent builds; the macOS and
+  Windows agent tests (billed x10 and x2) run only when `agent/` changed, and
+  their installers only when their packaging changed; no more duplicate runs on
+  the push to `dev` and to `master`; CodeQL analyses only the languages a PR
+  touches (everything weekly); superseded runs are cancelled; every job has a
+  timeout and Playwright a 12-minute global limit in CI, so a hung step can no
+  longer hold a runner for the default six hours; Dependabot version updates
+  are monthly (security updates are unaffected).
+- The release gate's migration check reads the current PR body from the API:
+  after fixing the body, re-run that one job instead of every gate.
+
+### Searchable recordings (Enterprise)
+
+- **Full-text search in terminal recordings** (#73, license feature
+  `recordings.search`): in **Evidence**, search what was on screen in every SSH
+  and Kubernetes session ("who ran `rm -rf` on prod this month?"); results are
+  grouped by recording with the match highlighted, and a click opens the replay
+  at the moment the line was complete on screen. Filters: dates, operator,
+  resource. `GET /api/recordings/search`; every search is journaled as
+  `recording.search`.
+  - Only what was **shown** is indexed: keystrokes that never echoed, such as a
+    password typed at a `sudo` prompt, stay out of the index.
+  - The text is rebuilt line by line (colours and escape sequences removed,
+    carriage returns and backspaces applied). SQLite uses FTS5; PostgreSQL a
+    `tsvector` + GIN index over accent-folded text. A scheduler job
+    (`recording-search-index`) indexes each recording as it closes, catches up
+    existing ones, and drops the lines of recordings whose file is gone.
+  - Not yet: text from RDP, VNC and browser (RBI) recordings (OCR).
+
+### Fixed
+
+- Agent: a request cancelled while the server was still answering is now
+  reported as cancelled, not as an invalid answer (the CI hit this race).
+- Release: signing the file share image waits up to about five minutes for
+  Docker Hub to serve the new signature, instead of 40 seconds.
+
+### Database proxy — dynamic roles (Enterprise)
+
+- PostgreSQL resources can give **each session its own throw-away role** (#72):
+  created by the resource's account on the first connection with only the
+  granted roles, `VALID UNTIL` the session's limit, sent as a SCRAM verifier so
+  no clear password reaches the server or its logs, and dropped when the session
+  ends after `REASSIGN OWNED` / `DROP OWNED` in every database it used. A reaper
+  job removes roles a crash or restart left behind. Settings on the resource
+  form or `GET/PUT /api/db-proxy/dynamic/:resourceId`; journaled as
+  `db.role.created`, `db.role.dropped` and `db.dynamic.configured`.
+- **SQL queries of a session**: the details of a PostgreSQL session (Sessions)
+  list every journaled query in order, with outcome, duration, rows and error,
+  filters and search, and a replay at the recorded pace (1× to 60×). Reads the
+  audit log, so it needs `audit.read`, and follows a live session.
+
 ### Database proxy (Enterprise)
 
 - Added **PostgreSQL resources** with a protocol-aware proxy (#72, license
@@ -127,6 +196,16 @@
   requiring a newer toolchain than the pinned one and broke the Supply Chain
   gate with no change on our side.
 - Fixed the frontend unit log path, so the uploaded artifact is no longer empty.
+- **Dependabot minor and patch updates now merge themselves once CI is
+  green.** Coverage extends to `agent/gui`, the root npm package and both
+  Dockerfiles; minor/patch bumps are grouped into one PR per ecosystem and
+  `dependabot-auto-merge.yml` enables auto-merge on them. A `master` ruleset
+  requires the build, agent matrix and Release Gate checks, so a bump that
+  breaks anything stays open. Major bumps still wait for a manual review.
+- **CodeQL failed on every run** because uploading to code scanning needs GitHub
+  Code Security on a private repository. The SARIF is now kept as an artifact
+  and summarised in the job, which fails only on error-level alerts; setting the
+  `CODE_SCANNING_ENABLED` repository variable to `true` restores the upload.
 
 ### File share resources (Community)
 
@@ -289,6 +368,17 @@ a store in front of the environment.
   token exchange, the ITSM lookups and the HTTPS SIEM channels. SIGPIPE is now
   ignored at startup, turning the condition back into the `EPIPE` the call sites
   already handle. Found by end-to-end testing the TLS syslog channel.
+- **v1.0.56 shipped no EE tarball and no macOS agent installers.** cosign v3
+  (`cosign-installer` v4) requires a Sigstore bundle, so signing the EE tarball
+  failed: it is now signed into `endoriumfort-ee-<v>.tar.gz.bundle.json`, which
+  replaces the `.sig` and `.pem` files. Verify it with
+  `cosign verify-blob --bundle … endoriumfort-ee-<v>.tar.gz` (see
+  `docs/OPEN-CORE.md`). The macOS launcher used trailing commas in call
+  arguments, which the `macos-14` Xcode rejects, and the amd64 job waited for
+  the retired `macos-13` runner; it now builds on `macos-15-intel`.
+- The reference PostgreSQL StatefulSet (`deploy/k8s/postgresql.yaml`) now runs
+  with a read-only root filesystem (Trivy KSV-0014); the socket directory and
+  `/tmp` are `emptyDir` volumes, the data stays on its PVC.
 
 ### Internal
 

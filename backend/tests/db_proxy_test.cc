@@ -1,6 +1,7 @@
 // Unit tests for the database proxy's pure parts: PostgreSQL framing and
 // parsers (pg_wire.h), SCRAM-SHA-256 and MD5 (pg_auth.h), the relay state
 // machine (pg_relay.h) and the SQL guard analyzer (db_guard_sql.cc).
+#include "pro/db_dynamic_sql.h"
 #include "pro/db_guard.h"
 #include "pro/pg_auth.h"
 #include "pro/pg_relay.h"
@@ -363,6 +364,61 @@ void test_relay_unguarded() {
   expect(out.events.size() == 1 && !out.events[0].blocked && out.events[0].command == "DROP TABLE",
          "still journaled");
 }
+
+// ── db_dynamic (pure) ───────────────────────────────────────────────────────
+
+void test_dynamic_sql() {
+  using namespace db_dynamic;
+  expect(quote_ident("a\"b") == "\"a\"\"b\"", "identifier quoting");
+  expect(quote_literal("it's") == "'it''s'", "literal quoting");
+
+  expect(valid_role_name("app_rw"), "plain role name");
+  expect(!valid_role_name("App"), "upper case refused");
+  expect(!valid_role_name("pg_read_all_data"), "pg_ roles refused");
+  expect(!valid_role_name("ef_12345678"), "ef_ (the proxy's own) refused");
+  expect(!valid_role_name("1x") && !valid_role_name("") && !valid_role_name(std::string(64, 'a')),
+         "bad shapes refused");
+  std::vector<std::string> roles;
+  expect(parse_role_list(" app_rw, app_ro ,app_rw", roles) && roles.size() == 2 && roles[1] == "app_ro",
+         "role list trimmed and de-duplicated");
+  expect(!parse_role_list("app; DROP ROLE x", roles), "injection refused");
+  expect(parse_role_list("", roles) && roles.empty(), "empty list allowed");
+  expect(grant_sql({"app_rw", "app_ro"}, "ef_1") == "GRANT \"app_rw\", \"app_ro\" TO \"ef_1\"", "grant");
+
+  // The verifier must be what PostgreSQL would derive from the password:
+  // checked against the RFC 7677 exchange, whose signature and proof only
+  // match if StoredKey and ServerKey are right.
+  const auto salt = pg_auth::unbase64("W22ZaJ0SNY7soEsUEjb6gQ==");
+  const std::string verifier = scram_verifier("pencil", *salt, 4096);
+  expect(verifier.rfind("SCRAM-SHA-256$4096:W22ZaJ0SNY7soEsUEjb6gQ==$", 0) == 0, "verifier header");
+  const size_t dollar = verifier.rfind('$');
+  const size_t colon = verifier.find(':', dollar);
+  const auto stored_key = pg_auth::unbase64(verifier.substr(dollar + 1, colon - dollar - 1));
+  const auto server_key = pg_auth::unbase64(verifier.substr(colon + 1));
+  const std::string nonce = "rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0";
+  const std::string auth_message = "n=user,r=rOprNGfwEbeRWgbNEkqO,r=" + nonce +
+                                   ",s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096,c=biws,r=" + nonce;
+  expect(server_key && pg_auth::base64(pg_auth::hmac_sha256(*server_key, auth_message)) ==
+                           "6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl95G4=",
+         "ServerKey reproduces the RFC server signature");
+  const auto proof = pg_auth::unbase64("dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ=");
+  bool stored_ok = false;
+  if (stored_key && proof) {
+    const std::string signature = pg_auth::hmac_sha256(*stored_key, auth_message);
+    std::string client_key = *proof;
+    for (size_t i = 0; i < client_key.size(); ++i) client_key[i] = static_cast<char>(client_key[i] ^ signature[i]);
+    stored_ok = pg_auth::digest(EVP_sha256(), client_key) == *stored_key;
+  }
+  expect(stored_ok, "StoredKey accepts the RFC client proof");
+
+  const std::string create = create_role_sql("ef_ab12cd34", verifier, "2026-11-05T10:00:00Z");
+  expect(create.find("PASSWORD 'SCRAM-SHA-256$") != std::string::npos, "only the verifier is sent");
+  expect(create.find("pencil") == std::string::npos, "the clear password never appears");
+  expect(create.find("VALID UNTIL '2026-11-05T10:00:00Z'") != std::string::npos, "validity bound");
+  expect(create.find("NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS") != std::string::npos,
+         "no elevated attribute");
+  expect(terminate_backends_sql("ef_x").find("usename = 'ef_x'") != std::string::npos, "terminate");
+}
 }  // namespace
 
 int main() {
@@ -376,6 +432,7 @@ int main() {
   test_relay_extended();
   test_relay_blocked_parse();
   test_relay_abandon();
+  test_dynamic_sql();
   test_relay_unguarded();
   if (failures) {
     std::cerr << failures << " db proxy test(s) failed" << std::endl;

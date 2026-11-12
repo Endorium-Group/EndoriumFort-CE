@@ -17,7 +17,8 @@ permissions:
 
 jobs:
   detect:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.actor != 'dependabot[bot]' && vars.LINUX_RUNNER && fromJSON(vars.LINUX_RUNNER) || 'ubuntu-latest' }}
+    timeout-minutes: 30
     outputs:
       community: ${{ steps.check.outputs.community }}
     steps:
@@ -33,7 +34,8 @@ jobs:
   build-deb:
     needs: detect
     if: ${{ needs.detect.outputs.community == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.actor != 'dependabot[bot]' && vars.LINUX_RUNNER && fromJSON(vars.LINUX_RUNNER) || 'ubuntu-latest' }}
+    timeout-minutes: 30
     # trixie = OpenSSL 3.5 (matches the Docker base) + dpkg-dev + toolchain.
     container: debian:trixie-slim
     steps:
@@ -126,11 +128,12 @@ jobs:
   publish-pages:
     needs: [detect, build-deb]
     if: ${{ needs.detect.outputs.community == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.actor != 'dependabot[bot]' && vars.LINUX_RUNNER && fromJSON(vars.LINUX_RUNNER) || 'ubuntu-latest' }}
+    timeout-minutes: 30
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Deploy apt repo to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

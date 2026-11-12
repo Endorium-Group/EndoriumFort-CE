@@ -5,10 +5,10 @@ name: Security Scan (Trivy)
 # HIGH/CRITICAL. The weekly schedule catches newly-disclosed CVEs in code that
 # has not changed. Accepted findings live in .trivyignore (with justifications).
 
+# Minutes: no run on the push to master (it is the PR head already scanned);
+# a superseded PR run is cancelled.
 on:
   pull_request:
-  push:
-    branches: [master]
   schedule:
     - cron: '30 4 * * 1'   # Mondays 04:30 UTC
   workflow_dispatch:
@@ -16,10 +16,15 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: trivy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   misconfig:
     name: IaC / Dockerfile misconfig
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.actor != 'dependabot[bot]' && vars.LINUX_RUNNER && fromJSON(vars.LINUX_RUNNER) || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
       - name: Trivy config scan
@@ -33,7 +38,8 @@ jobs:
 
   dependencies:
     name: Shipped dependency CVEs
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.actor != 'dependabot[bot]' && vars.LINUX_RUNNER && fromJSON(vars.LINUX_RUNNER) || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
       - name: Trivy filesystem scan

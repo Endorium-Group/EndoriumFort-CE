@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import ConfirmButton from '../../ui/ConfirmButton.jsx';
 import { useI18n } from '../../i18n.jsx';
-import { configureK8sResource, createResource, deleteResource, fetchK8sResources, updateResource } from '../../api.js';
+import { configureK8sResource, createResource, deleteResource, fetchDbDynamic, fetchK8sResources, saveDbDynamic, updateResource } from '../../api.js';
 import { describeAccessOutcome, describeResourcePolicy, normalizeRiskLevel } from '../../accessPolicy.js';
 import { zoneOf } from '../MapPage.jsx';
 
@@ -27,6 +27,10 @@ const formFrom = (resource) => {
     port: String(resource?.port ?? 22),
     agentProtocol: resource?.agentProtocol || 'tcp',
     dbTlsMode: resource?.dbTlsMode || 'prefer',
+    dbDynamic: false,
+    dbDynamicLoaded: false,
+    dbGrantRoles: '',
+    dbTtlMinutes: '60',
     tunnelTicketRateLimitMaxAttempts: String(Math.max(0, Number(resource?.tunnelTicketRateLimitMaxAttempts) || 0)),
     credentialSource: resource?.credentialSource || 'vaulted',
     sshUsername: resource?.sshUsername || '',
@@ -80,6 +84,18 @@ function ResourceEditor({ resource, initialProtocol, zones, onSaved, onDeleted, 
           const cfg = (res.items || []).find((c) => c.resourceId === resource.id);
           if (cfg?.namespace) setForm((prev) => ({ ...prev, k8sNamespace: cfg.namespace }));
         })
+        .catch(() => {});
+    }
+    // Per-session database roles live in their own (Enterprise) settings.
+    if (resource && String(resource.protocol).toLowerCase() === 'postgres') {
+      fetchDbDynamic(resource.id)
+        .then((cfg) => setForm((prev) => ({
+          ...prev,
+          dbDynamic: !!cfg?.enabled,
+          dbDynamicLoaded: !!cfg?.enabled,
+          dbGrantRoles: cfg?.grantRoles || '',
+          dbTtlMinutes: String(Math.round((Number(cfg?.ttlSeconds) || 3600) / 60))
+        })))
         .catch(() => {});
     }
   }, [resource?.id]);
@@ -147,6 +163,18 @@ function ResourceEditor({ resource, initialProtocol, zones, onSaved, onDeleted, 
           await configureK8sResource(saved.id, { namespace: (form.k8sNamespace || 'default').trim(), kubeconfig: form.k8sKubeconfig || '' });
         } catch (err) {
           setError(err.message || t('resAdmin.k8sError'));
+        }
+      }
+      if (form.protocol === 'postgres' && saved?.id && (form.dbDynamic || form.dbDynamicLoaded)) {
+        try {
+          await saveDbDynamic(saved.id, {
+            enabled: !!form.dbDynamic,
+            grantRoles: form.dbGrantRoles.trim(),
+            ttlSeconds: Math.max(5, Number.parseInt(form.dbTtlMinutes, 10) || 60) * 60
+          });
+        } catch (err) {
+          setError(err.message || t('resAdmin.dbDynamicError'));
+          return;
         }
       }
       onSaved(saved, isNew);
@@ -302,6 +330,20 @@ function ResourceEditor({ resource, initialProtocol, zones, onSaved, onDeleted, 
                 <Field id="r-dpass" label={t('resAdmin.secret')} hint={!isNew && resource?.hasCredentials ? t('resAdmin.keepSecret') : null}>
                   <input id="r-dpass" className="ef-input" type="password" value={form.sshPassword} onChange={set('sshPassword')} autoComplete="new-password" placeholder={!isNew && resource?.hasCredentials ? '••••••••' : ''} />
                 </Field>
+                <div className="ef-rchecks is-full">
+                  <label className="ef-check"><input type="checkbox" checked={form.dbDynamic} onChange={set('dbDynamic')} />{t('resAdmin.dbDynamic')}</label>
+                  <span className="ef-hint">{t('resAdmin.dbDynamicHint')}</span>
+                </div>
+                {form.dbDynamic && (
+                  <>
+                    <Field id="r-dgrants" label={t('resAdmin.dbGrantRoles')} hint={t('resAdmin.dbGrantRolesHint')}>
+                      <input id="r-dgrants" className="ef-input ef-mono" value={form.dbGrantRoles} onChange={set('dbGrantRoles')} placeholder="app_rw, app_ro" autoComplete="off" />
+                    </Field>
+                    <Field id="r-dttl" label={t('resAdmin.dbTtl')} hint={t('resAdmin.dbTtlHint')}>
+                      <input id="r-dttl" className="ef-input ef-mono" type="number" min="5" max="10080" value={form.dbTtlMinutes} onChange={set('dbTtlMinutes')} />
+                    </Field>
+                  </>
+                )}
               </>
             )}
             {isWebProtocol(protocol) && (

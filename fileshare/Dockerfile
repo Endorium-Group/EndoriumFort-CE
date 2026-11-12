@@ -6,7 +6,7 @@
 # Build: docker build -t endoriumfort-files fileshare/
 
 # Cross-compiled on the build host: multi-arch images need no emulation.
-FROM --platform=$BUILDPLATFORM golang:1.25-trixie AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-trixie AS build
 ARG TARGETOS=linux
 ARG TARGETARCH
 WORKDIR /src

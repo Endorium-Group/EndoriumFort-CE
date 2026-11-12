@@ -1,6 +1,6 @@
 {
   "name": "endoriumfort-frontend",
-  "version": "1.0.57",
+  "version": "1.0.61",
   "private": true,
   "type": "module",
   "scripts": {
@@ -17,13 +17,13 @@
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "qrcode": "^1.5.4",
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4"
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
-    "@playwright/test": "^1.63.0",
-    "@vitejs/plugin-react": "^6.0.1",
-    "ssh2": "^1.16.0",
-    "vite": "^8.0.3"
+    "@playwright/test": "^1.64.1",
+    "@vitejs/plugin-react": "^6.1.2",
+    "ssh2": "^1.17.0",
+    "vite": "^8.3.5"
   }
 }

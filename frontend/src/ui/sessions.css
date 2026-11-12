@@ -150,3 +150,16 @@
 .ef-ev li:last-child .ef-ev__rail::before { display: none; }
 .ef-ev__rail .ef-dot { position: relative; margin-top: 4px; }
 .ef-ev__type { overflow-wrap: anywhere; }
+
+/* ---- Database proxy: the queries of a session ---- */
+.ef-dblog { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.ef-dblog__stats { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12.5px; }
+.ef-dblog__bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.ef-dblog__bar .ef-input { width: auto; }
+.ef-dblog__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; max-height: 60vh; }
+.ef-dblog__q { border: 1px solid var(--ef-line); border-radius: 8px; padding: 8px 10px; background: var(--ef-panel); }
+.ef-dblog__q.is-on { box-shadow: inset 3px 0 0 var(--ef-accent); background: var(--ef-accent-bg); }
+.ef-dblog__head { all: unset; cursor: pointer; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12.5px; width: 100%; }
+.ef-dblog__sql { margin: 6px 0 0; white-space: pre-wrap; word-break: break-word; font-size: 12.5px; max-height: 4.2em; overflow: hidden; }
+.ef-dblog__q.is-open .ef-dblog__sql { max-height: none; }
+.ef-dblog__note { margin: 4px 0 0; font-size: 12px; color: var(--ef-danger); }

@@ -10,6 +10,12 @@ Documentation hub for deployment, operations, and release notes.
 - Main project documentation: [README](../README.md)
 - Editions and gating: [Open-core architecture](./OPEN-CORE.md)
 
+## Before you install: sizing
+
+How many vCPU, how much RAM, disk and bandwidth for your concurrent sessions,
+targets and recordings: the [sizing guide](https://endorium.space/docs/#/dimensionnement)
+and the [sizing calculator](https://endorium.space/#sizing) on the EndoriumFort site.
+
 ## Operate
 
 - Admin console and operator walkthrough: [Admin Console Guide](./admin-console.md)

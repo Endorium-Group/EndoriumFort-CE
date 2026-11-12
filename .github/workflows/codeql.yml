@@ -1,12 +1,15 @@
 name: CodeQL
 
+# Minutes: on a pull request only the languages whose code changed are
+# analysed (c-cpp, the costliest, only when backend/ changed); the weekly run
+# and a manual run analyse everything. No run on the push to master: it is the
+# PR head that was just analysed.
 on:
-  push:
-    branches: [master]
   pull_request:
     branches: [master]
   schedule:
     - cron: '30 3 * * 1'
+  workflow_dispatch:
 
 concurrency:
   group: codeql-${{ github.workflow }}-${{ github.ref }}
@@ -20,11 +23,17 @@ permissions:
 jobs:
   detect:
     name: Detect languages
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.actor != 'dependabot[bot]' && vars.LINUX_RUNNER && fromJSON(vars.LINUX_RUNNER) || 'ubuntu-latest' }}
+    timeout-minutes: 45
     outputs:
       matrix: ${{ steps.set.outputs.matrix }}
+      any: ${{ steps.set.outputs.any }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: areas
+        run: bash .github/scripts/changed-areas.sh "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
       - id: set
         # The Go agent ships only with the Enterprise edition. Include the go
         # language in the analysis matrix only when agent/ is present, so the
@@ -33,16 +42,20 @@ jobs:
           CPP='{"name":"c-cpp","language":"c-cpp","key":"cpp"}'
           JS='{"name":"javascript-typescript","language":"javascript-typescript","key":"javascript"}'
           GO='{"name":"go","language":"go","key":"go"}'
-          if [ -d agent ]; then
-            echo "matrix={\"include\":[$CPP,$JS,$GO]}" >> "$GITHUB_OUTPUT"
-          else
-            echo "matrix={\"include\":[$CPP,$JS]}" >> "$GITHUB_OUTPUT"
-          fi
+          langs=()
+          [ "${{ steps.areas.outputs.backend }}" = "true" ] && langs+=("$CPP")
+          [ "${{ steps.areas.outputs.frontend }}" = "true" ] && langs+=("$JS")
+          [ -d agent ] && [ "${{ steps.areas.outputs.agent }}" = "true" ] && langs+=("$GO")
+          joined="$(IFS=,; echo "${langs[*]:-}")"
+          echo "matrix={\"include\":[${joined}]}" >> "$GITHUB_OUTPUT"
+          echo "any=$([ ${#langs[@]} -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
   analyze:
     name: Analyze (${{ matrix.name }})
     needs: detect
-    runs-on: ubuntu-latest
+    if: ${{ needs.detect.outputs.any == 'true' }}
+    runs-on: ${{ github.actor != 'dependabot[bot]' && vars.LINUX_RUNNER && fromJSON(vars.LINUX_RUNNER) || 'ubuntu-latest' }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.detect.outputs.matrix) }}
@@ -55,6 +68,7 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: "1.26.10"
+          cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: agent/go.sum
 
       - name: Initialize CodeQL
@@ -80,7 +94,7 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 20
-          cache: npm
+          cache: ${{ runner.environment == 'github-hosted' && 'npm' || '' }}
           cache-dependency-path: frontend/package-lock.json
 
       - name: Build frontend (javascript)
@@ -97,7 +111,45 @@ jobs:
           go test ./...
           go build ./...
 
+      # Uploading to code scanning needs GitHub Code Security on a private
+      # repository. Until the repository variable CODE_SCANNING_ENABLED is set
+      # to "true", keep the SARIF local, publish it as an artifact and gate on
+      # it below instead of failing on the upload.
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
         with:
           category: "/endoriumfort-codeql/${{ github.workflow }}/${{ matrix.key }}"
+          upload: ${{ vars.CODE_SCANNING_ENABLED == 'true' && 'always' || 'never' }}
+          output: codeql-results
+
+      - name: Upload SARIF
+        if: always() && vars.CODE_SCANNING_ENABLED != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: codeql-sarif-${{ matrix.key }}
+          path: codeql-results
+          if-no-files-found: ignore
+
+      - name: Fail on error-level alerts
+        if: vars.CODE_SCANNING_ENABLED != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Each rule's default level lives in the driver; a result only carries
+          # "level" when it overrides it.
+          jq -r '.runs[] | (.tool.driver.rules // [] | map({key: .id, value: (.defaultConfiguration.level // "warning")}) | from_entries) as $lvl
+                 | .results[]? | [(.level // $lvl[.ruleId] // "warning"), .ruleId, (.locations[0].physicalLocation.artifactLocation.uri // "?") + ":" + ((.locations[0].physicalLocation.region.startLine // 0) | tostring), .message.text]
+                 | @tsv' codeql-results/*.sarif > findings.tsv
+          {
+            echo "### CodeQL (${{ matrix.name }})"
+            echo
+            echo "| Level | Rule | Location | Message |"
+            echo "|---|---|---|---|"
+            awk -F'\t' '{gsub(/\|/, "\\|", $4); printf "| %s | %s | %s | %s |\n", $1, $2, $3, substr($4, 1, 200)}' findings.tsv
+          } >> "$GITHUB_STEP_SUMMARY"
+          errors=$(awk -F'\t' '$1 == "error"' findings.tsv | wc -l)
+          echo "$(wc -l < findings.tsv) finding(s), ${errors} at error level."
+          if [ "$errors" -gt 0 ]; then
+            awk -F'\t' '$1 == "error" {printf "::error::%s %s: %s\n", $3, $2, $4}' findings.tsv
+            exit 1
+          fi

@@ -70,7 +70,7 @@ RUN if [ "$EDITION" = "community" ]; then PRO_FLAG=OFF; else PRO_FLAG=ON; fi \
 # ═══════════════════════════════════════════════════════════════════════════
 #  Stage 2 — Build frontend (React + Vite)
 # ═══════════════════════════════════════════════════════════════════════════
-FROM node:22-slim AS frontend-build
+FROM node:26-slim AS frontend-build
 
 # Same edition switch as the backend: community forces the @pro stub (premium UI
 # absent), enterprise bundles the real src/pro/ overlay via the @pro alias.

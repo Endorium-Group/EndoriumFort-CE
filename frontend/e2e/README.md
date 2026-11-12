@@ -15,6 +15,8 @@ point to, so SSH sessions are real without any real host.
 | `appearance` (Pro) | tab title and pre-sign-in message reach the login page |
 | `getting-started` | the map's guide shows only what is left; operators never see it |
 | `session-expiry` | a banner warns before the sign-in token ends; signing in again (before or after) comes back to the same page; server errors show in French |
+| `db-queries` | a PostgreSQL session's SQL: listed oldest first, filtered, searched and replayed (the session and its journal are served by the test) |
+| `recording-search` | Evidence: a recording search shows the highlighted hit and opens the replay at that moment (license, session, recording and search served by the test) |
 | `confirm-dialog` | sensitive actions confirm in a dialog: a double click or Enter never confirms, Escape cancels, a server error stays in the dialog, deleting a resource asks to type its name |
 
 ## Running

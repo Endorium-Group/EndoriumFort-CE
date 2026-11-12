@@ -178,6 +178,7 @@ owner as actor.
 | `GET`  | `/api/reports/export` | The same report as a CSV download |
 | `GET`  | `/api/recordings` | List session recordings |
 | `GET`  | `/api/recordings/:id/cast` | Download .cast file |
+| `GET`  | `/api/recordings/search` | Full-text search in terminal recordings (Enterprise, `recordings.search`; needs `recordings.read`). `q` (searched as a phrase, case and accents ignored), optional `from`/`to` (dates on the recording start), `user` (session operator), `resourceId`. Answers recordings, newest first, each with `hits[]` = `{offset, snippet}` (seconds from the recording start; the match between `\u0002` and `\u0003`). Journaled as `recording.search` |
 | `GET`  | `/api/vnc/capabilities` | VNC browser capability and runtime metadata |
 | `GET`  | `/api/cluster/status` | Cluster/HA status snapshot (local node + peers + health summary) |
 | `GET`  | `/api/cluster/config` | Cluster/HA runtime configuration metadata |

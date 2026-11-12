@@ -87,6 +87,12 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+            # The root filesystem is read-only: the unix socket and lock file
+            # live in /var/run/postgresql, and initdb/the entrypoint use /tmp.
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
           readinessProbe:
             # -h 127.0.0.1 probes the TCP listener, not the unix socket. During
             # initdb the entrypoint runs a temporary server on the socket only,
@@ -112,9 +118,14 @@ spec:
               memory: 1Gi
           securityContext:
             allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+      volumes:
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
   volumeClaimTemplates:
     - metadata:
         name: data

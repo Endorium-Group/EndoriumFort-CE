@@ -8,6 +8,7 @@
 // ENDORIUMFORT_PG_BIN overrides the directory holding initdb / pg_ctl.
 
 #include "app_context.h"
+#include "pro/db_dynamic.h"
 #include "pro/db_guard.h"
 #include "pro/db_proxy.h"
 
@@ -19,6 +20,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <csignal>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -205,6 +207,9 @@ bool audited(AppContext &ctx, const std::string &type, const std::string &needle
 }  // namespace
 
 int main() {
+  // As the backend does (main.cc): SSL_write goes through write(2), so a peer
+  // that hangs up would otherwise kill the process with SIGPIPE.
+  std::signal(SIGPIPE, SIG_IGN);
   const std::string bin = find_pg_bin();
   const std::string ip = routable_local_ipv4();
   if (bin.empty() || geteuid() == 0 || ip.empty() || run("command -v psql").status != 0) {
@@ -229,7 +234,7 @@ int main() {
                        data + "/server.key -out " + data + "/server.crt -days 1 -subj /CN=pg.test >/dev/null 2>&1 && chmod 600 " +
                        data + "/server.key").status == 0;
   ok = ok && run(bin + "/pg_ctl -D " + data + " -w -l " + dir + "/log -o \"-c listen_addresses=" + ip +
-                 " -p " + std::to_string(pg_port) + " -k " + dir + (tls ? " -c ssl=on" : "") +
+                 " -p " + std::to_string(pg_port) + " -k " + dir + (tls ? " -c ssl=on" : "") + " -c log_statement=all" +
                  "\" start >/dev/null").status == 0;
   if (!expect(ok, "throw-away PostgreSQL started")) {
     std::cerr << run("cat " + dir + "/log").output;
@@ -240,6 +245,9 @@ int main() {
   run(admin + "-d postgres -c 'CREATE DATABASE app'");
   run(admin + "-d app -c 'CREATE TABLE items (id int PRIMARY KEY, name text); "
               "INSERT INTO items VALUES (1, $$one$$), (2, $$two$$)'");
+  // The role a dynamic session role inherits from.
+  run(admin + "-d app -c 'CREATE ROLE app_rw NOLOGIN; GRANT SELECT, INSERT ON items TO app_rw; "
+              "GRANT CREATE ON SCHEMA public TO app_rw'");
 
   {
     AppContext ctx;
@@ -359,6 +367,103 @@ int main() {
               << (tls ? ", TLS to the server" : ", no TLS") << std::endl;
     if (std::getenv("ENDORIUMFORT_E2E_VERBOSE"))
       for (const auto &e : audit_of(ctx, "db.query")) std::cout << "  " << e.payloadJson << std::endl;
+
+    // ── Dynamic per-session roles ──
+    bridge.set_target(target);
+    Resource resource;
+    resource.id = 3;
+    resource.name = "pg-test";
+    resource.protocol = "postgres";
+    resource.target = ip;
+    resource.port = pg_port;
+    resource.sshUsername = "postgres";  // the management account
+    resource.sshPassword = password;
+    resource.dbTlsMode = target.tlsMode;
+    ctx.resources[3] = resource;
+    db_dynamic::init(ctx);
+    std::string error;
+    expect(!db_dynamic::save(ctx, 3, {true, "app_rw; DROP ROLE x", 3600}, error), "bad grant list refused");
+    expect(db_dynamic::save(ctx, 3, {true, "app_rw", 3600}, error), "dynamic config saved: " + error);
+    Session dynamic_session;
+    dynamic_session.id = 9;
+    dynamic_session.status = "active";
+    dynamic_session.protocol = "postgres";
+    ctx.sessions[9] = dynamic_session;
+    auto dyn_identity = identity;
+    dyn_identity.sessionId = 9;
+    dyn_identity.dynamicRole = true;
+    {
+      Bridge dyn(ctx, target, dyn_identity);
+      const std::string dclient = "env -u PGPASSWORD psql -X -A -t \"host=127.0.0.1 port=" +
+                                  std::to_string(dyn.port) + " user=nobody dbname=app connect_timeout=5\" ";
+      auto who = run(dclient + "-c 'SELECT current_user'");
+      const std::string role = who.output.substr(0, who.output.find('\n'));
+      expect(who.status == 0 && role.rfind("ef_", 0) == 0, "connected as a session role: " + who.output);
+      auto again = run(dclient + "-c 'SELECT current_user'");
+      expect(again.output.substr(0, again.output.find('\n')) == role, "same role for the whole session");
+      r = run(dclient + "-c 'SELECT count(*) FROM items' -c 'CREATE TABLE made_in_session (x int)'");
+      expect(r.status == 0 && contains(r.output, "2"), "granted privileges inherited: " + r.output);
+      r = run(dclient + "-c 'DELETE FROM items WHERE id = 1'");
+      expect(r.status != 0 && contains(r.output, "permission denied"), "nothing beyond the grants");
+      auto attrs = run(admin + "-d app -A -t -c \"SELECT rolsuper, rolcreaterole, rolvaliduntil IS NOT NULL "
+                               "FROM pg_roles WHERE rolname = '" + role + "'\"");
+      expect(contains(attrs.output, "f|f|t"), "no superuser, no createrole, bounded validity: " + attrs.output);
+      expect(audited(ctx, "db.role.created", "\"role\":\"" + role + "\""), "role creation journaled");
+      expect(audited(ctx, "db.query", "\"dbUser\":\"" + role + "\""), "queries carry the session role");
+
+      // The session ends: role gone, what it made kept and handed over.
+      db_dynamic::release_session(ctx, 9);
+      auto left = run(admin + "-d app -A -t -c \"SELECT count(*) FROM pg_roles WHERE rolname LIKE 'ef\\_%'\"");
+      expect(contains(left.output, "0"), "no session role left: " + left.output);
+      auto owner = run(admin + "-d app -A -t -c \"SELECT tableowner FROM pg_tables WHERE tablename = 'made_in_session'\"");
+      expect(contains(owner.output, "postgres"), "objects reassigned to the management account: " + owner.output);
+      expect(audited(ctx, "db.role.dropped", "\"result\":\"ok\""), "role removal journaled");
+      r = run(dclient + "-c 'SELECT 1'");
+      expect(r.status == 0, "a new connection in a new session works");  // session 9 is still active here
+    }
+    // The server never logged a usable password: CREATE ROLE only carries the verifier.
+    auto log = run("grep -h 'CREATE ROLE' " + data + "/log/* " + dir + "/log 2>/dev/null");
+    expect(contains(log.output, "PASSWORD 'SCRAM-SHA-256$"), "statement logged with the verifier only");
+    bool clear_password = false;
+    for (size_t at = log.output.find("PASSWORD '"); at != std::string::npos;
+         at = log.output.find("PASSWORD '", at + 1))
+      if (log.output.compare(at + 10, 14, "SCRAM-SHA-256$") != 0) clear_password = true;
+    expect(!clear_password, "no clear password in the server log");
+    // The documented least-privilege management account, not a superuser.
+    run(admin + "-d app -c \"CREATE ROLE pam_manager LOGIN CREATEROLE PASSWORD 'Mgr-pw-123'\" "
+                "-c 'GRANT app_rw TO pam_manager WITH ADMIN OPTION' "
+                "-c \"ALTER ROLE pam_manager SET createrole_self_grant = 'set, inherit'\"");
+    ctx.resources[3].sshUsername = "pam_manager";
+    ctx.resources[3].sshPassword = "Mgr-pw-123";
+    Session limited_session;
+    limited_session.id = 11;
+    limited_session.status = "active";
+    ctx.sessions[11] = limited_session;
+    {
+      auto mgr_target = target;
+      mgr_target.user = "pam_manager";
+      mgr_target.password = "Mgr-pw-123";
+      auto mgr_identity = dyn_identity;
+      mgr_identity.sessionId = 11;
+      Bridge limited(ctx, mgr_target, mgr_identity);
+      const std::string lclient = "env -u PGPASSWORD psql -X -A -t \"host=127.0.0.1 port=" +
+                                  std::to_string(limited.port) + " user=nobody dbname=app connect_timeout=5\" ";
+      r = run(lclient + "-c 'SELECT current_user' -c 'CREATE TABLE made_by_limited (x int)'");
+      expect(r.status == 0 && contains(r.output, "ef_"), "non-superuser manager creates the role: " + r.output);
+      const size_t dropped_before = audit_of(ctx, "db.role.dropped").size();
+      db_dynamic::release_session(ctx, 11);
+      bool ok_drop = false;
+      auto drops = audit_of(ctx, "db.role.dropped");
+      for (size_t i = dropped_before; i < drops.size(); ++i)
+        ok_drop = ok_drop || contains(drops[i].payloadJson, "\"result\":\"ok\"");
+      expect(ok_drop, "non-superuser manager drops it: " + (drops.empty() ? "" : drops.back().payloadJson));
+      auto owner = run(admin + "-d app -A -t -c \"SELECT tableowner FROM pg_tables WHERE tablename = 'made_by_limited'\"");
+      expect(contains(owner.output, "pam_manager"), "objects reassigned to the manager: " + owner.output);
+    }
+
+    std::cout << "dynamic roles: " << audit_of(ctx, "db.role.created").size() << " created, "
+              << audit_of(ctx, "db.role.dropped").size() << " dropped" << std::endl;
+    db_dynamic::release_session(ctx, 9);
   }
 
   run(bin + "/pg_ctl -D " + data + " -m immediate stop >/dev/null");

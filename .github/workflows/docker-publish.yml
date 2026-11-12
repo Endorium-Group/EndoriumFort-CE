@@ -35,7 +35,8 @@ jobs:
   # the private repo does (Enterprise). hashFiles() is only valid in a step, so
   # we expose the result as a job output consumed via the `needs` context.
   detect:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.actor != 'dependabot[bot]' && vars.LINUX_RUNNER && fromJSON(vars.LINUX_RUNNER) || 'ubuntu-latest' }}
+    timeout-minutes: 60
     outputs:
       community: ${{ steps.check.outputs.community }}
     steps:
@@ -59,7 +60,8 @@ jobs:
     #  - public CE repo (no pro/)     → premium-free Community image at
     #    :<ver>-ce / :community for source purists.
     # Edition + tags are auto-selected in the meta step.
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.actor != 'dependabot[bot]' && vars.LINUX_RUNNER && fromJSON(vars.LINUX_RUNNER) || 'ubuntu-latest' }}
+    timeout-minutes: 60
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -68,7 +70,10 @@ jobs:
       # Framework and the image bundles its runtime, so reclaim the runner disk the
       # hosted image wastes on toolchains we don't use (otherwise the build can hit
       # "no space left on device").
+      # Hosted runners only: on a self-hosted one this would delete the host's
+      # Docker images.
       - name: Free disk space
+        if: runner.environment == 'github-hosted'
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
                       /usr/local/.ghcup /opt/hostedtoolcache/CodeQL || true
@@ -202,7 +207,7 @@ jobs:
             RBI_CEF_IMAGE=${{ steps.rbi.outputs.image }}
           tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: ${{ runner.environment == 'github-hosted' && 'type=gha,mode=max' || '' }}
           labels: |
             org.opencontainers.image.title=EndoriumFort
             org.opencontainers.image.description=Privileged Access Management (PAM) Bastion (${{ steps.meta.outputs.edition }}; premium license-gated)
@@ -211,7 +216,7 @@ jobs:
             org.opencontainers.image.vendor=Endorium-Group
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@v4.1.0
+        uses: sigstore/cosign-installer@v4.1.2
 
       - name: Sign published container images (keyless)
         env:
@@ -268,13 +273,13 @@ jobs:
         run: |
           verify_signature() {
             local image_ref="$1"
-            for i in {1..8}; do
+            for i in {1..12}; do  # back off, ~5 min: registries can be slow to serve it
               if cosign verify --certificate-identity-regexp ".*" \
                 --certificate-oidc-issuer-regexp ".*" \
                 "$image_ref" >/dev/null; then
                 return 0
               fi
-              sleep 5
+              sleep $(( i * 5 < 30 ? i * 5 : 30 ))
             done
             return 1
           }
@@ -291,7 +296,7 @@ jobs:
         run: |
           verify_attestation() {
             local image_ref="$1"
-            for i in {1..8}; do
+            for i in {1..12}; do  # back off, ~5 min: registries can be slow to serve it
               if cosign verify-attestation --certificate-identity-regexp ".*" \
                 --certificate-oidc-issuer-regexp ".*" \
                 --type slsaprovenance \
@@ -304,7 +309,7 @@ jobs:
                 "$image_ref" >/dev/null; then
                 return 0
               fi
-              sleep 5
+              sleep $(( i * 5 < 30 ? i * 5 : 30 ))
             done
             return 1
           }
@@ -322,7 +327,8 @@ jobs:
   # CE repo) so one DOCKER_TAG selects matching images in the compose files.
   build-files:
     needs: detect
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.actor != 'dependabot[bot]' && vars.LINUX_RUNNER && fromJSON(vars.LINUX_RUNNER) || 'ubuntu-latest' }}
+    timeout-minutes: 60
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -389,7 +395,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha,scope=files
-          cache-to: type=gha,mode=max,scope=files
+          cache-to: ${{ runner.environment == 'github-hosted' && 'type=gha,mode=max,scope=files' || '' }}
           labels: |
             org.opencontainers.image.title=EndoriumFort file share service
             org.opencontainers.image.description=Isolated drive service for EndoriumFort fileshare resources
@@ -398,7 +404,7 @@ jobs:
             org.opencontainers.image.vendor=Endorium-Group
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@v4.1.0
+        uses: sigstore/cosign-installer@v4.1.2
 
       - name: Sign and verify (keyless)
         env:
@@ -410,12 +416,14 @@ jobs:
           for ref in "${refs[@]}"; do
             cosign sign --yes "$ref"
             ok=false
-            for i in {1..8}; do
+            # Docker Hub can take minutes to serve a fresh signature (v1.0.58
+            # needed a retry, v1.0.59 ran out after 40 s): back off, ~5 min.
+            for i in {1..12}; do
               if cosign verify --certificate-identity-regexp ".*" \
                 --certificate-oidc-issuer-regexp ".*" "$ref" >/dev/null; then
                 ok=true; break
               fi
-              sleep 5
+              sleep $(( i * 5 < 30 ? i * 5 : 30 ))
             done
             $ok || { echo "signature verification failed for $ref" >&2; exit 1; }
           done

@@ -171,9 +171,11 @@ if (ENDORIUMFORT_PRO)
     src/pro/rbi_transfer.cc
     src/pro/push.cc
     src/pro/db_proxy.cc
+    src/pro/db_dynamic.cc
     src/pro/db_guard.cc
     src/pro/db_guard_sql.cc
     src/pro/db_guard_routes.cc
+    src/pro/recording_search.cc
   )
   target_compile_definitions(endoriumfort_backend PRIVATE ENDORIUMFORT_PRO)
   # forkpty(3) for the Kubernetes exec PTY bridge (Linux: libutil).
@@ -646,6 +648,7 @@ if (BUILD_TESTING)
     src/license.cc
     src/pro/tunnel.cc
     src/pro/db_proxy.cc   # tunnel.cc hands "postgres" resources to the proxy
+    src/pro/db_dynamic.cc
     src/pro/db_guard.cc
     src/pro/db_guard_sql.cc
   )
@@ -678,6 +681,29 @@ if (BUILD_TESTING)
     PRIVATE OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
   add_test(NAME backend_db_proxy_test COMMAND endoriumfort_backend_db_proxy_tests)
 
+  # Recording search: text extraction (pure) and the index on SQLite FTS5.
+  add_executable(endoriumfort_backend_recording_search_tests
+    tests/recording_search_test.cc
+    src/app_context.cc
+    src/http_proxy.cc
+    src/scim_query.cc
+    src/route_common.cc
+    src/settings.cc
+    src/iam_common.cc
+    src/license.cc
+    src/pro/recording_search.cc
+  )
+  target_include_directories(endoriumfort_backend_recording_search_tests
+    PRIVATE
+      ${crow_SOURCE_DIR}/include
+      ${asio_SOURCE_DIR}/asio/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_definitions(endoriumfort_backend_recording_search_tests PRIVATE ASIO_STANDALONE)
+  target_link_libraries(endoriumfort_backend_recording_search_tests
+    PRIVATE endoriumfort_db OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
+  add_test(NAME backend_recording_search_test COMMAND endoriumfort_backend_recording_search_tests)
+
   add_executable(endoriumfort_backend_db_proxy_e2e_tests
     tests/db_proxy_e2e_test.cc
     src/app_context.cc
@@ -688,6 +714,7 @@ if (BUILD_TESTING)
     src/iam_common.cc
     src/license.cc
     src/pro/db_proxy.cc
+    src/pro/db_dynamic.cc
     src/pro/db_guard.cc
     src/pro/db_guard_sql.cc
   )

@@ -1,35 +1,58 @@
 name: CI
 
+# Minutes: runs on pull requests only (the merge to master is the PR's own
+# head, already tested), cancels a superseded run, and each job runs only when
+# its part of the tree changed. On PRs into master the backend, frontend and
+# Linux agent jobs are covered by the Release Gate and report "skipped" (which
+# satisfies the required checks); macOS and Windows agent tests (billed x10 and
+# x2) run only when agent/ changed.
 on:
   pull_request:
-  push:
-    branches:
-      - master
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   detect:
     name: Detect edition
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.actor != 'dependabot[bot]' && vars.LINUX_RUNNER && fromJSON(vars.LINUX_RUNNER) || 'ubuntu-latest' }}
+    timeout-minutes: 30
     outputs:
       has_agent: ${{ steps.check.outputs.has_agent }}
+      gated: ${{ steps.check.outputs.gated }}
+      backend: ${{ steps.changes.outputs.backend }}
+      frontend: ${{ steps.changes.outputs.frontend }}
+      agent: ${{ steps.changes.outputs.agent }}
+      fileshare: ${{ steps.changes.outputs.fileshare }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - id: check
         # The Go agent ships only with the Enterprise edition. The public
         # Community core has no agent/ directory, so skip the agent job there.
+        # "gated": a PR into master, whose Release Gate runs the same builds.
         run: |
           if [ -d agent ]; then
             echo "has_agent=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_agent=false" >> "$GITHUB_OUTPUT"
           fi
+          echo "gated=${{ github.event_name == 'pull_request' && github.base_ref == 'master' }}" >> "$GITHUB_OUTPUT"
+      - id: changes
+        run: bash .github/scripts/changed-areas.sh "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
 
   backend-build:
     name: Backend Build
-    runs-on: ubuntu-latest
+    needs: detect
+    if: ${{ !cancelled() && (needs.detect.result != 'success' || (needs.detect.outputs.gated != 'true' && needs.detect.outputs.backend == 'true')) }}
+    runs-on: ${{ github.actor != 'dependabot[bot]' && vars.LINUX_RUNNER && fromJSON(vars.LINUX_RUNNER) || 'ubuntu-latest' }}
+    timeout-minutes: 30
     # trixie = OpenSSL 3.5 (matches the Docker base and the .deb build). The
     # license tests generate ML-DSA-65 keypairs, which need OpenSSL >= 3.5;
     # ubuntu-latest still ships OpenSSL 3.0, so run this job in a trixie container.
@@ -59,7 +82,10 @@ jobs:
 
   frontend-build:
     name: Frontend Build
-    runs-on: ubuntu-latest
+    needs: detect
+    if: ${{ !cancelled() && (needs.detect.result != 'success' || (needs.detect.outputs.gated != 'true' && needs.detect.outputs.frontend == 'true')) }}
+    runs-on: ${{ github.actor != 'dependabot[bot]' && vars.LINUX_RUNNER && fromJSON(vars.LINUX_RUNNER) || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -68,7 +94,7 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 20
-          cache: npm
+          cache: ${{ runner.environment == 'github-hosted' && 'npm' || '' }}
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install frontend dependencies
@@ -87,17 +113,15 @@ jobs:
         working-directory: frontend
         run: npm run test:e2e -- --list
 
-  agent-build-test:
-    name: Agent Build & Test (${{ matrix.os }})
-    # The Go agent ships only with the Enterprise edition; the public Community
-    # core has no agent/ directory, so skip this job there.
+  # Three jobs rather than a matrix: a matrix job skipped by `if` reports one
+  # check with an unexpanded name, which never satisfies the required
+  # "Agent Build & Test (<os>)" checks.
+  agent-build-test-ubuntu:
+    name: Agent Build & Test (ubuntu-latest)
     needs: detect
-    if: ${{ needs.detect.outputs.has_agent == 'true' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    if: ${{ !cancelled() && (needs.detect.result != 'success' || (needs.detect.outputs.has_agent == 'true' && needs.detect.outputs.gated != 'true' && needs.detect.outputs.agent == 'true')) }}
+    runs-on: ${{ github.actor != 'dependabot[bot]' && vars.LINUX_RUNNER && fromJSON(vars.LINUX_RUNNER) || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -106,6 +130,57 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: "1.26.10"
+          cache: ${{ runner.environment == 'github-hosted' }}
+          cache-dependency-path: agent/go.sum
+
+      - name: Run agent tests
+        working-directory: agent
+        run: go test ./...
+
+      - name: Build agent
+        working-directory: agent
+        run: go build ./...
+
+  agent-build-test-macos:
+    name: Agent Build & Test (macos-latest)
+    needs: detect
+    if: ${{ !cancelled() && (needs.detect.result != 'success' || (needs.detect.outputs.has_agent == 'true' && needs.detect.outputs.agent == 'true')) }}
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.10"
+          cache: ${{ runner.environment == 'github-hosted' }}
+          cache-dependency-path: agent/go.sum
+
+      - name: Run agent tests
+        working-directory: agent
+        run: go test ./...
+
+      - name: Build agent
+        working-directory: agent
+        run: go build ./...
+
+  agent-build-test-windows:
+    name: Agent Build & Test (windows-latest)
+    needs: detect
+    if: ${{ !cancelled() && (needs.detect.result != 'success' || (needs.detect.outputs.has_agent == 'true' && needs.detect.outputs.agent == 'true')) }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.10"
+          cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: agent/go.sum
 
       - name: Run agent tests
@@ -119,7 +194,10 @@ jobs:
   fileshare-build-test:
     name: File share service Build & Test
     # Core (Community) component: runs in both editions.
-    runs-on: ubuntu-latest
+    needs: detect
+    if: ${{ !cancelled() && (needs.detect.result != 'success' || (needs.detect.outputs.fileshare == 'true')) }}
+    runs-on: ${{ github.actor != 'dependabot[bot]' && vars.LINUX_RUNNER && fromJSON(vars.LINUX_RUNNER) || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6

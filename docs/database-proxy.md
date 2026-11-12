@@ -53,6 +53,49 @@ SCRAM-SHA-256 (the server's signature is verified, so an impostor server is
 detected), MD5 and cleartext. SCRAM with channel binding only
 (`SCRAM-SHA-256-PLUS` without plain SCRAM), GSSAPI and SSPI are not supported.
 
+## Dynamic per-session roles
+
+Tick **Throw-away role per session** on the resource (or
+`PUT /api/db-proxy/dynamic/:resourceId` with `{enabled, grantRoles, ttlSeconds}`)
+and nobody works as the resource's account any more. On a session's first
+connection the proxy uses that account to create a role of its own:
+
+```sql
+CREATE ROLE "ef_3f9a1c2b" WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
+  NOREPLICATION NOBYPASSRLS INHERIT
+  PASSWORD 'SCRAM-SHA-256$4096:…' VALID UNTIL '2026-11-05T11:00:00Z';
+GRANT "app_rw" TO "ef_3f9a1c2b";
+```
+
+- The role gets **only** the roles listed in *Roles granted* (`grantRoles`),
+  and every connection of the session uses it; the journal's `dbUser` shows it.
+- `VALID UNTIL` is the smaller of *Maximum validity* (`ttlSeconds`, 5 minutes
+  to 7 days, default 1 hour) and the session's own limit: even if the bastion
+  vanished, the role could not log in afterwards.
+- Only the SCRAM verifier, computed by the bastion, is sent: a server that logs
+  statements (`log_statement = all`) records no usable password.
+- **When the session ends** (terminated, expired, or the reaper finding it gone
+  after a restart), the proxy locks the role (`NOLOGIN`), ends its backends,
+  runs `REASSIGN OWNED BY … TO CURRENT_USER` and `DROP OWNED BY …` in every
+  database it used — objects it created are kept, owned by the management
+  account — then `DROP ROLE`. A failure leaves the role `NOLOGIN` and is
+  journaled with `result: "error"`.
+- A scheduler job (`db-dynamic-role-reaper`, every 5 minutes) removes roles
+  past their validity or whose session is no longer active.
+
+The resource's account then only manages roles. It needs `CREATEROLE` and
+`ADMIN OPTION` on each granted role; on PostgreSQL 16+ the creator also needs
+`createrole_self_grant = 'set, inherit'` (or superuser) for `REASSIGN OWNED`:
+
+```sql
+CREATE ROLE ef_manager LOGIN CREATEROLE PASSWORD '…';
+GRANT app_rw TO ef_manager WITH ADMIN OPTION;
+ALTER ROLE ef_manager SET createrole_self_grant = 'set, inherit';
+```
+
+Journal: `db.role.created` (`role`, `grants`, `validUntil`, `database`),
+`db.role.dropped` (`role`, `result`, `detail`), `db.dynamic.configured`.
+
 ## Connecting
 
 Connect from the resource's **Connect** button: the agent opens a local port
@@ -84,7 +127,13 @@ Every event carries `sessionId`, `resourceId`, `resource`, `database` and
 | `db.disconnect` | `queries`, `blocked`, `reason` |
 
 They reach the hash-chained audit trail, the SIEM export and the session's
-event list like every other event. Bulk work (a `pg_dump`, an ETL job) produces
+event list like every other event. In **Sessions**, the details of a PostgreSQL
+session have a **SQL queries** button (needs `audit.read`): every query of the
+session in the order it ran, to the second, with its outcome, duration, rows
+and error, filters (succeeded, failed, refused) and a search in the SQL, and a
+**Replay** that shows them again one by one at their recorded pace (1× to 60×,
+long pauses shortened to 3 s). It reads `GET /api/audit?sessionId=…&family=db`
+and follows a live session as it goes. Bulk work (a `pg_dump`, an ETL job) produces
 one event per statement: give such jobs their own resource if that volume is a
 concern.
 
@@ -130,6 +179,8 @@ intent; keep the database account's privileges as narrow as the job allows.
 | `GET` | `/api/db-guard/rules` | All rules, built-ins first |
 | `PUT` | `/api/db-guard/rules/:name` | `{kind: "statement"\|"schema", value, enabled}`; built-ins take `enabled` only |
 | `DELETE` | `/api/db-guard/rules/:name` | Custom rules only |
+| `GET` | `/api/db-proxy/dynamic/:resourceId` | Dynamic role settings (`resources.read`) |
+| `PUT` | `/api/db-proxy/dynamic/:resourceId` | `{enabled, grantRoles, ttlSeconds}` (`resources.manage`) |
 
 Changes are journaled as `db_guard.rule.configured` / `db_guard.rule.removed`.
 All three need `resources.manage`; API tokens may reach them.
@@ -143,5 +194,4 @@ With [`/api/metrics`](./configuration.md#prometheus-metrics):
 
 ## Not yet
 
-Dynamic per-session roles (`CREATE ROLE … VALID UNTIL`), MySQL/MariaDB and a
-web SQL console are tracked as follow-up issues.
+MySQL/MariaDB and a web SQL console are tracked as follow-up issues.

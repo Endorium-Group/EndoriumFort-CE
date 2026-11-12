@@ -208,6 +208,23 @@ export async function revokeApiToken(id) {
   return response.json();
 }
 
+// ── Dynamic per-session PostgreSQL roles (Enterprise: database.proxy) ──
+export async function fetchDbDynamic(resourceId) {
+  const response = await fetch(`/api/db-proxy/dynamic/${encodeURIComponent(resourceId)}`, { headers: withAuthHeaders() });
+  await ensureResponseOk(response, 'Failed to fetch the dynamic role settings');
+  return response.json();
+}
+
+export async function saveDbDynamic(resourceId, payload) {
+  const response = await fetch(`/api/db-proxy/dynamic/${encodeURIComponent(resourceId)}`, {
+    method: 'PUT',
+    headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload)
+  });
+  await ensureResponseOk(response, 'Failed to save the dynamic role settings');
+  return response.json();
+}
+
 // ── SQL guard of the database proxy (Enterprise: database.proxy) ──
 export async function fetchDbGuardRules() {
   const response = await fetch('/api/db-guard/rules', { headers: withAuthHeaders() });
@@ -1032,6 +1049,17 @@ export async function fetchRecordings(sessionId = null) {
     headers: withAuthHeaders()
   });
   await ensureResponseOk(response, 'Failed to fetch recordings');
+  return response.json();
+}
+
+// Full-text search in terminal recordings (Enterprise: recordings.search).
+export async function searchRecordings(params = {}) {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') query.set(key, String(value));
+  });
+  const response = await fetch(`/api/recordings/search?${query}`, { headers: withAuthHeaders() });
+  await ensureResponseOk(response, 'Failed to search the recordings');
   return response.json();
 }
 

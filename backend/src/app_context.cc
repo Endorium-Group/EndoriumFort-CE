@@ -2496,21 +2496,28 @@ bool AppContext::insert_recording(const SessionRecording &rec) {
 
 bool AppContext::update_recording_close(const SessionRecording &rec) {
   if (!sqlite.is_open()) return true;
-  std::lock_guard<std::mutex> lock(sqlite.mutex);
-  auto stmt = sqlite.prepare(
-      "UPDATE session_recordings SET closed_at=?1, duration_ms=?2, file_size=?3 "
-      "WHERE id=?4");
-  if (!stmt) {
-    std::cerr << "SQLite recording update failed: " << sqlite.last_error() << '\n';
-    return false;
+  bool ok = false;
+  {
+    std::lock_guard<std::mutex> lock(sqlite.mutex);
+    auto stmt = sqlite.prepare(
+        "UPDATE session_recordings SET closed_at=?1, duration_ms=?2, file_size=?3 "
+        "WHERE id=?4");
+    if (!stmt) {
+      std::cerr << "SQLite recording update failed: " << sqlite.last_error() << '\n';
+      return false;
+    }
+    stmt.bind_text(1, rec.closedAt);
+    stmt.bind_int64(2, rec.durationMs);
+    stmt.bind_int64(3, static_cast<int64_t>(rec.fileSize));
+    stmt.bind_int(4, rec.id);
+    ok = stmt.execute();
+    if (!ok)
+      std::cerr << "SQLite recording update failed: " << sqlite.last_error() << '\n';
   }
-  stmt.bind_text(1, rec.closedAt);
-  stmt.bind_int64(2, rec.durationMs);
-  stmt.bind_int64(3, static_cast<int64_t>(rec.fileSize));
-  stmt.bind_int(4, rec.id);
-  const bool ok = stmt.execute();
-  if (!ok)
-    std::cerr << "SQLite recording update failed: " << sqlite.last_error() << '\n';
+  // Outside the database lock: the seam (the EE search index) wakes the
+  // scheduler, which takes that lock itself — calling it under the lock
+  // deadlocked the bastion whenever a recording closed (v1.0.60).
+  if (ok && on_recording_closed) on_recording_closed(rec.id);
   return ok;
 }
 

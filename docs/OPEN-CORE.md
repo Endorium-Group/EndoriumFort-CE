@@ -43,6 +43,7 @@ the public docs derive the CE/EE boundary from.
 | `recording` | SSH session recording and replay | `/api/recordings/*` |
 | `rbi_recording` | Recording of isolated-browser sessions | `/api/recordings/<id>/rbi` |
 | `rbi_transfer` | DLP policy over isolated-browser transfers and clipboard | fills the `rbi_transfer_check` seam |
+| `recordings_search` | Full-text search in terminal recordings, opening the replay at the hit | `/api/recordings/search`, fills the `on_recording_closed` seam |
 | `access_governance` | JIT access requests: four-eyes submit / approve / deny | `/api/access-requests/*` |
 | `governance` | Centralized access policies and reusable profiles | `/api/access-policies/*`, `/api/access-profiles/*` |
 | `session_premium` | Ephemeral grants, Session DNA, evidence packs, privilege elevation, goal review | `/api/access-grants`, `/api/sessions/<id>/dna`, `/api/evidence-packs/*` |
@@ -115,11 +116,11 @@ git push -u origin master
   SLSA provenance). This workflow lives in the public core repo.
 - **EE (private)** — `.github/workflows/ee-release.yml` builds `EDITION=enterprise`,
   exports the image with `docker save | gzip`, signs it with `cosign sign-blob`,
-  and attaches the `.tar.gz` + `.sha256` + `.sig` + `.pem` to a private release.
+  and attaches the `.tar.gz` + `.sha256` + `.bundle.json` (Sigstore bundle) to a
+  private release.
   Customers install offline:
   ```bash
-  cosign verify-blob --signature endoriumfort-ee-<v>.tar.gz.sig \
-    --certificate endoriumfort-ee-<v>.tar.gz.pem \
+  cosign verify-blob --bundle endoriumfort-ee-<v>.tar.gz.bundle.json \
     --certificate-identity-regexp '.*' --certificate-oidc-issuer-regexp '.*' \
     endoriumfort-ee-<v>.tar.gz
   docker load < endoriumfort-ee-<v>.tar.gz

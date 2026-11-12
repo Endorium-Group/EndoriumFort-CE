@@ -1,5 +1,5 @@
 {
   "dependencies": {
-    "@novnc/novnc": "^1.6.0"
+    "@novnc/novnc": "^1.7.0"
   }
 }
